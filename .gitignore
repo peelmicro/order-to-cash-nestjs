@@ -1,0 +1,64 @@
+# ---------- Dependencies ----------
+node_modules/
+.pnpm-store/
+.pnpm-debug.log*
+
+# ---------- Build output ----------
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# ---------- Nuxt / Vite (apps/web) ----------
+.nuxt/
+.output/
+.nitro/
+.data/
+.vite/
+.vite-inspect/
+
+# ---------- Tests / coverage ----------
+coverage/
+*.lcov
+.vitest/
+playwright-report/
+playwright/.cache/
+test-results/
+blob-report/
+
+# ---------- Environment ----------
+.env
+.env.*
+!.env.example
+
+# ---------- Docker bind mounts / local volumes ----------
+data/
+infra/**/data/
+
+# ---------- Logs ----------
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------- Caches ----------
+.cache/
+.eslintcache
+.stylelintcache
+.turbo/
+
+# ---------- IDE ----------
+.idea/
+*.iml
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+
+# ---------- OS ----------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+desktop.ini
