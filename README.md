@@ -54,13 +54,45 @@ node -v && pnpm -v
 ```
 
 There is nothing to install or run yet — the monorepo is scaffolded in Phase 5.
+What you *can* run is the harness state check:
+
+```bash
+./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
+```
+
+## How this is being built
+
+The development **process is a deliverable here**, not just the software. This
+repository carries a spec-driven agent harness, built before any application code:
+
+| Artifact | Role |
+|---|---|
+| [`AGENTS.md`](AGENTS.md) | Entry map — what to read, when, and the hard rules |
+| [`CLAUDE.md`](CLAUDE.md) | Leader role + project conventions |
+| [`feature_list.json`](feature_list.json) | Backlog state machine — 38 features, max one `in_progress` |
+| [`init.sh`](init.sh) | State coherence check, run at the start of every session |
+| [`progress/`](progress/) | External memory: session state, and per-feature **effort records** |
+| [`CHECKPOINTS.md`](CHECKPOINTS.md) | Objective session-close criteria (C1–C7) |
+| [`.claude/agents/`](.claude/agents/) | leader, spec_author, implementer, reviewer, test_maintainer |
+
+Large features go through the full loop with a **human approval gate**:
+
+```
+pending → [spec_author] → spec_ready → ⏸ HUMAN → in_progress
+        → [implementer] → in_review → [reviewer] → done
+```
+
+Small features skip the spec ceremony but still traverse the state machine.
+Every agent definition declares which model it runs on. `progress/history.md`
+records per-feature effort — this repository is the **baseline** the two sibling
+assessments are measured against.
 
 ## Build progress
 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Environment & repository | ✅ |
-| 2 | Harness layer (`AGENTS.md`, `feature_list.json`, `init.sh`, `progress/`, agents) | ⬜ |
+| 2 | Harness layer (`AGENTS.md`, `feature_list.json`, `init.sh`, `progress/`, agents) | ✅ |
 | 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ⬜ |
 | 4 | Infrastructure compose + Kafka topics & NATS subjects | ⬜ |
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ⬜ |

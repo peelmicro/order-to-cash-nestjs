@@ -1,0 +1,525 @@
+{
+  "project": "order-to-cash-nestjs",
+  "description": "Order-to-cash lifecycle backbone as event-driven microservices (NestJS 11 + Nuxt 4 + MySQL 8 + MongoDB + Kafka + NATS). Assessment #7 of the order-to-cash trilogy.",
+  "rules": {
+    "one_feature_at_a_time": true,
+    "require_tests_to_close": true,
+    "require_approved_spec_to_implement": true,
+    "require_effort_record_to_close": true,
+    "claude_never_commits": true,
+    "valid_status": [
+      "pending",
+      "spec_ready",
+      "in_progress",
+      "in_review",
+      "done",
+      "blocked"
+    ],
+    "sdd_required_when": "feature has \"sdd\": true",
+    "state_machine": "pending -> [spec_author] -> spec_ready -> HUMAN APPROVES -> in_progress -> [implementer] -> in_review -> [reviewer] -> done | blocked"
+  },
+  "features": [
+    {
+      "id": 1,
+      "name": "repo_bootstrap",
+      "phase": 1,
+      "title": "Repository bootstrap: Node 24 LTS, pnpm 11, git hygiene",
+      "sdd": false,
+      "status": "done",
+      "acceptance": [
+        "Node LTS and pnpm installed and verified",
+        ".gitignore, .editorconfig, .nvmrc committed",
+        "repo-local git identity set",
+        "push to origin verified"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "harness_layer",
+      "phase": 2,
+      "title": "Agent harness: AGENTS.md, CLAUDE.md, backlog, init.sh, progress/, agents, CHECKPOINTS.md",
+      "sdd": false,
+      "status": "done",
+      "acceptance": [
+        "AGENTS.md, CLAUDE.md, CHECKPOINTS.md exist",
+        "feature_list.json validates against its own rules",
+        "init.sh exits 0 on a clean clone",
+        "progress/current.md and history.md exist",
+        "five agents in .claude/agents/ each declaring its model explicitly"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "shared_spec",
+      "phase": 3,
+      "title": "specs/shared/: domain model, saga, EARS requirements, AsyncAPI, OpenAPI, test matrix",
+      "sdd": false,
+      "owner": "spec_author",
+      "status": "pending",
+      "acceptance": [
+        "domain-model.md, saga.md, requirements.md, asyncapi.yaml, openapi.yaml, test-matrix.md, n8n-workflows.md all present",
+        "every requirement has an R<n> id",
+        "no NestJS/Drizzle/Nuxt/MySQL specifics anywhere in specs/shared/"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "infra_compose",
+      "phase": 4,
+      "title": "docker-compose.infra.yml: MySQL, MongoDB, Kafka, Redpanda Console, NATS, n8n, OTel, Jaeger, Prometheus, Grafana",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "all infra containers healthy",
+        "three MySQL databases created by init script",
+        "NATS runs core-only (no JetStream)",
+        ".env.example complete"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "messaging_topology",
+      "phase": 4,
+      "title": "Kafka fact topics + .dlq companions and the NATS subject registry",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "3 fact topics + 3 dlq topics created idempotently",
+        "topics match asyncapi.yaml exactly",
+        "Redpanda Console lists all 6"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "monorepo_scaffold",
+      "phase": 5,
+      "title": "pnpm workspaces, tsconfig base, ESLint/Prettier, domain-purity rule, quality script",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "pnpm install works from root",
+        "exact packageManager pinned",
+        "no-restricted-imports rule fails on a deliberate domain violation",
+        "pnpm quality runs lint + typecheck + test"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "shared_kernel",
+      "phase": 5,
+      "title": "packages/shared-kernel: Money, Quantity, GLN (mod-10), OrderNumber, UniqueId, Entity, AggregateRoot",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "zero runtime dependencies",
+        "GLN check digit validated with real and invalid GLNs",
+        "Money rejects cross-currency arithmetic",
+        "full Vitest suite green"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "contracts_package",
+      "phase": 5,
+      "title": "packages/contracts: types generated from AsyncAPI + OpenAPI",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "pnpm contracts:generate reproduces the types",
+        "no hand-written API types anywhere else"
+      ]
+    },
+    {
+      "id": 9,
+      "name": "db_orders",
+      "phase": 6,
+      "title": "Drizzle schema + migrations for otc_orders (incl. outbox, processed_events)",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "migrations run from empty",
+        "round-trip integration test per table via Testcontainers"
+      ]
+    },
+    {
+      "id": 10,
+      "name": "db_fulfillment",
+      "phase": 6,
+      "title": "Drizzle schema + migrations for otc_fulfillment",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "migrations run from empty",
+        "round-trip integration test per table"
+      ]
+    },
+    {
+      "id": 11,
+      "name": "db_billing",
+      "phase": 6,
+      "title": "Drizzle schema + migrations for otc_billing",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "migrations run from empty",
+        "round-trip integration test per table"
+      ]
+    },
+    {
+      "id": 12,
+      "name": "seed_job",
+      "phase": 7,
+      "title": "Deterministic one-shot seed job (master data + sample orders)",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "idempotent: re-running changes nothing",
+        "10+ products, 7 retailers, 20+ companies, credit limits for every retailer, initial stock",
+        "a few completed orders and one cancelled order"
+      ]
+    },
+    {
+      "id": 13,
+      "name": "orders_aggregate",
+      "phase": 8,
+      "title": "Order aggregate + full status state machine",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "every legal transition allowed, every illegal one throws",
+        "no empty orders, no line mutation after confirmed",
+        "totals always consistent with lines",
+        "cancelled requires a reason",
+        "pure domain unit tests, zero framework imports"
+      ]
+    },
+    {
+      "id": 14,
+      "name": "outbox_and_idempotency",
+      "phase": 8,
+      "title": "Transactional outbox + polling relay + idempotent consumer pattern",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "aggregate row and outbox row written in one transaction",
+        "relay publishes to Kafka keyed by correlationId and stamps publishedAt",
+        "safe under concurrent relay instances",
+        "redelivery deduplicated via processed_events"
+      ]
+    },
+    {
+      "id": 15,
+      "name": "orders_acceptance",
+      "phase": 8,
+      "title": "Order acceptance: orders.create RPC + stock check + OrderPlaced via outbox",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "synchronous stock check via NATS fulfillment.stock.check",
+        "order id returned synchronously",
+        "rejection when stock check fails"
+      ]
+    },
+    {
+      "id": 16,
+      "name": "order_saga_orchestrator",
+      "phase": 8,
+      "title": "Saga orchestrator: advances on Kafka facts, commands over NATS, both compensation paths",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "happy path reaches invoiced against stubbed responders",
+        "CreditRejected releases stock and cancels the order",
+        "StockRejected cancels without a release",
+        "idempotent under event redelivery",
+        "every step recorded"
+      ]
+    },
+    {
+      "id": 17,
+      "name": "fulfillment_stock",
+      "phase": 9,
+      "title": "StockItem aggregate + reservation lifecycle (reserve / release / consume)",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "invariant reservedUnits <= units enforced in the aggregate",
+        "StockRejected when insufficient",
+        "release is idempotent, cannot release twice",
+        "check-then-reserve race covered by an integration test"
+      ]
+    },
+    {
+      "id": 18,
+      "name": "fulfillment_despatch",
+      "phase": 9,
+      "title": "DespatchAdvice (DESADV) creation consuming reservations",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "reservations move to consumed",
+        "OrderDespatched emitted via outbox"
+      ]
+    },
+    {
+      "id": 19,
+      "name": "billing_credit",
+      "phase": 10,
+      "title": "BuyerCredit aggregate + hold/release/consume ledger",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "availableCredit = limit - active holds - open invoices",
+        "ledger is append-only",
+        "over-limit hold is rejected",
+        "release on compensation and on invoice paid"
+      ]
+    },
+    {
+      "id": 20,
+      "name": "billing_credit_simulator",
+      "phase": 10,
+      "title": "Credit-check simulator (.99 rule + CREDIT_FAILURE_RATE)",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "rejects totalAmount % 100 === 99 deterministically",
+        "CREDIT_FAILURE_RATE defaults to 0",
+        "sits behind the credit port"
+      ]
+    },
+    {
+      "id": 21,
+      "name": "billing_invoicing",
+      "phase": 10,
+      "title": "Invoice aggregate (INVOIC) with issued -> paid state machine",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "issued on OrderDespatched",
+        "paidAt set exactly when status becomes paid",
+        "totals consistent with lines"
+      ]
+    },
+    {
+      "id": 22,
+      "name": "billing_remittance_intake",
+      "phase": 10,
+      "title": "Remittance intake: PaymentReceived + credit release + invoice paid",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "idempotent by paymentReference",
+        "no internal payment timer anywhere",
+        "emits PaymentReceived and CreditReleased"
+      ]
+    },
+    {
+      "id": 23,
+      "name": "notifications_service",
+      "phase": 11,
+      "title": "Notifications: notification port, Mailtrap adapter, console adapter",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "real email verified in the Mailtrap inbox for each notified fact",
+        "console adapter used in tests via the same port",
+        "idempotent by eventId"
+      ]
+    },
+    {
+      "id": 24,
+      "name": "projector_read_model",
+      "phase": 12,
+      "title": "Projector: Kafka facts -> MongoDB order_timeline, idempotent by eventId",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "out-of-order delivery still yields the correct final status",
+        "replaying a topic reproduces an identical document",
+        "emits the update signal the Gateway turns into SSE"
+      ]
+    },
+    {
+      "id": 25,
+      "name": "gateway_rest_auth",
+      "phase": 13,
+      "title": "Gateway REST implementing openapi.yaml + JWT + NATS RPC client",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "contract test asserts no drift from openapi.yaml",
+        "RPC timeouts mapped to HTTP status codes",
+        "list/detail served from MongoDB, never from a write DB"
+      ]
+    },
+    {
+      "id": 26,
+      "name": "gateway_sse_push",
+      "phase": 13,
+      "title": "SSE push of saga progress with heartbeat and Last-Event-ID reconnect",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "client reconnect resumes without duplicates",
+        "heartbeat keeps the connection alive"
+      ]
+    },
+    {
+      "id": 27,
+      "name": "observability_reliability",
+      "phase": 14,
+      "title": "Terminus health checks, OTel propagation through NATS and Kafka, structured logging, retry + DLQ",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "one trace spans HTTP -> NATS -> MySQL -> Kafka -> consumers",
+        "correlationId in every log line",
+        "failed processing lands on <topic>.dlq after N attempts",
+        "readiness includes DB, Kafka and NATS indicators"
+      ]
+    },
+    {
+      "id": 28,
+      "name": "saga_e2e_verification",
+      "phase": 15,
+      "title": "End-to-end saga verification before any frontend work",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "happy path reaches completed",
+        ".99 order compensates visibly",
+        "redelivery causes no corruption",
+        "a poisoned message reaches the DLQ"
+      ]
+    },
+    {
+      "id": 29,
+      "name": "web_app",
+      "phase": 16,
+      "title": "Nuxt 4 web app: place order, list, detail with live timeline, stock, billing",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "types imported from packages/contracts",
+        "live SSE timeline with reconnect",
+        "Register payment button works",
+        "honest waiting-for-projection state"
+      ]
+    },
+    {
+      "id": 30,
+      "name": "web_component_tests",
+      "phase": 17,
+      "title": "Vitest + Vue Testing Library component tests",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "timeline, place-order form, stock and billing tables covered",
+        "SSE composable tested with a fake EventSource"
+      ]
+    },
+    {
+      "id": 31,
+      "name": "api_tests",
+      "phase": 18,
+      "title": "Black-box API tests through the Gateway",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "full happy path",
+        "full compensation path",
+        "duplicate paymentReference yields one payment"
+      ]
+    },
+    {
+      "id": 32,
+      "name": "e2e_playwright",
+      "phase": 19,
+      "title": "Playwright end-to-end tests against the composed stack",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "order reaches completed in the UI",
+        ".99 order reaches cancelled with compensation visible"
+      ]
+    },
+    {
+      "id": 33,
+      "name": "n8n_workflows",
+      "phase": 20,
+      "title": "Four n8n demo workflows, Gateway REST API only, exported as JSON",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "order generator, bank robot, stock replenishment, burst",
+        "auto-imported on container startup",
+        "removing n8n does not break the stack"
+      ]
+    },
+    {
+      "id": 34,
+      "name": "sonarqube_quality_gates",
+      "phase": 21,
+      "title": "SonarQube optional profile + enforced coverage thresholds",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "coverage gates enforced in pnpm quality independently of SonarQube",
+        ">=80% domain, >=60% overall"
+      ]
+    },
+    {
+      "id": 35,
+      "name": "observability_dashboards",
+      "phase": 22,
+      "title": "Prometheus config + committed Grafana dashboard + verified Jaeger trace",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "panels: saga duration, per-service latency, consumer lag, outbox lag, DLQ depth",
+        "dashboard auto-provisioned",
+        "single distributed trace screenshot captured"
+      ]
+    },
+    {
+      "id": 36,
+      "name": "full_docker_compose",
+      "phase": 23,
+      "title": "Full stack compose (~18 containers) with healthcheck-gated dependencies",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "cold start reaches a demoable state within ~2 minutes",
+        "infra-only mode still works with apps run from the CLI"
+      ]
+    },
+    {
+      "id": 37,
+      "name": "documentation_demo",
+      "phase": 24,
+      "title": "README completion: diagrams, matrices, trade-offs, AI process section, demo GIF",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "Kafka-vs-NATS matrix with this project's own examples",
+        "saga diagram happy + compensation",
+        "AI process section",
+        "screenshots and demo recording"
+      ]
+    },
+    {
+      "id": 38,
+      "name": "final_checkpoint",
+      "phase": 25,
+      "title": "Final checkpoint: backlog done, traceability complete, specs/shared/ stack-agnostic",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "every EARS requirement traced to a green test",
+        "progress/ snapshots versioned in different states",
+        "specs/shared/ clean for #8"
+      ]
+    }
+  ]
+}
