@@ -10,8 +10,10 @@
 
 ## Goal
 
-Next up: feature `shared_spec` (id 3, phase 3) — `spec_author` writes
-`specs/shared/`. Status is `pending`; the leader should launch `spec_author`.
+Next up: feature `infra_compose` (id 4, phase 4) — `docker-compose.infra.yml`
+with MySQL (3 databases), MongoDB, Kafka (KRaft), Redpanda Console, NATS (core),
+n8n, OTel Collector, Jaeger, Prometheus, Grafana; SonarQube behind a profile.
+Then `messaging_topology` (id 5) creates the topics and DLQs from `asyncapi.yaml`.
 
 ## Decisions taken this session
 

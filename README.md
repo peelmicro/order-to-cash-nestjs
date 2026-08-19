@@ -87,13 +87,32 @@ Every agent definition declares which model it runs on. `progress/history.md`
 records per-feature effort — this repository is the **baseline** the two sibling
 assessments are measured against.
 
+## The specification
+
+[`specs/shared/`](specs/shared/) is written **before** the code and is the
+stack-agnostic contract that assessments #8 and #9 reuse verbatim:
+
+| File | What it defines |
+|---|---|
+| [`domain-model.md`](specs/shared/domain-model.md) | Aggregates, value objects, invariants, both state machines, the 13-fact catalogue |
+| [`saga.md`](specs/shared/saga.md) | Happy path and both compensation paths, with sequence diagrams |
+| [`requirements.md`](specs/shared/requirements.md) | 61 requirements in EARS notation, `R1`–`R61` |
+| [`asyncapi.yaml`](specs/shared/asyncapi.yaml) | AsyncAPI 3.0.0 — fact topics, DLQs, every RPC subject, all payload schemas |
+| [`openapi.yaml`](specs/shared/openapi.yaml) | OpenAPI 3.1.0 — the Gateway REST contract |
+| [`test-matrix.md`](specs/shared/test-matrix.md) | Every `R<n>` mapped to the test that proves it |
+| [`n8n-workflows.md`](specs/shared/n8n-workflows.md) | Functional spec of the four demo workflows |
+
+Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0
+warnings; `redocly lint`: valid). A feature is not `done` until its rows in the
+test matrix are green.
+
 ## Build progress
 
 | Phase | What | Status |
 |-------|------|--------|
 | 1 | Environment & repository | ✅ |
 | 2 | Harness layer (`AGENTS.md`, `feature_list.json`, `init.sh`, `progress/`, agents) | ✅ |
-| 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ⬜ |
+| 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ✅ |
 | 4 | Infrastructure compose + Kafka topics & NATS subjects | ⬜ |
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ⬜ |
 | 6 | Database entities (orders, fulfillment, billing) | ⬜ |

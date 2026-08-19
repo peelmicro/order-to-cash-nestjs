@@ -121,3 +121,82 @@ and re-ran clean each time.
   state without doing the work.
 - Write the harness *before* the code. The ordering is visible in git and is
   itself the evidence the assessment asks for.
+
+## shared_spec (id 3, phase 3) — 2026-08-18
+
+**Effort:** 1 session, ~2.5h wall-clock (2 `spec_author` passes + 1 amendment pass)
+**Spec:** this feature *is* the spec — `specs/shared/`
+**Tests:** none yet by design; `test-matrix.md` holds 61 `TODO` rows that later
+features flip green. Both API documents were machine-validated instead.
+
+**What was built:**
+
+`specs/shared/` — the stack-agnostic specification reused verbatim by #8 and #9.
+Seven files, ~7,500 lines, written in two `spec_author` passes as agreed:
+
+- **Pass A** — `domain-model.md` (aggregates, VOs, invariants, both state
+  machines, the 13-fact catalogue, the envelope), `saga.md` (happy path, both
+  compensation paths, Mermaid diagrams, idempotency rules), `requirements.md`
+  (60 EARS requirements across the eight `sdd: true` features).
+- **Pass B** — `asyncapi.yaml` (AsyncAPI 3.0.0: 34 channels, 32 operations, 43
+  messages), `openapi.yaml` (OpenAPI 3.1.0: 17 paths, 18 operations),
+  `test-matrix.md` (every `R<n>` → a named test, all `TODO`),
+  `n8n-workflows.md`.
+- **Amendment pass** — the three decisions from the human approval gate.
+
+**Closed by the human approval gate, not by the `reviewer` agent** — for the
+specification itself the human *is* the reviewer. From phase 8 onward the
+`reviewer` agent closes features normally.
+
+**Decisions taken at the approval gate:**
+
+1. **R61 added** for `fulfillment.stock.replenish` — it was the only write
+   endpoint with no requirement behind it, and it mutates stock. Specifies
+   `units`-only increase, no fact emitted, no order advanced.
+2. **SSE fixed in the shared contract.** §10 originally left the real-time
+   transport per-assessment while `openapi.yaml` fixed SSE — a genuine
+   contradiction. Resolved in favour of the shared contract having no holes;
+   WebSocket documented as the alternative.
+3. **Payment `source` enum uses `robot`, not `n8n`.** A demo tool name must not
+   leak into a domain enum when #8/#9 may drive payments differently.
+
+The other 13 ambiguity resolutions from Pass A (`progress/spec_shared_passA.md`
+§4) were reviewed and accepted as a block.
+
+**Deviations from the spec/plan:**
+
+- Split into **two `spec_author` passes** rather than one — seven files including
+  two full API documents is too much for a single invocation, and it gave the
+  human two smaller things to review.
+- The custom agent types were not yet registered in the session that ran passes A
+  and B (`.claude/agents/` had been created mid-session), so those passes ran on
+  `general-purpose` instructed to read and adopt `spec_author.md`. The amendment
+  pass ran on the real `spec_author` type.
+
+**Verification:**
+
+- AsyncAPI 3.0.0 via the official `@asyncapi/parser`: **0 errors, 0 warnings**.
+  Note: the `@asyncapi/cli` is currently uninstallable (`@asyncapi/studio-ui@0.5.0`
+  404s), so validate with the parser library directly.
+- OpenAPI 3.1.0 via `redocly lint`: valid, 8 warnings, each reviewed and
+  deliberately accepted (localhost server, health probes with no 4XX, and four
+  SSE frame schemas OpenAPI cannot reference from a path).
+- R1–R61 contiguous and unique in `requirements.md`, all 61 present in
+  `test-matrix.md`.
+- Stack-agnostic sweep (`nestjs`, `drizzle`, `nuxt`, `mysql`, `postgres`,
+  `kafkajs`, `typescript`, `pnpm`, `varchar`, `jsonb`, `mongoose`): **zero hits**.
+- Money never floating-point: **zero hits** for `type: number` / `format: float`.
+
+**Notes for #8 and #9:**
+
+- **This folder is the reuse payload.** Copy it unchanged. The per-assessment work
+  starts at `specs/<feature>/design.md`.
+- Two defects in the #7 *plan document* were caught by the spec agents, not by a
+  human: the NATS subject table omitted `fulfillment.stock.replenish` while the
+  REST table referenced it, and the payment `source` enum carried the vendor name
+  `n8n`. Writing the spec is what surfaced both — an argument for spec-first that
+  is worth citing.
+- Ask the spec author to record its **ambiguity resolutions** in a table. Pass A
+  found 13; that table, not the prose, is what the human approval gate actually
+  reviews, and it is what makes the gate a five-minute job instead of a
+  1,500-line read.

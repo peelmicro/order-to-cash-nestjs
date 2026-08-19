@@ -55,7 +55,7 @@
       "title": "specs/shared/: domain model, saga, EARS requirements, AsyncAPI, OpenAPI, test matrix",
       "sdd": false,
       "owner": "spec_author",
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "domain-model.md, saga.md, requirements.md, asyncapi.yaml, openapi.yaml, test-matrix.md, n8n-workflows.md all present",
         "every requirement has an R<n> id",
