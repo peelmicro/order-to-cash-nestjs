@@ -200,3 +200,150 @@ The other 13 ambiguity resolutions from Pass A (`progress/spec_shared_passA.md`
   found 13; that table, not the prose, is what the human approval gate actually
   reviews, and it is what makes the gate a five-minute job instead of a
   1,500-line read.
+
+## infra_compose (id 4, phase 4) — 2026-08-19
+
+**Effort:** 1 session, ~4h wall-clock — implementation ~1.5h, then **two review
+passes** (~1h reviewing + ~1.5h fixing and re-proving). The first pass was
+**REJECTED with 7 defects, 2 of them blocking**: **D1** — `kafka_data` mounted at
+`/tmp/kraft-combined-logs` (the Confluent `cp-kafka` convention) while
+`apache/kafka:4.3.1` writes to `/tmp/kafka-logs`, so the named volume was empty,
+all broker state lived in the container layer and every `down`/`up` silently
+destroyed the cluster id, topics and offsets; **D2** — the SonarQube healthcheck
+was `curl -f /api/system/status`, which returns HTTP 200 with
+`{"status":"STARTING"}`, giving a measured ~90 s window of false "healthy".
+Both were found by probing the running system, not by reading the file; both are
+fixed and re-proved.
+**Spec:** n/a (sdd: false)
+**Tests:** no test suite exists at phase 4. Verification is the reviewer's
+independent probing of the running stack — recorded in full in
+`progress/review_infra_compose.md`.
+
+**What was built:**
+
+`docker-compose.infra.yml` — ten infrastructure services on one bridge network,
+every image pinned to an exact tag, every service healthchecked with a genuine
+*readiness* probe: MySQL 8.4.11 (four databases via a `.sh` init script),
+MongoDB 8.3.8, Kafka 4.3.1 (KRaft, no ZooKeeper, dual listener
+`kafka:29092` internal / `localhost:9092` external), Redpanda Console v3.10.0,
+NATS 2.14.5 core-only (**JetStream deliberately off** — durability is Kafka's
+job), OTel Collector 0.159.0, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana
+13.2.0 (datasources provisioned, no dashboards), n8n 2.36.2. SonarQube
+26.8-community sits behind an opt-in `sonar` profile. Plus
+`infra/{mysql,prometheus,grafana,otel-collector}/`, `.env.example`, and the
+`dc:*` scripts in the root `package.json`.
+
+**Deviations from the spec/plan:**
+
+- **`infra/otel-collector/Dockerfile`** — a two-line image over
+  `otel/opentelemetry-collector-contrib:0.159.0` that copies in a static
+  `busybox` purely so Docker's exec healthcheck has something to run. The
+  upstream image is distroless: no shell, no `wget`/`curl`, no upstream
+  `HEALTHCHECK`, and `/otelcol-contrib` has no health subcommand — all verified
+  by the reviewer before accepting. Both `FROM` tags are exact, so the build is
+  as reproducible as a pull. `pull_policy: build` prevents the local tag going
+  stale.
+- **MySQL init is a `.sh`, not a `.sql`** — `docker-entrypoint-initdb.d` pipes
+  `.sql` files through the client with no variable expansion, which would force
+  the app username to be hardcoded and drift from `MYSQL_USER`. It also executes
+  `.sh` files with the full environment, so the username and the four database
+  names come from `.env` and cannot drift.
+- Versions chosen deliberately over the plan's: MySQL **8.4 LTS** (not
+  Innovation), **MongoDB 8.3.8** (plan said 7), **Jaeger v2** (plan named the v1
+  `all-in-one` legacy image), Grafana on host port **3030** to avoid clashing
+  with dev servers on 3000.
+
+**Notes for #8 and #9:**
+
+- **This compose file is reuse payload** — only the application services in
+  phase 23 differ. Copy it, and copy the two hard-won fixes with it.
+- **`apache/kafka` is not `confluentinc/cp-kafka`.** Its default `log.dirs` is
+  `/tmp/kafka-logs`, not `/tmp/kraft-combined-logs`. Always set `KAFKA_LOG_DIRS`
+  explicitly and mount the volume at exactly that path — the failure is silent,
+  the volume shows up in `docker volume ls`, and nothing complains until a
+  `down`/`up` eats the topics.
+- **A healthcheck that only checks HTTP 200 is not a readiness check.** SonarQube
+  answers 200 with `{"status":"STARTING"}` for ~90 s; Prometheus `/-/healthy` and
+  n8n `/healthz` are liveness, `/-/ready` and `/healthz/readiness` are readiness.
+  Assert the *body*, and use the readiness endpoint when one exists.
+- **The test that catches persistence bugs is `down` + `up -d` + read back your
+  own data from offset 0** — not "the container is healthy and I can create a
+  topic". That single test is what separated the two review passes here.
+- Docker `pull_policy: build` makes a bare `up -d` rebuild a locally-tagged
+  image; without it, a fixed `image:` tag next to a `build:` block silently
+  reuses a stale image forever.
+- Carry-over for the Orders schema feature: `MYSQL_DATABASE` makes the entrypoint
+  create `otc_orders` with the server default collation (`utf8mb4_0900_ai_ci`)
+  before the init script runs, so it differs from the other three
+  (`utf8mb4_unicode_ci`). Harmless now, worth aligning before any schema lands.
+
+---
+
+## messaging_topology (id 5, phase 4) — 2026-08-19
+
+**Effort:** 1 session, ~3h wall-clock — implementation ~1h, then **two review
+passes** (~1h first review, ~0.5h fixing, ~0.5h re-review), plus **one session
+interruption** mid-feature. First pass **REJECTED** on 4 defects (2 required
+minor, 2 advisory — all four fixed): **D1** the new `KAFKA_TOPIC_PARTITIONS` /
+`KAFKA_TOPIC_REPLICATION_FACTOR` compose vars were missing from `.env.example`
+(regressing feature 4's closed acceptance criterion); **D2** stale
+`progress/current.md` (leader's file, second consecutive occurrence); **D3**
+the verify step compared an `^otc\.`-filtered actual against an unfiltered
+expected; **D4** `OK: verified` over-claimed — a topic hand-recreated with the
+wrong partition count passed silently. All re-proved by the reviewer against
+the running broker, including a live drift-injection probe (1-partition topic →
+`FATAL` exit 1, no auto-alter → restored to 6 partitions).
+**Spec:** n/a (sdd: false). The feature's contract is the 3-item acceptance
+list in `feature_list.json` plus `specs/shared/asyncapi.yaml` as the sole topic
+source of truth.
+**Tests:** no test suite exists at phase 4. Verification is two rounds of
+independent behavioural probing recorded in
+`progress/review_messaging_topology.md` (first pass + "Second pass").
+
+**What was built:**
+
+`infra/kafka/create-topics.sh` — a single ~136-line script that **derives** the
+Kafka topic list from `specs/shared/asyncapi.yaml` at run time (yq selector:
+`.channels[] | select(.bindings.kafka.topic != null)` — structural, no
+name-matching, no hardcoded fallback anywhere), creates each topic idempotently
+(`--create --if-not-exists`, 6 partitions / RF 1, both env-overridable), then
+verifies **exact** set equality against the spec (broker side filtered only by
+Kafka's own `__` internal-topic convention) **and** per-topic shape
+(partition count + replication factor via `--describe`), failing loudly and
+refusing to auto-alter on any drift. Packaged as `otc-kafka-init:4.3.1`
+(`infra/kafka/Dockerfile`: `apache/kafka:4.3.1` + pinned `mikefarah/yq:4.47.2`
+binary), wired as the one-shot `kafka-init` compose service
+(`depends_on: kafka: service_healthy`, spec mounted read-only), and exposed as
+`pnpm kafka:topics` running the **same** container — one implementation, two
+callers. Result: `otc.{orders,fulfillment,billing}.facts.v1` + their `.dlq`
+companions, 6 partitions, RF 1, exact-matching the spec from the host on 9092,
+idempotent across re-runs and `down`/`up`.
+
+**Deviations from the spec/plan:**
+
+- **No NATS provisioning**, although the feature title names "the NATS subject
+  registry": NATS core has no server-side topology to create, and
+  `specs/shared/asyncapi.yaml` (14 request + 14 reply channels under
+  `servers.rpcTransport`) *is* the registry. Accepted by the reviewer on both
+  passes — the kafka-binding selector excludes RPC channels structurally.
+- **Partition count 6** is a judgment call (spare headroom over today's 3
+  consumer groups); safe because every fact is keyed by `correlationId`, so
+  per-order ordering never depends on the count. Reasoned inline in the script
+  and in `.env.example`.
+
+**Notes for #8 and #9:**
+
+- `infra/kafka/create-topics.sh` is **reuse payload** — plain bash + yq, zero
+  Node/NestJS coupling; copy it byte-for-byte.
+- **Never verify only existence.** `--create --if-not-exists` is a silent no-op
+  against a topic with the wrong shape; verify name-set equality *and*
+  partition/replication per topic, and never auto-alter (repartitioning
+  reorders keyed in-flight facts).
+- **Never filter the broker's topic list by your application namespace** when
+  comparing against a spec — filter only Kafka's `__` internal topics, or a
+  spec topic under a new prefix will fail (or pass) for the wrong reason.
+- Every compose `${VAR}` must land in `.env.example` in the same change that
+  introduces it — this regressed once here and cost a review pass.
+- Leader carry-over: when Vitest lands (feature 6), add one
+  Testcontainers-Kafka integration test proving the spec→topology derivation,
+  so the property is defended by CI rather than by manual review probes.

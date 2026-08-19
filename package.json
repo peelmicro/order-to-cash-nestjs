@@ -1,0 +1,28 @@
+{
+  "name": "order-to-cash-nestjs",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.22.0",
+  "description": "Order-To-Cash — order lifecycle backbone for a B2B EDI / e-invoicing platform (assessment #7 of a trilogy).",
+  "scripts": {
+    "dc:up:infra": "docker compose -f docker-compose.infra.yml up -d",
+    "kafka:topics": "docker compose -f docker-compose.infra.yml run --rm kafka-init",
+    "dc:down:infra": "docker compose -f docker-compose.infra.yml down",
+    "dc:ps:infra": "docker compose -f docker-compose.infra.yml ps",
+    "dc:clean:infra": "docker compose -f docker-compose.infra.yml down -v",
+    "dc:logs:infra": "docker compose -f docker-compose.infra.yml logs -f",
+    "dc:logs:mysql": "docker compose -f docker-compose.infra.yml logs -f mysql",
+    "dc:logs:mongodb": "docker compose -f docker-compose.infra.yml logs -f mongodb",
+    "dc:logs:kafka": "docker compose -f docker-compose.infra.yml logs -f kafka",
+    "dc:logs:kafka-console": "docker compose -f docker-compose.infra.yml logs -f kafka-console",
+    "dc:logs:nats": "docker compose -f docker-compose.infra.yml logs -f nats",
+    "dc:logs:otel-collector": "docker compose -f docker-compose.infra.yml logs -f otel-collector",
+    "dc:logs:jaeger": "docker compose -f docker-compose.infra.yml logs -f jaeger",
+    "dc:logs:prometheus": "docker compose -f docker-compose.infra.yml logs -f prometheus",
+    "dc:logs:grafana": "docker compose -f docker-compose.infra.yml logs -f grafana",
+    "dc:logs:n8n": "docker compose -f docker-compose.infra.yml logs -f n8n",
+    "dc:up:sonar": "docker compose -f docker-compose.infra.yml --profile sonar up -d sonarqube",
+    "dc:down:sonar": "docker compose -f docker-compose.infra.yml --profile sonar stop sonarqube",
+    "dc:logs:sonarqube": "docker compose -f docker-compose.infra.yml --profile sonar logs -f sonarqube"
+  }
+}

@@ -1,0 +1,376 @@
+# Order-To-Cash — infrastructure-only compose file (phase 4).
+#
+# Brings up MySQL, MongoDB, Kafka (KRaft), Redpanda Console, NATS (core-only),
+# the OTel Collector, Jaeger v2, Prometheus, Grafana and n8n so later phases
+# have somewhere to connect. NO application containers here — those arrive in
+# phase 23 (docker-compose.apps.yml). SonarQube is behind the `sonar` profile
+# because it costs ~1.5 GB RAM and is not needed for every session.
+#
+# Usage: see the `dc:*` scripts in package.json, e.g.
+#   pnpm dc:up:infra    # docker compose -f docker-compose.infra.yml up -d
+#   pnpm dc:up:sonar    # ... --profile sonar up -d sonarqube
+
+name: otc
+
+networks:
+  otc-net:
+    name: otc-net
+    driver: bridge
+
+volumes:
+  mysql_data:
+  mongodb_data:
+  kafka_data:
+  n8n_data:
+  grafana_data:
+  prometheus_data:
+  sonarqube_data:
+  sonarqube_logs:
+  sonarqube_extensions:
+
+services:
+  # ── MySQL — one instance, four logical databases (database-per-service) ──
+  mysql:
+    image: mysql:8.4.11
+    container_name: otc-mysql
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-otc_root_dev_password}
+      MYSQL_USER: ${MYSQL_USER:-otc_app}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-otc_app_dev_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-otc_orders}
+      # Read by infra/mysql/init/01-create-databases.sh (a .sh init script
+      # runs with the full container environment, unlike .sql — see
+      # progress/review defect D5).
+      MYSQL_DB_ORDERS: ${MYSQL_DB_ORDERS:-otc_orders}
+      MYSQL_DB_FULFILLMENT: ${MYSQL_DB_FULFILLMENT:-otc_fulfillment}
+      MYSQL_DB_BILLING: ${MYSQL_DB_BILLING:-otc_billing}
+      MYSQL_DB_N8N: ${MYSQL_DB_N8N:-n8n}
+    ports:
+      - "${MYSQL_HOST_PORT:-3306}:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - otc-net
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  # ── MongoDB — read models ────────────────────────────────────────────────
+  mongodb:
+    image: mongo:8.3.8
+    container_name: otc-mongodb
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME:-otc_mongo_root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD:-otc_mongo_dev_password}
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - otc-net
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --username \"$$MONGO_INITDB_ROOT_USERNAME\" --password \"$$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.adminCommand(\"ping\")' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # ── Kafka — KRaft mode, single node, no ZooKeeper ────────────────────────
+  # Dual listener: PLAINTEXT (internal, container-to-container on kafka:29092)
+  # and EXTERNAL (host access on localhost:9092). CONTROLLER is KRaft-only
+  # and never exposed.
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: otc-kafka
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://:${KAFKA_INTERNAL_PORT:-29092},CONTROLLER://:${KAFKA_CONTROLLER_PORT:-9093},EXTERNAL://:9092"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092},EXTERNAL://localhost:${KAFKA_HOST_PORT:-9092}"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_CONTROLLER_PORT:-9093}"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_SHARE_COORDINATOR_STATE_TOPIC_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      # Declared explicitly rather than relying on the image's default
+      # /tmp/kafka-logs — the mount below MUST match this exactly, or the
+      # broker persists nothing to the named volume (see progress/review
+      # defect D1: apache/kafka:4.3.1 is NOT the Confluent cp-kafka image and
+      # does not use /tmp/kraft-combined-logs).
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - otc-net
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:${KAFKA_INTERNAL_PORT:-29092} >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  # ── kafka-init — one-shot: creates the Kafka fact topics + .dlq companions
+  #    declared in specs/shared/asyncapi.yaml. The topic list is PARSED from
+  #    that spec at run time (infra/kafka/create-topics.sh), never retyped
+  #    here — see the script for the full rationale. Idempotent: re-running
+  #    (`pnpm kafka:topics`, or `docker compose up` again) creates nothing new
+  #    and re-asserts the broker's otc.* topics still match the spec exactly.
+  #    restart: "no" — this is a job, not a long-running service. ───────────
+  kafka-init:
+    build:
+      context: ./infra/kafka
+      dockerfile: Dockerfile
+    image: otc-kafka-init:4.3.1
+    pull_policy: build
+    container_name: otc-kafka-init
+    restart: "no"
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      ASYNCAPI_SPEC_PATH: /specs/asyncapi.yaml
+      KAFKA_BOOTSTRAP_SERVER: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      KAFKA_TOPIC_PARTITIONS: ${KAFKA_TOPIC_PARTITIONS:-6}
+      KAFKA_TOPIC_REPLICATION_FACTOR: ${KAFKA_TOPIC_REPLICATION_FACTOR:-1}
+    volumes:
+      - ./specs/shared/asyncapi.yaml:/specs/asyncapi.yaml:ro
+    networks:
+      - otc-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # ── Redpanda Console — Kafka UI, points at the internal listener ────────
+  kafka-console:
+    image: redpandadata/console:v3.10.0
+    container_name: otc-kafka-console
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+    ports:
+      - "${REDPANDA_CONSOLE_HOST_PORT:-8080}:8080"
+    networks:
+      - otc-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/admin/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── NATS — RPC transport, core-only (NO JetStream: durability is Kafka's
+  #    job, see specs/shared/asyncapi.yaml). Monitoring on 8222. ────────────
+  nats:
+    image: nats:2.14.5-alpine
+    container_name: otc-nats
+    restart: unless-stopped
+    command: ["-p", "4222", "-m", "8222"]
+    ports:
+      - "${NATS_CLIENT_HOST_PORT:-4222}:4222"
+      - "${NATS_MONITOR_HOST_PORT:-8222}:8222"
+    networks:
+      - otc-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ── OTel Collector — receives OTLP from every service, forwards traces to
+  #    Jaeger, exposes a Prometheus scrape endpoint. Custom Dockerfile only
+  #    adds a static busybox binary so the exec healthcheck has something to
+  #    run (the upstream image is distroless — no shell, no wget). ─────────
+  otel-collector:
+    build:
+      context: ./infra/otel-collector
+      dockerfile: Dockerfile
+    image: otc-otel-collector:0.159.0
+    # Forces a rebuild on every `up`/`pull` instead of silently reusing a
+    # stale local tag if the Dockerfile or its pinned FROM ever changes
+    # (see review defect D4).
+    pull_policy: build
+    container_name: otc-otel-collector
+    restart: unless-stopped
+    command: ["--config", "/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./infra/otel-collector/otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "${OTEL_COLLECTOR_GRPC_HOST_PORT:-4317}:4317"
+      - "${OTEL_COLLECTOR_HTTP_HOST_PORT:-4318}:4318"
+    networks:
+      - otc-net
+    depends_on:
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/bin/busybox", "wget", "--spider", "-q", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── Jaeger v2 — built on the OTel Collector itself. Also listens on OTLP
+  #    4317/4318 internally, but those are NOT mapped to the host: the
+  #    otel-collector already owns those host ports. Only the UI (16686) is
+  #    published. Traces flow: services -> otel-collector -> jaeger. ────────
+  jaeger:
+    image: jaegertracing/jaeger:2.20.0
+    container_name: otc-jaeger
+    restart: unless-stopped
+    ports:
+      - "${JAEGER_UI_HOST_PORT:-16686}:16686"
+    networks:
+      - otc-net
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686/"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── Prometheus — scrapes the OTel Collector now; application services are
+  #    commented placeholders until phase 23. ──────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: otc-prometheus
+    restart: unless-stopped
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "${PROMETHEUS_HOST_PORT:-9090}:9090"
+    networks:
+      - otc-net
+    depends_on:
+      otel-collector:
+        condition: service_healthy
+    healthcheck:
+      # /-/ready is the readiness contract (has loaded config + storage is
+      # ready to be queried); /-/healthy only proves the process is alive.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/ready"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ── Grafana — Prometheus + Jaeger datasources provisioned; no dashboards
+  #    (phase 22). Host port pinned to 3030 to avoid clashing with dev
+  #    servers that default to 3000. ───────────────────────────────────────
+  grafana:
+    image: grafana/grafana:13.2.0
+    container_name: otc-grafana
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-otc_grafana_dev_password}
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_HOST_PORT:-3030}:3000"
+    networks:
+      - otc-net
+    depends_on:
+      prometheus:
+        condition: service_healthy
+      jaeger:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
+  # ── n8n — workflow automation, talks only to the Gateway REST API (never
+  #    to a database or broker directly — see specs/shared/n8n-workflows.md).
+  #    Persists its own workflow state in the dedicated `n8n` MySQL database.
+  n8n:
+    image: n8nio/n8n:2.36.2
+    container_name: otc-n8n
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      GENERIC_TIMEZONE: ${TZ:-Europe/Madrid}
+      DB_TYPE: mysqldb
+      DB_MYSQLDB_HOST: mysql
+      DB_MYSQLDB_PORT: 3306
+      DB_MYSQLDB_DATABASE: ${MYSQL_DB_N8N:-n8n}
+      DB_MYSQLDB_USER: ${MYSQL_USER:-otc_app}
+      DB_MYSQLDB_PASSWORD: ${MYSQL_PASSWORD:-otc_app_dev_password}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-otc_n8n_dev_encryption_key_change_me}
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-false}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:-otc_n8n_dev_password}
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:${N8N_HOST_PORT:-5678}/
+      N8N_RUNNERS_ENABLED: "true"
+    ports:
+      - "${N8N_HOST_PORT:-5678}:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - otc-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      # /healthz/readiness (not /healthz) also checks the MySQL connection.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz/readiness"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ── SonarQube — opt-in only: `pnpm dc:up:sonar` (profile "sonar"). Not
+  #    started by `pnpm dc:up:infra` — ~1.5 GB RAM is too much to pay by
+  #    default every session. ───────────────────────────────────────────────
+  sonarqube:
+    image: sonarqube:26.8.0.126808-community
+    container_name: otc-sonarqube
+    restart: unless-stopped
+    profiles: ["sonar"]
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_logs:/opt/sonarqube/logs
+      - sonarqube_extensions:/opt/sonarqube/extensions
+    ports:
+      - "${SONARQUBE_HOST_PORT:-9000}:9000"
+    networks:
+      - otc-net
+    healthcheck:
+      # Not just HTTP 200 — /api/system/status returns 200 with
+      # {"status":"STARTING"} for ~90s while Elasticsearch and the compute
+      # engine boot. Assert the body actually says UP (see review defect D2).
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/api/system/status | grep -q '\"status\":\"UP\"'"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 60s

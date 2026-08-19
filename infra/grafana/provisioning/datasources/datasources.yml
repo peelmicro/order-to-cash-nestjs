@@ -1,0 +1,21 @@
+# Order-To-Cash — Grafana datasource provisioning.
+#
+# Provisions Prometheus (metrics) and Jaeger (traces) so Grafana is
+# verifiable immediately after `docker compose up`. Dashboards are phase 22
+# — deliberately not created here.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+
+  - name: Jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    editable: true

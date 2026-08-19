@@ -10,10 +10,10 @@
 
 ## Goal
 
-Next up: feature `infra_compose` (id 4, phase 4) — `docker-compose.infra.yml`
-with MySQL (3 databases), MongoDB, Kafka (KRaft), Redpanda Console, NATS (core),
-n8n, OTel Collector, Jaeger, Prometheus, Grafana; SonarQube behind a profile.
-Then `messaging_topology` (id 5) creates the topics and DLQs from `asyncapi.yaml`.
+Next up: phase 5 — `monorepo_scaffold` (id 6), `shared_kernel` (id 7),
+`contracts_package` (id 8). First decision on entry: TypeScript major version
+(`typescript@latest` resolves to 7.x; NestJS 11 depends on decorators +
+`emitDecoratorMetadata` — pin 5.x unless 7 is verified against `@nestjs/cli`).
 
 ## Decisions taken this session
 
@@ -22,6 +22,11 @@ Then `messaging_topology` (id 5) creates the topics and DLQs from `asyncapi.yaml
 None.
 
 ## Notes
+
+- **Leader lesson (D2, twice):** `progress/current.md` must be updated at every
+  feature status transition, not at session close. The reviewer checks C2 on
+  every pass; keep current.md in lockstep with `feature_list.json` — update both
+  in the same breath.
 
 ---
 

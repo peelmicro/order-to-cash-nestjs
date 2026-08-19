@@ -49,16 +49,39 @@ Two things built here are meant to be reused verbatim by #8 and #9: the stack-ag
 ```bash
 git clone https://github.com/peelmicro/order-to-cash-nestjs.git
 cd order-to-cash-nestjs
-nvm use          # -> Now using node v24.19.0
-node -v && pnpm -v
+nvm use            # -> Now using node v24.19.0
+cp .env.example .env
 ```
 
-There is nothing to install or run yet — the monorepo is scaffolded in Phase 5.
-What you *can* run is the harness state check:
+## Running the infrastructure
+
+The application services arrive in later phases; the infrastructure stack runs now:
 
 ```bash
+pnpm dc:up:infra   # 10 containers + a one-shot kafka-init job
 ./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
 ```
+
+| UI | URL |
+|---|---|
+| Redpanda Console (Kafka topics + DLQs) | http://localhost:8080 |
+| Jaeger (traces) | http://localhost:16686 |
+| Grafana | http://localhost:3030 |
+| Prometheus | http://localhost:9090 |
+| n8n | http://localhost:5678 |
+| SonarQube (optional) | http://localhost:9000 — `pnpm dc:up:sonar` |
+
+Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8,
+Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0,
+Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2) so the sibling assessments
+reproduce the same stack. The `kafka-init` one-shot container **derives the six
+topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)**
+— the spec is the source of truth, and topic drift fails loudly instead of
+passing silently. Re-run it any time with `pnpm kafka:topics`.
+
+> **Deviation from the task document:** MongoDB is 8.3.8 rather than the
+> mandated 7.x — version 7 was current when the task was written; nothing in the
+> specification depends on 7-only behaviour, and the deviation is deliberate.
 
 ## How this is being built
 
@@ -113,7 +136,7 @@ test matrix are green.
 | 1 | Environment & repository | ✅ |
 | 2 | Harness layer (`AGENTS.md`, `feature_list.json`, `init.sh`, `progress/`, agents) | ✅ |
 | 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ✅ |
-| 4 | Infrastructure compose + Kafka topics & NATS subjects | ⬜ |
+| 4 | Infrastructure compose + Kafka topics & NATS subjects | ✅ |
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ⬜ |
 | 6 | Database entities (orders, fulfillment, billing) | ⬜ |
 | 7 | Deterministic seed job | ⬜ |
