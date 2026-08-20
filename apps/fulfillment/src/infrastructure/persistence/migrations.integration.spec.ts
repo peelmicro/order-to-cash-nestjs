@@ -96,6 +96,20 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
     ]);
   });
 
+  it('asserts the (published_at, seq) index exists on outbox — the relay poll (design.md §5.2) must be an index scan', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'outbox' AND index_name = 'idx_outbox_unpublished_seq'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'published_at',
+      'seq',
+    ]);
+  });
+
   it('asserts the (order_reference, status) index exists on reservations — compensation and idempotent-despatch lookups must be index scans', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT seq_in_index, column_name FROM information_schema.statistics
@@ -208,19 +222,24 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
     });
 
     const eventId = randomUUID();
+    const causationId = randomUUID();
     const payload = {
       orderReference: 'ORD-000001',
       companyCode: 'COM-0001',
       reservations: [{ productCode: 'PROD-0001', units: 10, reservationId }],
     };
+    // outbox.occurred_at is datetime(3) (design.md §3.2) — round-trip the
+    // millisecond component too.
+    const occurredAtWithMs = new Date(Math.floor(Date.now() / 1000) * 1000 + 123);
     await db.insert(schema.outbox).values({
       id: randomUUID(),
       eventId,
       eventType: 'stock.reserved.v1',
       aggregateId: stockId,
       correlationId: despatchId,
+      causationId,
       payload,
-      occurredAt: nowUtc,
+      occurredAt: occurredAtWithMs,
       publishedAt: null,
       createdAt: nowUtc,
     });
@@ -230,10 +249,14 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       eventType: 'stock.reserved.v1',
       aggregateId: stockId,
       correlationId: despatchId,
+      causationId,
       publishedAt: null,
+      traceParent: null,
     });
     expect(outboxRow?.payload).toEqual(payload);
-    expect(outboxRow?.occurredAt.getTime()).toBe(nowUtc.getTime());
+    expect(outboxRow?.occurredAt.getTime()).toBe(occurredAtWithMs.getTime());
+    expect(outboxRow?.seq).toEqual(expect.any(Number));
+    expect(outboxRow?.seq).toBeGreaterThan(0);
 
     await db.insert(schema.processedEvents).values({
       id: randomUUID(),
@@ -308,6 +331,7 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       eventType: 'stock.released.v1',
       aggregateId: stockId,
       correlationId: stockId,
+      causationId: randomUUID(),
       payload: { orderReference: 'ORD-000002' },
       occurredAt: now,
       publishedAt: null,
@@ -321,6 +345,7 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
         eventType: 'stock.released.v1',
         aggregateId: stockId,
         correlationId: stockId,
+        causationId: randomUUID(),
         payload: { orderReference: 'ORD-000002' },
         occurredAt: now,
         publishedAt: null,

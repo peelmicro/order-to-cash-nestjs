@@ -42,6 +42,8 @@ import { seedFulfillmentSagas, seedFulfillmentStock } from './writers/fulfillmen
 import { seedBillingCredits, seedBillingSagas } from './writers/billing-db.writer';
 import { seedMongoTimelines, orderTimelineCollection } from './writers/mongo.writer';
 import { verifySeed, type VerificationSummary } from './verify';
+import { OutboxRelay, type OutboxRelayResult } from '../../orders/src/infrastructure/outbox/outbox-relay';
+import type { FactPublisher, PublishableFact } from '../../orders/src/application/ports/fact-publisher.port';
 
 const MYSQL_IMAGE = 'mysql:8.4.11';
 const MONGO_IMAGE = 'mongo:8.3.8';
@@ -213,5 +215,67 @@ describe('apps/seed — full seed against disposable MySQL + MongoDB (Testcontai
     expect(Number(ordersUnpublished[0]?.n)).toBe(0);
     expect(Number(fulfillmentUnpublished[0]?.n)).toBe(0);
     expect(Number(billingUnpublished[0]?.n)).toBe(0);
+  }, 300_000);
+
+  it('the relay finds no unpublished record in any of the three seeded databases', async () => {
+    // A fake publisher that must never be invoked — the seed pre-publishes
+    // every row on purpose (design.md §2, "the seeded databases have
+    // nothing to publish"), so a real broker is neither needed nor wanted
+    // here.
+    class NeverCalledFactPublisher implements FactPublisher {
+      calls = 0;
+      async publish(_facts: readonly PublishableFact[]): Promise<void> {
+        this.calls++;
+      }
+    }
+
+    const relayConfig = { enabled: true, pollIntervalMs: 0, batchSize: 100, publishTimeoutMs: 5_000 };
+    const clock = { now: () => new Date() };
+
+    // `OutboxRelay` is typed against apps/orders' own `OrdersDb`. The
+    // fulfillment/billing handles below are cast to it deliberately: the
+    // three `outbox` schemas are proven byte-identical by
+    // `outbox-parity.spec.ts` (OI11), so the SQL `OutboxRelay` generates
+    // from the Orders-defined `outbox` table object is valid against any
+    // of the three databases — this cast is the mechanism, the parity test
+    // is the guarantee that makes it safe.
+    const handles: [name: string, db: unknown][] = [
+      ['orders', ordersDb],
+      ['fulfillment', fulfillmentDb],
+      ['billing', billingDb],
+    ];
+
+    for (const [name, db] of handles) {
+      const publisher = new NeverCalledFactPublisher();
+      const relay = new OutboxRelay({
+        db: db as ConstructorParameters<typeof OutboxRelay>[0]['db'],
+        publisher,
+        clock,
+        config: relayConfig,
+      });
+
+      const result: OutboxRelayResult = await relay.runOnce();
+
+      expect(result, `${name}: the relay claimed an unpublished record`).toEqual({ claimed: 0, published: 0 });
+      expect(publisher.calls, `${name}: the fake publisher was called`).toBe(0);
+    }
+  }, 300_000);
+
+  it('every seeded outbox row carries a causationId', async () => {
+    const [[ordersMissing], [fulfillmentMissing], [billingMissing]] = await Promise.all([
+      ordersPool.query<mysql.RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM outbox WHERE causation_id IS NULL OR causation_id = ''`,
+      ),
+      fulfillmentPool.query<mysql.RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM outbox WHERE causation_id IS NULL OR causation_id = ''`,
+      ),
+      billingPool.query<mysql.RowDataPacket[]>(
+        `SELECT COUNT(*) AS n FROM outbox WHERE causation_id IS NULL OR causation_id = ''`,
+      ),
+    ]);
+
+    expect(Number(ordersMissing[0]?.n)).toBe(0);
+    expect(Number(fulfillmentMissing[0]?.n)).toBe(0);
+    expect(Number(billingMissing[0]?.n)).toBe(0);
   }, 300_000);
 });

@@ -47,3 +47,10 @@ catalog:
   # rest of the testcontainers family above.
   mongodb: ^7.5.0
   "@testcontainers/mongodb": ^12.1.0
+  # Kafka fact-stream producer (apps/orders — the outbox relay,
+  # outbox_and_idempotency feature). @testcontainers/kafka pinned to the
+  # same major as the rest of the testcontainers family above; the
+  # container it drives is pinned separately, to apache/kafka:4.3.1, the
+  # same tag docker-compose.infra.yml uses (design.md §9).
+  kafkajs: ^2.2.4
+  "@testcontainers/kafka": ^12.1.0

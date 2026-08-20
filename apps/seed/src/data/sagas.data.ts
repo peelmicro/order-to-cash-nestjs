@@ -22,13 +22,17 @@
 // fact (order id / stock item id / credit line id / despatch id / invoice
 // id), matching the convention specs/shared/asyncapi.yaml's own examples
 // use — never the order id for facts Orders did not produce itself.
-// **causationId** is NOT written here: the `outbox` table has no
-// `causation_id` column in any of the three committed schemas yet (see each
-// schema's own header comment — that decision belongs to feature 14,
-// `outbox_and_idempotency`, landing in all three DBs together), and the
-// OpenAPI `TimelineEntry` read-model shape does not carry it either. Only
-// `eventId`/`eventType`/`aggregateId`/`correlationId`/`occurredAt`/`payload`
-// are persisted, matching both committed shapes exactly.
+// **causationId** IS written here (feature 14, `outbox_and_idempotency`
+// — the `causation_id` column now exists in all three committed schemas).
+// The seed has no commands, so it follows the written rule of
+// specs/outbox_and_idempotency/design.md §3.5: the two root facts
+// (`order.placed.v1`, `payment.received.v1`) cite a synthetic deterministic
+// command id (`deterministicId('order:<seq>:command:orders.create')` /
+// `...:command:payment.register')`); every other fact cites the **eventId
+// of the fact that triggered it** rather than a fabricated command id —
+// one link shorter than a live saga's causal chain (where a responder's
+// fact would cite the triggering command's `x-request-id`), but complete
+// and reconstructible.
 import { DespatchReference, InvoiceReference, OrderNumber } from '@otc/shared-kernel';
 import type {
   CreditApprovedPayload,
@@ -72,6 +76,10 @@ export interface OutboxFixture {
   eventType: string;
   aggregateId: string;
   correlationId: string;
+  // The eventId of the causing fact, or the id of the causing command
+  // (R12) — see the causal-chain table of design.md §3.5, fabricated per
+  // this file's header comment.
+  causationId: string;
   // `object`, not `Record<string, unknown>` — the imported @otc/contracts
   // payload interfaces (OrderPlacedPayload, StockReservedPayload, ...) have
   // no index signature, and TS refuses to assign a closed interface to a
@@ -381,6 +389,19 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
   const creditReleasedEventId = eventId('credit.released.v1');
   const orderCompletedEventId = eventId('order.completed.v1');
 
+  // The causal chain the seed must fabricate (design.md §3.5): the two
+  // roots cite a synthetic command id, every other fact cites the eventId
+  // of the fact that triggered it.
+  const orderPlacedCausationId = deterministicId(`order:${sequence}:command:orders.create`);
+  const stockReservedCausationId = orderPlacedEventId;
+  const creditApprovedCausationId = stockReservedEventId;
+  const orderConfirmedCausationId = creditApprovedEventId;
+  const orderDespatchedCausationId = creditApprovedEventId;
+  const invoiceIssuedCausationId = orderDespatchedEventId;
+  const paymentReceivedCausationId = deterministicId(`order:${sequence}:command:payment.register`);
+  const creditReleasedCausationId = paymentReceivedEventId;
+  const orderCompletedCausationId = creditReleasedEventId;
+
   const ordersOutbox: OutboxFixture[] = [
     {
       id: outboxId('order.placed.v1'),
@@ -388,6 +409,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.placed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: orderPlacedCausationId,
       payload: orderPlacedPayload,
       occurredAt: t0,
       publishedAt: t0,
@@ -398,6 +420,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.confirmed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: orderConfirmedCausationId,
       payload: orderConfirmedPayload,
       occurredAt: tOrderConfirmed,
       publishedAt: tOrderConfirmed,
@@ -408,6 +431,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.completed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: orderCompletedCausationId,
       payload: orderCompletedPayload,
       occurredAt: tCompleted,
       publishedAt: tCompleted,
@@ -421,6 +445,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'stock.reserved.v1',
       aggregateId: firstStockItemId,
       correlationId: orderId,
+      causationId: stockReservedCausationId,
       payload: stockReservedPayload,
       occurredAt: tStockReserved,
       publishedAt: tStockReserved,
@@ -431,6 +456,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.despatched.v1',
       aggregateId: despatchId,
       correlationId: orderId,
+      causationId: orderDespatchedCausationId,
       payload: orderDespatchedPayload,
       occurredAt: tDespatched,
       publishedAt: tDespatched,
@@ -444,6 +470,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'credit.approved.v1',
       aggregateId: credit.id,
       correlationId: orderId,
+      causationId: creditApprovedCausationId,
       payload: creditApprovedPayload,
       occurredAt: tCreditApproved,
       publishedAt: tCreditApproved,
@@ -454,6 +481,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'invoice.issued.v1',
       aggregateId: invoiceId,
       correlationId: orderId,
+      causationId: invoiceIssuedCausationId,
       payload: invoiceIssuedPayload,
       occurredAt: tInvoiceIssued,
       publishedAt: tInvoiceIssued,
@@ -464,6 +492,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'payment.received.v1',
       aggregateId: invoiceId,
       correlationId: orderId,
+      causationId: paymentReceivedCausationId,
       payload: paymentReceivedPayload,
       occurredAt: tPaymentReceived,
       publishedAt: tPaymentReceived,
@@ -474,6 +503,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'credit.released.v1',
       aggregateId: credit.id,
       correlationId: orderId,
+      causationId: creditReleasedCausationId,
       payload: creditReleasedPayload,
       occurredAt: tCreditReleased,
       publishedAt: tCreditReleased,
@@ -637,6 +667,14 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
   const stockReleasedEventId = eventId('stock.released.v1');
   const orderCancelledEventId = eventId('order.cancelled.v1');
 
+  // The causal chain the seed must fabricate (design.md §3.5) — Path B
+  // (release, then cancel).
+  const orderPlacedCausationId = deterministicId(`order:${sequence}:command:orders.create`);
+  const stockReservedCausationId = orderPlacedEventId;
+  const creditRejectedCausationId = stockReservedEventId;
+  const stockReleasedCausationId = creditRejectedEventId;
+  const orderCancelledCausationId = stockReleasedEventId;
+
   const orderCancelledPayload: OrderCancelledPayload = {
     orderReference,
     retailerCode,
@@ -661,6 +699,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.placed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: orderPlacedCausationId,
       payload: orderPlacedPayload,
       occurredAt: t0,
       publishedAt: t0,
@@ -671,6 +710,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'order.cancelled.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: orderCancelledCausationId,
       payload: orderCancelledPayload,
       occurredAt: tCancelled,
       publishedAt: tCancelled,
@@ -684,6 +724,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'stock.reserved.v1',
       aggregateId: firstStockItemId,
       correlationId: orderId,
+      causationId: stockReservedCausationId,
       payload: stockReservedPayload,
       occurredAt: tStockReserved,
       publishedAt: tStockReserved,
@@ -694,6 +735,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'stock.released.v1',
       aggregateId: firstStockItemId,
       correlationId: orderId,
+      causationId: stockReleasedCausationId,
       payload: stockReleasedPayload,
       occurredAt: tStockReleased,
       publishedAt: tStockReleased,
@@ -707,6 +749,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventType: 'credit.rejected.v1',
       aggregateId: credit.id,
       correlationId: orderId,
+      causationId: creditRejectedCausationId,
       payload: creditRejectedPayload,
       occurredAt: tCreditRejected,
       publishedAt: tCreditRejected,

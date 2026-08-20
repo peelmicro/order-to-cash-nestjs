@@ -98,6 +98,20 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
     ]);
   });
 
+  it('asserts the (published_at, seq) index exists on outbox — the relay poll (design.md §5.2) must be an index scan', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'outbox' AND index_name = 'idx_outbox_unpublished_seq'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'published_at',
+      'seq',
+    ]);
+  });
+
   it('asserts the (credit_id, order_reference) index exists on credit_items — the ledger derivation lookups must be index scans', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT seq_in_index, column_name FROM information_schema.statistics
@@ -243,20 +257,25 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
     expect(payment?.createdAt.getTime()).toBe(nowUtc.getTime());
 
     const eventId = randomUUID();
+    const causationId = randomUUID();
     const payload = {
       invoiceReference: 'INV-000001',
       orderReference: 'ORD-000001',
       totalAmount: 50_000,
       lines: [{ productCode: 'PROD-0001', units: 10, price: 5_000 }],
     };
+    // outbox.occurred_at is datetime(3) (design.md §3.2) — round-trip the
+    // millisecond component too.
+    const occurredAtWithMs = new Date(Math.floor(Date.now() / 1000) * 1000 + 123);
     await db.insert(schema.outbox).values({
       id: randomUUID(),
       eventId,
       eventType: 'invoice.issued.v1',
       aggregateId: invoiceId,
       correlationId: creditId,
+      causationId,
       payload,
-      occurredAt: nowUtc,
+      occurredAt: occurredAtWithMs,
       publishedAt: null,
       createdAt: nowUtc,
     });
@@ -266,10 +285,14 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
       eventType: 'invoice.issued.v1',
       aggregateId: invoiceId,
       correlationId: creditId,
+      causationId,
       publishedAt: null,
+      traceParent: null,
     });
     expect(outboxRow?.payload).toEqual(payload);
-    expect(outboxRow?.occurredAt.getTime()).toBe(nowUtc.getTime());
+    expect(outboxRow?.occurredAt.getTime()).toBe(occurredAtWithMs.getTime());
+    expect(outboxRow?.seq).toEqual(expect.any(Number));
+    expect(outboxRow?.seq).toBeGreaterThan(0);
 
     await db.insert(schema.processedEvents).values({
       id: randomUUID(),
@@ -430,6 +453,7 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
       eventType: 'payment.received.v1',
       aggregateId: invoiceId,
       correlationId: invoiceId,
+      causationId: randomUUID(),
       payload: { orderReference: 'ORD-000002' },
       occurredAt: now,
       publishedAt: null,
@@ -443,6 +467,7 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
         eventType: 'payment.received.v1',
         aggregateId: invoiceId,
         correlationId: invoiceId,
+        causationId: randomUUID(),
         payload: { orderReference: 'ORD-000002' },
         occurredAt: now,
         publishedAt: null,

@@ -97,9 +97,25 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
     ]);
   });
 
+  it('asserts the (published_at, seq) index exists on outbox — the relay poll (design.md §5.2) must be an index scan', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'outbox' AND index_name = 'idx_outbox_unpublished_seq'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'published_at',
+      'seq',
+    ]);
+  });
+
   it('round-trips one row per table via typed Drizzle insert/select, field-level equality including outbox JSON payload and datetime handling', async () => {
     // MySQL DATETIME has second precision — strip milliseconds so the
-    // round-trip comparison below isn't flaky on truncation.
+    // round-trip comparison below isn't flaky on truncation. `outbox.occurred_at`
+    // is the one exception: it is datetime(3) (design.md §3.2), so its own
+    // round-trip below uses a separate, millisecond-bearing timestamp.
     const nowUtc = new Date(Math.floor(Date.now() / 1000) * 1000);
 
     const currencyId = randomUUID();
@@ -256,6 +272,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
     });
 
     const eventId = randomUUID();
+    const causationId = randomUUID();
     const payload = {
       orderReference: 'ORD-000001',
       retailerCode: 'RET-0001',
@@ -264,14 +281,19 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
       totalAmount: 12_000,
       lines: [{ productCode: 'PROD-0001', quantity: 1, unitPrice: 12_345 }],
     };
+    // outbox.occurred_at is datetime(3) (design.md §3.2) — round-trip the
+    // millisecond component too, rather than the second-truncated nowUtc
+    // every other table's datetime(0) columns use above.
+    const occurredAtWithMs = new Date(Math.floor(Date.now() / 1000) * 1000 + 123);
     await db.insert(schema.outbox).values({
       id: randomUUID(),
       eventId,
       eventType: 'order.placed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId,
       payload,
-      occurredAt: nowUtc,
+      occurredAt: occurredAtWithMs,
       publishedAt: null,
       createdAt: nowUtc,
     });
@@ -281,10 +303,17 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
       eventType: 'order.placed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId,
       publishedAt: null,
+      traceParent: null,
     });
     expect(outboxRow?.payload).toEqual(payload);
-    expect(outboxRow?.occurredAt.getTime()).toBe(nowUtc.getTime());
+    expect(outboxRow?.occurredAt.getTime()).toBe(occurredAtWithMs.getTime());
+    // `seq` is store-assigned (design.md §3.2) — the test did not supply
+    // it, so its mere presence as a positive number is what proves the
+    // AUTO_INCREMENT column exists and works.
+    expect(outboxRow?.seq).toEqual(expect.any(Number));
+    expect(outboxRow?.seq).toBeGreaterThan(0);
 
     await db.insert(schema.processedEvents).values({
       id: randomUUID(),
@@ -315,6 +344,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
       eventType: 'order.confirmed.v1',
       aggregateId: orderId,
       correlationId: orderId,
+      causationId: randomUUID(),
       payload: { orderReference: 'ORD-000002' },
       occurredAt: now,
       publishedAt: null,
@@ -328,6 +358,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
         eventType: 'order.confirmed.v1',
         aggregateId: orderId,
         correlationId: orderId,
+        causationId: randomUUID(),
         payload: { orderReference: 'ORD-000002' },
         occurredAt: now,
         publishedAt: null,

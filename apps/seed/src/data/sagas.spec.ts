@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Money, OrderNumber } from '@otc/shared-kernel';
+import { deterministicId } from '../deterministic';
 import { SAGAS, COMPLETED_SAGAS, CANCELLED_SAGAS } from './sagas.data';
 
 describe('feature_list.json #12 acceptance: "a few completed orders and one cancelled order"', () => {
@@ -82,6 +83,41 @@ describe('every seeded outbox row is already published (task prompt: "the relay 
     for (const row of allRows) {
       expect(row.publishedAt).toBeInstanceOf(Date);
       expect(row.publishedAt.getTime()).toBeGreaterThanOrEqual(row.occurredAt.getTime());
+    }
+  });
+});
+
+describe('OI1/R12 (design.md §3.5): every seeded fact carries the fabricated causal chain', () => {
+  it.each(SAGAS.map((saga) => [saga.orderReference, saga] as const))(
+    '%s: every fact carries a non-empty causationId, and every non-root causationId equals the eventId of another fact of the same saga',
+    (_reference, saga) => {
+      const allRows = [...saga.ordersOutbox, ...saga.fulfillmentOutbox, ...saga.billingOutbox];
+      const eventIds = new Set(allRows.map((row) => row.eventId));
+      const rootCommandIds = new Set([
+        deterministicId(`order:${saga.sequence}:command:orders.create`),
+        deterministicId(`order:${saga.sequence}:command:payment.register`),
+      ]);
+
+      for (const row of allRows) {
+        expect(row.causationId).toBeTruthy();
+        expect(eventIds.has(row.causationId) || rootCommandIds.has(row.causationId)).toBe(true);
+      }
+    },
+  );
+
+  it('order.placed.v1 cites the synthetic orders.create command id (a root of the saga)', () => {
+    for (const saga of SAGAS) {
+      const orderPlaced = saga.ordersOutbox.find((row) => row.eventType === 'order.placed.v1');
+      expect(orderPlaced?.causationId).toBe(deterministicId(`order:${saga.sequence}:command:orders.create`));
+    }
+  });
+
+  it('payment.received.v1 cites the synthetic payment.register command id (the second root, completed sagas only)', () => {
+    for (const saga of COMPLETED_SAGAS) {
+      const paymentReceived = saga.billingOutbox.find((row) => row.eventType === 'payment.received.v1');
+      expect(paymentReceived?.causationId).toBe(
+        deterministicId(`order:${saga.sequence}:command:payment.register`),
+      );
     }
   });
 });

@@ -46,6 +46,8 @@ Two things built here are meant to be reused verbatim by #8 and #9: the stack-ag
 | pnpm | 11.x | via corepack: `corepack enable && corepack install -g pnpm@latest` |
 | Docker + Compose | latest | required from Phase 4 onwards |
 
+> **If you run more than one Docker daemon** (e.g. Docker Desktop *and* the system Engine), be aware that `docker` follows your active **context** while Testcontainers does not — it reads `DOCKER_HOST`, then falls back to `/var/run/docker.sock`. The integration tests can therefore run against a different daemon than your compose stack, and their disposable containers will be invisible to a plain `docker ps`. Everything still works; to watch them, point the CLI at the same socket: `DOCKER_HOST=unix:///var/run/docker.sock docker ps`.
+
 ```bash
 git clone https://github.com/peelmicro/order-to-cash-nestjs.git
 cd order-to-cash-nestjs
@@ -150,7 +152,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ✅ |
 | 6 | Database entities (orders, fulfillment, billing) | ✅ |
 | 7 | Deterministic seed job | ✅ |
-| 8 | Orders service + saga orchestrator | 🚧 aggregate done; outbox, acceptance, orchestrator pending |
+| 8 | Orders service + saga orchestrator | 🚧 aggregate + outbox/idempotency done; acceptance, orchestrator pending |
 | 9 | Fulfillment service | ⬜ |
 | 10 | Billing service | ⬜ |
 | 11 | Notifications service | ⬜ |

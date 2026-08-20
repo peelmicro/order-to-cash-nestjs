@@ -8,6 +8,13 @@
       "when": 1787201639200,
       "tag": "0000_brown_hammerhead",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "5",
+      "when": 1787237911494,
+      "tag": "0001_outbox_causation_seq_trace_parent",
+      "breakpoints": true
     }
   ]
 }

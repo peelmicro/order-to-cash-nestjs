@@ -125,6 +125,7 @@ export async function seedFulfillmentSagas(
             eventType: row.eventType,
             aggregateId: row.aggregateId,
             correlationId: row.correlationId,
+            causationId: row.causationId,
             payload: row.payload,
             occurredAt: row.occurredAt,
             publishedAt: row.publishedAt,

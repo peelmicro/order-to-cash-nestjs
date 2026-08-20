@@ -22,11 +22,13 @@
     "@otc/contracts": "workspace:*",
     "@otc/shared-kernel": "workspace:*",
     "drizzle-orm": "catalog:",
+    "kafkajs": "catalog:",
     "mysql2": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:"
   },
   "devDependencies": {
+    "@testcontainers/kafka": "catalog:",
     "@testcontainers/mysql": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",

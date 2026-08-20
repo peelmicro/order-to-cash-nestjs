@@ -199,7 +199,7 @@
       "phase": 8,
       "title": "Transactional outbox + polling relay + idempotent consumer pattern",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "aggregate row and outbox row written in one transaction",
         "relay publishes to Kafka keyed by correlationId and stamps publishedAt",

@@ -15,6 +15,9 @@ catalogs:
     '@nestjs/platform-express':
       specifier: ^11.2.1
       version: 11.2.1
+    '@testcontainers/kafka':
+      specifier: ^12.1.0
+      version: 12.1.0
     '@testcontainers/mongodb':
       specifier: ^12.1.0
       version: 12.1.0
@@ -36,6 +39,9 @@ catalogs:
     drizzle-orm:
       specifier: ^0.45.2
       version: 0.45.2
+    kafkajs:
+      specifier: ^2.2.4
+      version: 2.2.4
     mongodb:
       specifier: ^7.5.0
       version: 7.5.0
@@ -297,6 +303,9 @@ importers:
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.2(mysql2@3.23.3(@types/node@24.13.3))
+      kafkajs:
+        specifier: 'catalog:'
+        version: 2.2.4
       mysql2:
         specifier: 'catalog:'
         version: 3.23.3(@types/node@24.13.3)
@@ -307,6 +316,9 @@ importers:
         specifier: 'catalog:'
         version: 7.8.2
     devDependencies:
+      '@testcontainers/kafka':
+        specifier: 'catalog:'
+        version: 12.1.0(supports-color@10.2.2)
       '@testcontainers/mysql':
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)
@@ -1774,6 +1786,9 @@ packages:
 
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
+  '@testcontainers/kafka@12.1.0':
+    resolution: {integrity: sha512-hllpKME5id18IIhwvzibVp+CG7eEvrrzlTZ0HHai5HzXpZe1/fqHWN40GZAWssuowpmVgBDbIwcwhuDdmWFr8A==}
 
   '@testcontainers/mongodb@12.1.0':
     resolution: {integrity: sha512-ke/WBhHAFzGJ4Yzdt/G55fKfU51TTq8hvAsOxOFVHi6LwgCoFpAM2vyxXBsG1i4aGeJ2gH+8HFfRd1cq8EuiQg==}
@@ -3372,6 +3387,10 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
+
+  kafkajs@2.2.4:
+    resolution: {integrity: sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA==}
+    engines: {node: '>=14.0.0'}
 
   keyv@4.5.4:
     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
@@ -6454,6 +6473,16 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@testcontainers/kafka@12.1.0(supports-color@10.2.2)':
+    dependencies:
+      compare-versions: 6.1.1
+      testcontainers: 12.1.0(supports-color@10.2.2)
+    transitivePeerDependencies:
+      - bare-abort-controller
+      - bare-buffer
+      - react-native-b4a
+      - supports-color
+
   '@testcontainers/mongodb@12.1.0(supports-color@10.2.2)':
     dependencies:
       compare-versions: 6.1.1
@@ -8167,6 +8196,8 @@ snapshots:
   json-stable-stringify-without-jsonify@1.0.1: {}
 
   json5@2.2.3: {}
+
+  kafkajs@2.2.4: {}
 
   keyv@4.5.4:
     dependencies:
