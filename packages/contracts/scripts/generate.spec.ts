@@ -35,6 +35,7 @@ describe('generateAll — committed output matches a fresh run', () => {
     }
   });
 
+  // spawnSync tsx: allow cold start under parallel workspace test load
   it(
     'run as a CLI (`tsx scripts/generate.mts`) exits 0, prints a confirmation ' +
       'and leaves the committed files unchanged — proving the exact command ' +
@@ -48,6 +49,7 @@ describe('generateAll — committed output matches a fresh run', () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('contracts:generate — wrote');
     },
+    30_000,
   );
 
   it('main() — writes to the given directory and logs a confirmation, in-process', async () => {

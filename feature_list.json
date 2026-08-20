@@ -135,7 +135,7 @@
       "phase": 6,
       "title": "Drizzle schema + migrations for otc_orders (incl. outbox, processed_events)",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "migrations run from empty",
         "round-trip integration test per table via Testcontainers"
@@ -147,7 +147,7 @@
       "phase": 6,
       "title": "Drizzle schema + migrations for otc_fulfillment",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "migrations run from empty",
         "round-trip integration test per table"
@@ -159,7 +159,7 @@
       "phase": 6,
       "title": "Drizzle schema + migrations for otc_billing",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "migrations run from empty",
         "round-trip integration test per table"

@@ -5,17 +5,16 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — phase 5 complete (features 6, 7, 8 all done, each approved with real probes)
-`progress/impl_monorepo_scaffold.md` for the full report (TS7 spike verdict,
-everything scaffolded, dependencies, verification output).
-**Session started:** 2026-08-19
+**Status:** idle — phase 6 complete (db_orders, db_fulfillment, db_billing all first-pass; contracts flake fixed by test_maintainer and verified under full parallel quality load)
+**Session started:** —
 
 ## Goal
 
-pnpm workspaces scaffold: tsconfig base, ESLint/Prettier, the domain-purity
-`no-restricted-imports` rule (proven to fail before trusting it), `pnpm quality`,
-and the 6 NestJS + 1 Nuxt app skeletons. Then `shared_kernel` (id 7) and
-`contracts_package` (id 8).
+Phase 6: Drizzle schemas + migrations, one feature per database —
+`db_orders` (9) → `db_fulfillment` (10) → `db_billing` (11). Each ends with a
+Testcontainers integration test migrating a real MySQL from empty and
+round-tripping one row per table. Outbox + processed_events in every DB.
+No FK ever crosses a service boundary.
 
 ## Decisions taken this session
 

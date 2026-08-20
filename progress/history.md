@@ -506,3 +506,166 @@ the spec's `HealthResponse` — to be retired at the gateway feature);
 
 **Phase 5 complete** — monorepo_scaffold, shared_kernel, contracts_package
 all done.
+
+---
+
+## db_orders (id 9, phase 6) — 2026-08-20
+
+**Effort:** 1 session, ~1.5h wall-clock — implementation ~1h (schema files,
+migrator, committed `0000_*` SQL, 5 integration tests; file timestamps
+06:17–06:30, drizzle journal stamped 06:26 local), review ~0.5h.
+**APPROVED on the first pass**, zero blocking defects; 2 advisory notes
+recorded for `outbox_and_idempotency` (id 14).
+**Spec:** n/a (sdd: false). Contract = 2-item acceptance list in
+`feature_list.json` + the task prompt's authoritative table shapes +
+`specs/shared/domain-model.md` §3 / CLAUDE.md conventions, which the
+reviewer used as the authority.
+**Tests:** `migrations.integration.spec.ts` — 5/5 via Testcontainers
+`mysql:8.4.11` (same pin as compose), re-run independently by the reviewer
+(11.09s): migrations from empty (exact 9-table assert), per-table field-level
+round-trip incl. outbox JSON payload and UTC datetime, `outbox.event_id`
+UNIQUE proven by live ER_DUP_ENTRY, `(event_id, consumer)` composite UNIQUE
+proven both ways (dup pair rejected, same event different consumer accepted),
+`(published_at, occurred_at)` index asserted via information_schema.
+**Gates:** `pnpm quality` green, `./init.sh` exit 0, ESLint domain-purity
+untouched and clean; no Jest; `drizzle-kit push` never used — committed SQL +
+own migrator (`runOrdersMigrations`) is the single path for CLI and test.
+**Conventions locked for db_fulfillment/db_billing:** same two-config Vitest
+split (`test:integration` outside `pnpm quality`), same script names, catalog
+pins for drizzle-orm/mysql2/drizzle-kit/testcontainers already in
+`pnpm-workspace.yaml`, `<APP>_DB_HOST` env pattern.
+**Carried forward to feature 14 (binding, see `progress/review_db_orders.md`):**
+(1) `outbox` lacks `causation_id` — R11/R12 need it stored (new `0001_*`
+column or payload-as-full-envelope, decide there); (2) `occurred_at` is
+DATETIME(0) — relay poll needs a deterministic tiebreak (sequence column or
+`datetime(3)` + id); projector R50 ordering should use the envelope's
+ISO-8601 `occurredAt`, not this column.
+**Process note:** `progress/current.md` was stale ("idle — phase 5 complete")
+throughout the feature — D2 lesson, third occurrence; leader to reset it at
+session close.
+
+---
+
+## db_fulfillment (id 10, phase 6) — 2026-08-20
+
+**Effort:** 1 session, ~1.25h wall-clock — implementation ~0.75h (schema +
+plumbing file timestamps 06:39–06:41 local, one-pass `drizzle-kit generate`
+thanks to full pattern reuse from db_orders), review ~0.5h.
+**APPROVED on the first pass**, zero blocking defects; 1 advisory recorded for
+`fulfillment_aggregate` (see below).
+**Spec:** n/a (sdd: false). Contract = 2-item acceptance list in
+`feature_list.json` + the task prompt's table shapes +
+`specs/shared/domain-model.md` §4 / CLAUDE.md conventions, which the reviewer
+used as the authority.
+**Tests:** `migrations.integration.spec.ts` — 8/8 via Testcontainers
+`mysql:8.4.11` (same pin as compose), re-run independently by the reviewer
+(12.82s): migrations from empty (exact 6-table assert), per-table field-level
+round-trip incl. outbox JSON payload and UTC datetimes, three live
+ER_DUP_ENTRY probes (`stock (company_code, product_code)` proven composite
+both ways, `outbox.event_id`, `processed_events (event_id, consumer)` proven
+composite both ways), both index-existence asserts
+(`idx_outbox_published_occurred`, `idx_reservations_order_status` with exact
+column order), and a genuine cascade-delete assert for `despatch_items`.
+**Headline check — cross-service purity:** the committed SQL
+(`0000_nappy_mad_thinker.sql`) carries exactly two FKs, both internal
+(`reservations.stock_id` → `stock.id` no-action; `despatch_items.despatch_id`
+→ `despatches.id` cascade). `company_code`/`retailer_code`/`product_code`/
+`order_reference` are plain varchars whose lengths match the orders schema
+byte-for-byte (20/20/30/20).
+**Outbox parity:** `outbox` + `processed_events` byte-identical to db_orders'
+migration (columns, constraints, index) — diffed block-by-block. No
+`causation_id`, correctly parked at feature 14 for all three DBs together.
+**F1 (`reservedUnits <= units`) deliberately NOT a DB CHECK** — recorded in
+`stock.schema.ts` with the aggregate-owns-invariants rationale plus the
+intermediate-states argument. `reservations.status` is varchar + TS union
+(`reserved|released|consumed`), not ENUM, per the orders precedent.
+**Gates:** `pnpm quality` exit 0, `./init.sh` exit 0, domain-purity grep +
+ESLint clean, no Jest, no `drizzle-kit push`; plumbing/scripts/deps diffed
+against apps/orders — zero pattern drift (comment wording only).
+**Advisory for `fulfillment_aggregate` (binding decision there, see
+`progress/review_db_fulfillment.md`):** F8 ("at most one DespatchAdvice per
+orderReference") has no DB unique on `despatches.order_reference` — either add
+it in a `0001_*` migration and catch ER_DUP_ENTRY to keep the
+idempotent-success semantics, or document why the race is impossible.
+
+**Notes for #8 and #9:**
+
+- The second database feature cost half the first (~1.25h vs ~1.5h with zero
+  rejections) purely from pattern reuse — budget the first db feature as the
+  expensive one and copy its plumbing file-for-file.
+- Keep business-identifier column lengths in a single place (or at least
+  cross-assert them): matching `company_code`/`product_code`/`order_reference`
+  widths across service databases is what makes message-carried identifiers
+  safe without FKs.
+
+---
+
+## db_billing (id 11, phase 6) — 2026-08-20
+
+**Effort:** 1 session, ~0.75h wall-clock — implementation ~0.5h (schema file
+timestamps 06:52–06:54 local, one-pass `drizzle-kit generate`, full pattern
+reuse from db_orders/db_fulfillment; impl report 07:00), review ~0.25h.
+**APPROVED on the first pass**, zero blocking defects; 1 REQUIRED follow-up
+(pre-existing, not this feature) + 1 advisory (see below). **Phase 6 complete**
+— all three service databases (otc_orders, otc_fulfillment, otc_billing) done.
+**Spec:** n/a (sdd: false). Contract = 2-item acceptance list in
+`feature_list.json` + the task prompt's table shapes +
+`specs/shared/domain-model.md` §5 / CLAUDE.md conventions.
+**Tests:** `migrations.integration.spec.ts` — 10/10 via Testcontainers
+`mysql:8.4.11` (same pin as compose), re-run independently by the reviewer
+(15.66s): migrations from empty (exact 7-table assert), per-table field-level
+round-trip incl. outbox JSON payload and UTC datetimes, **five** live
+ER_DUP_ENTRY probes (`credits (retailer_code, company_code)` proven composite
+both ways, `invoices.invoice_reference`, `payments.payment_reference` — the
+B10 remittance idempotency key, `outbox.event_id`,
+`processed_events (event_id, consumer)` proven composite both ways), both
+index-existence asserts (`idx_outbox_published_occurred`,
+`idx_credit_items_credit_order` with exact column order), and a genuine
+cascade-delete assert for `invoice_items`.
+**Headline check — cross-service purity:** the committed SQL
+(`0000_brown_hammerhead.sql`) carries exactly three FKs, all internal
+(`credit_items.credit_id` no-action, `invoice_items.invoice_id` cascade,
+`payments.invoice_id` no-action). `retailer_code`/`company_code`/
+`order_reference`/`product_code` plain varchars, widths match the orders
+schema byte-for-byte (20/20/20/30). Money int minor units throughout; the
+only nullable business column is `invoices.paid_at` (B9).
+**Outbox parity:** `outbox` + `processed_events` byte-identical to BOTH
+db_orders and db_fulfillment (columns, constraints, index — six diffs, all
+empty). No `causation_id`, correctly parked at feature 14.
+**B1 deliberately NOT a DB CHECK** — recorded in `credits.schema.ts` with the
+derived-sum-over-the-ledger rationale (stronger than F1's: inexpressible as a
+single-table CHECK even in principle). `credit_items.type` / `invoices.status`
+/ `payments.source` varchar + TS unions (`hold|release|consume`,
+`issued|paid`, `operator|robot|test` — **`robot`, not `n8n`**, the approved
+spec decision, verified in the TS union and exercised live in the round-trip).
+`payments` has no `updated_at` (record-once remittance).
+**Gates:** lint + typecheck + all suites green except the pre-existing
+`packages/contracts` spawnSync timeout flake (see below); `./init.sh` exit 0;
+domain-purity grep + ESLint clean; no Jest; no `drizzle-kit push`; zero
+pattern drift vs siblings (comment wording only; package.json identical
+modulo name).
+**REQUIRED follow-up (owner: leader → test_maintainer, before the next
+feature closes, see `progress/review_db_billing.md`):**
+`packages/contracts` `scripts/check.spec.ts:71` and
+`scripts/generate.spec.ts:38` (spawnSync of cold `tsx`) exceed the 5000ms
+default under a full parallel workspace run — reviewer reproduced it (2
+tests, worse than the implementer's 1) and confirmed 22/22 in isolation and
+with `--testTimeout 30000`, and that `git diff` shows contracts untouched.
+Pre-existing, unrelated — but a flaky `pnpm quality` is a gate people learn
+to ignore. Fix = one/two-line timeout bump.
+**Advisory for the invoice aggregate feature (binding decision there):** B7
+("exactly one invoice per orderReference") has no DB unique on
+`invoices.order_reference` — same shape as db_fulfillment's F8 advisory;
+decide both together (add `UNIQUE` in a `0001_*` + catch ER_DUP_ENTRY, or
+document why the race is impossible).
+
+**Notes for #8 and #9:**
+
+- The third database feature cost half the second (~0.75h vs ~1.25h vs ~1.5h,
+  zero rejections throughout) — pattern reuse compounds; in the .NET and
+  FastAPI runs, budget phase 6 as first-db-expensive and the rest near-free.
+- The two "invariant not in the DB" flavours are worth distinguishing up
+  front: same-row checks a CHECK could express but shouldn't (F1), vs
+  ledger-derived sums no CHECK can express (B1). Static per-column uniqueness
+  (F8/B7 order_reference) is the one class where a DB backstop is genuinely
+  on the table — carry that decision into the aggregate features explicitly.

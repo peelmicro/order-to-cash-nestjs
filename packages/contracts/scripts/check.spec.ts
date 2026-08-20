@@ -68,14 +68,19 @@ describe('contracts:check — checkGenerated', () => {
  * `generate.spec.ts`'s own CLI test.
  */
 describe('contracts:check — CLI, read-only', () => {
-  it('exits 0 and prints OK against the real committed files', () => {
-    const result = spawnSync(tsxBin, ['scripts/check.mts'], {
-      cwd: packageRoot,
-      encoding: 'utf8',
-    });
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('contracts:check OK');
-  });
+  // spawnSync tsx: allow cold start under parallel workspace test load
+  it(
+    'exits 0 and prints OK against the real committed files',
+    () => {
+      const result = spawnSync(tsxBin, ['scripts/check.mts'], {
+        cwd: packageRoot,
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('contracts:check OK');
+    },
+    30_000,
+  );
 });
 
 describe('contracts:check — main(), in-process', () => {
