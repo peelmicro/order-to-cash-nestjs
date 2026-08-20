@@ -4,8 +4,16 @@ packages:
 
 # esbuild's postinstall just downloads its own platform binary — required by
 # Vitest and tsx, both of which are esbuild-based. Safe to allow.
+# cpu-features/protobufjs/ssh2 are transitive deps of dockerode (via
+# testcontainers/@testcontainers/mysql — see db_orders): dockerode's Docker
+# Engine API client, native crypto accel for ssh2 and grpc/protobuf codegen
+# respectively. None run anything project-specific; approved so
+# Testcontainers works the same as it would outside this sandboxed install.
 allowBuilds:
+  cpu-features: true
   esbuild: true
+  protobufjs: true
+  ssh2: true
 
 # Shared devDependency versions for every workspace member. Referenced from
 # package.json files as "catalog:" so the whole monorepo upgrades NestJS,
@@ -24,3 +32,13 @@ catalog:
   reflect-metadata: ^0.2.2
   rxjs: ^7.8.2
   vue-tsc: ^3.3.10
+  # Persistence (apps/orders, apps/fulfillment, apps/billing — one MySQL
+  # database per service, see CLAUDE.md § Database per service). Pinned in
+  # the catalog so every service's Drizzle stack upgrades together.
+  drizzle-orm: ^0.45.2
+  drizzle-kit: ^0.31.10
+  mysql2: ^3.23.3
+  # Testcontainers — integration tests spin up the SAME pinned image
+  # (mysql:8.4.11) the compose file uses, never a mocked broker/store.
+  testcontainers: ^12.1.0
+  "@testcontainers/mysql": ^12.1.0

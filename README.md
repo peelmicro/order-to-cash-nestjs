@@ -67,23 +67,12 @@ pnpm contracts:check      # fail if committed types drift from the specs
 
 Two packages carry everything shared — and nothing else is shared between services:
 
-- [`packages/shared-kernel`](packages/shared-kernel) — `Money` (integer minor
-  units), `Quantity`, `GLN` (GS1 mod-10), `UniqueId`, `Entity`/`AggregateRoot`,
-  `DomainError`. **Zero runtime dependencies**, 68 tests, 100% coverage.
-- [`packages/contracts`](packages/contracts) — TypeScript types **generated**
-  from `specs/shared/asyncapi.yaml` + `openapi.yaml` (95 schemas). Hand-writing
-  an API type anywhere else is a review defect; editing generated output is
-  caught by `pnpm contracts:check`.
+- [`packages/shared-kernel`](packages/shared-kernel) — `Money` (integer minor units), `Quantity`, `GLN` (GS1 mod-10), `UniqueId`, `Entity`/`AggregateRoot`, `DomainError`. **Zero runtime dependencies**, 68 tests, 100% coverage.
+- [`packages/contracts`](packages/contracts) — TypeScript types **generated** from `specs/shared/asyncapi.yaml` + `openapi.yaml` (95 schemas). Hand-writing an API type anywhere else is a review defect; editing generated output is caught by `pnpm contracts:check`.
 
-Domain purity is enforced, not requested: an ESLint `no-restricted-imports` rule
-fails the build on any framework or infrastructure import inside a `domain/`
-folder.
+Domain purity is enforced, not requested: an ESLint `no-restricted-imports` rule fails the build on any framework or infrastructure import inside a `domain/` folder.
 
-> **TypeScript version:** 5.9.3. TypeScript 7 was evaluated per plan — NestJS 11
-> (runtime DI with `emitDecoratorMetadata`) and Vitest both passed under 7.0.2,
-> but `vue-tsc` cannot load TS7's package layout (`ERR_PACKAGE_PATH_NOT_EXPORTED`,
-> reproduced independently), which blocks Nuxt type-checking. Revisit when
-> vue-tsc ships TS7 support.
+> **TypeScript version:** 5.9.3. TypeScript 7 was evaluated per plan — NestJS 11 (runtime DI with `emitDecoratorMetadata`) and Vitest both passed under 7.0.2, but `vue-tsc` cannot load TS7's package layout (`ERR_PACKAGE_PATH_NOT_EXPORTED`, reproduced independently), which blocks Nuxt type-checking. Revisit when vue-tsc ships TS7 support.
 
 ## Running the infrastructure
 
@@ -103,22 +92,15 @@ pnpm dc:up:infra   # 10 containers + a one-shot kafka-init job
 | n8n | http://localhost:5678 |
 | SonarQube (optional) | http://localhost:9000 — `pnpm dc:up:sonar` |
 
-Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8,
-Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0,
-Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2) so the sibling assessments
-reproduce the same stack. The `kafka-init` one-shot container **derives the six
-topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)**
-— the spec is the source of truth, and topic drift fails loudly instead of
-passing silently. Re-run it any time with `pnpm kafka:topics`.
+Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
 
-> **Deviation from the task document:** MongoDB is 8.3.8 rather than the
-> mandated 7.x — version 7 was current when the task was written; nothing in the
-> specification depends on 7-only behaviour, and the deviation is deliberate.
+> **Deviation from the task document:** MongoDB is 8.3.8 rather than the mandated 7.x — version 7 was current when the task was written; nothing in the specification depends on 7-only behaviour, and the deviation is deliberate.
 
 ## How this is being built
 
-The development **process is a deliverable here**, not just the software. This
-repository carries a spec-driven agent harness, built before any application code:
+> **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. What follows is the short version.
+
+The development **process is a deliverable here**, not just the software. This repository carries a spec-driven agent harness, built before any application code:
 
 | Artifact | Role |
 |---|---|
@@ -137,15 +119,11 @@ pending → [spec_author] → spec_ready → ⏸ HUMAN → in_progress
         → [implementer] → in_review → [reviewer] → done
 ```
 
-Small features skip the spec ceremony but still traverse the state machine.
-Every agent definition declares which model it runs on. `progress/history.md`
-records per-feature effort — this repository is the **baseline** the two sibling
-assessments are measured against.
+Small features skip the spec ceremony but still traverse the state machine. Every agent definition declares which model it runs on. `progress/history.md` records per-feature effort — this repository is the **baseline** the two sibling assessments are measured against.
 
 ## The specification
 
-[`specs/shared/`](specs/shared/) is written **before** the code and is the
-stack-agnostic contract that assessments #8 and #9 reuse verbatim:
+[`specs/shared/`](specs/shared/) is written **before** the code and is the stack-agnostic contract that assessments #8 and #9 reuse verbatim:
 
 | File | What it defines |
 |---|---|
@@ -157,9 +135,7 @@ stack-agnostic contract that assessments #8 and #9 reuse verbatim:
 | [`test-matrix.md`](specs/shared/test-matrix.md) | Every `R<n>` mapped to the test that proves it |
 | [`n8n-workflows.md`](specs/shared/n8n-workflows.md) | Functional spec of the four demo workflows |
 
-Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0
-warnings; `redocly lint`: valid). A feature is not `done` until its rows in the
-test matrix are green.
+Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnings; `redocly lint`: valid). A feature is not `done` until its rows in the test matrix are green.
 
 ## Build progress
 
@@ -170,7 +146,7 @@ test matrix are green.
 | 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ✅ |
 | 4 | Infrastructure compose + Kafka topics & NATS subjects | ✅ |
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ✅ |
-| 6 | Database entities (orders, fulfillment, billing) | ⬜ |
+| 6 | Database entities (orders, fulfillment, billing) | ✅ |
 | 7 | Deterministic seed job | ⬜ |
 | 8 | Orders service + saga orchestrator | ⬜ |
 | 9 | Fulfillment service | ⬜ |
