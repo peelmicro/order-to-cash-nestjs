@@ -53,6 +53,38 @@ nvm use            # -> Now using node v24.19.0
 cp .env.example .env
 ```
 
+## Working with the monorepo
+
+```bash
+pnpm install       # all 10 workspaces
+pnpm quality       # lint + typecheck + test, everywhere — the gate every feature keeps green
+pnpm -r build      # build all workspaces
+pnpm dev:orders    # any service: dev:gateway|orders|fulfillment|billing|notifications|projector (ports 3001–3006)
+pnpm dev:web       # Nuxt 4 on http://localhost:3000
+pnpm contracts:generate   # regenerate types from specs/shared/*.yaml
+pnpm contracts:check      # fail if committed types drift from the specs
+```
+
+Two packages carry everything shared — and nothing else is shared between services:
+
+- [`packages/shared-kernel`](packages/shared-kernel) — `Money` (integer minor
+  units), `Quantity`, `GLN` (GS1 mod-10), `UniqueId`, `Entity`/`AggregateRoot`,
+  `DomainError`. **Zero runtime dependencies**, 68 tests, 100% coverage.
+- [`packages/contracts`](packages/contracts) — TypeScript types **generated**
+  from `specs/shared/asyncapi.yaml` + `openapi.yaml` (95 schemas). Hand-writing
+  an API type anywhere else is a review defect; editing generated output is
+  caught by `pnpm contracts:check`.
+
+Domain purity is enforced, not requested: an ESLint `no-restricted-imports` rule
+fails the build on any framework or infrastructure import inside a `domain/`
+folder.
+
+> **TypeScript version:** 5.9.3. TypeScript 7 was evaluated per plan — NestJS 11
+> (runtime DI with `emitDecoratorMetadata`) and Vitest both passed under 7.0.2,
+> but `vue-tsc` cannot load TS7's package layout (`ERR_PACKAGE_PATH_NOT_EXPORTED`,
+> reproduced independently), which blocks Nuxt type-checking. Revisit when
+> vue-tsc ships TS7 support.
+
 ## Running the infrastructure
 
 The application services arrive in later phases; the infrastructure stack runs now:
@@ -137,7 +169,7 @@ test matrix are green.
 | 2 | Harness layer (`AGENTS.md`, `feature_list.json`, `init.sh`, `progress/`, agents) | ✅ |
 | 3 | Shared spec — EARS requirements, AsyncAPI, OpenAPI, test matrix | ✅ |
 | 4 | Infrastructure compose + Kafka topics & NATS subjects | ✅ |
-| 5 | pnpm monorepo scaffold, shared-kernel, contracts | ⬜ |
+| 5 | pnpm monorepo scaffold, shared-kernel, contracts | ✅ |
 | 6 | Database entities (orders, fulfillment, billing) | ⬜ |
 | 7 | Deterministic seed job | ⬜ |
 | 8 | Orders service + saga orchestrator | ⬜ |

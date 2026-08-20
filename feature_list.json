@@ -95,7 +95,7 @@
       "phase": 5,
       "title": "pnpm workspaces, tsconfig base, ESLint/Prettier, domain-purity rule, quality script",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "pnpm install works from root",
         "exact packageManager pinned",
@@ -109,7 +109,7 @@
       "phase": 5,
       "title": "packages/shared-kernel: Money, Quantity, GLN (mod-10), OrderNumber, UniqueId, Entity, AggregateRoot",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "zero runtime dependencies",
         "GLN check digit validated with real and invalid GLNs",
@@ -123,7 +123,7 @@
       "phase": 5,
       "title": "packages/contracts: types generated from AsyncAPI + OpenAPI",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "pnpm contracts:generate reproduces the types",
         "no hand-written API types anywhere else"

@@ -1,0 +1,10 @@
+node_modules
+dist
+build
+coverage
+.nuxt
+.output
+.nitro
+.data
+pnpm-lock.yaml
+packages/contracts/src/generated

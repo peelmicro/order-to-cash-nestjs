@@ -347,3 +347,162 @@ idempotent across re-runs and `down`/`up`.
 - Leader carry-over: when Vitest lands (feature 6), add one
   Testcontainers-Kafka integration test proving the spec→topology derivation,
   so the property is defended by CI rather than by manual review probes.
+
+## monorepo_scaffold (id 6, phase 5) — 2026-08-19
+
+**Effort:** 1 session, ~3.5h wall-clock — TS7 validation spike ~1h (inside its
+timebox), scaffold ~1.5h, review ~1h. **APPROVED on the first pass** — the
+first feature in this repo to clear review without a rejection.
+**Spec:** n/a (sdd: false). Contract = 4-item acceptance list in
+`feature_list.json` + CLAUDE.md conventions.
+**Tests:** 6 Vitest suites (one real-assertion controller spec per NestJS app)
++ 2 `passWithNoTests` stub runs; `pnpm quality` (lint + typecheck + test)
+green end-to-end from a clean install. Full independent probe log in
+`progress/review_monorepo_scaffold.md`.
+
+**What was built:**
+
+pnpm-workspaces monorepo: `pnpm-workspace.yaml` (apps/* + packages/*, pnpm 11
+`catalog:` pinning every shared dep once), `tsconfig.base.json` (strict,
+NodeNext, decorator metadata), flat `eslint.config.mjs` with the
+**domain-purity `no-restricted-imports` rule** (scoped to
+`apps/*/src/domain/**`; blocks `@nestjs/*`, drizzle-orm, kafkajs, nats,
+mongodb — deep subpaths and type-only imports included, gitignore-style
+globs — plus relative imports into `infrastructure/`/`presentation/`),
+Prettier, root `quality` script. Six NestJS 11 app skeletons
+(gateway 3001 … projector 3006, `<SERVICE>_PORT` env with fallbacks, clean
+four-layer folders) + Nuxt 4 `apps/web` (WEB_PORT/3000) + two genuinely empty
+package stubs (`shared-kernel`, `contracts` — zero runtime deps). Coverage
+thresholds wired (60 apps / 80 packages) but deliberately inert until
+phase 21. `.env.example` gained all seven port vars.
+
+**TS7 spike outcome (the decision of this phase):** typescript@7.0.2 —
+NestJS 11 DI + `emitDecoratorMetadata` **PASS** (real boot, real
+`design:paramtypes`), Vitest **PASS**, Nuxt typecheck **FAIL**
+(`vue-tsc@3.3.10` crashes with `ERR_PACKAGE_PATH_NOT_EXPORTED` on
+`typescript/lib/tsc` — TS7's exports map removed the subpath vue-tsc
+requires). One FAIL of three → the pre-agreed fallback rule fired →
+**typescript@5.9.3 everywhere** (single lockfile entry, verified resolved in
+all 10 workspaces). The reviewer reproduced the vue-tsc failure independently
+from scratch — identical error, identical frame. Revisit TS7 when vue-tsc (or
+Nuxt's Golar path) ships TS7 support; nothing else blocks it.
+
+**Notes for #8 and #9:**
+
+- The spike protocol worked: timebox + explicit fallback rule + evidence
+  captured before deletion. Reuse it for any "bleeding edge vs. LTS" choice.
+- Enforce layer purity with a **linter rule probed in both directions**
+  (violation fails, removal passes) before trusting it — and test deep
+  subpath + type-only evasions, not just the bare specifier.
+- Advisory carried forward: add `**/application/**` to the domain-purity
+  pattern group before the first aggregate feature; land the
+  Testcontainers-Kafka topology test with the first Testcontainers feature
+  (id 9); wire `eslint-plugin-vue` no later than the web feature.
+
+---
+
+## shared_kernel (id 7, phase 5) — 2026-08-19
+
+**Effort:** 1 session, ~1.5h wall-clock — implementation ~1h, review ~0.5h.
+**APPROVED on the first pass**, zero defects; mutation-probed 4/4 killed.
+**Spec:** n/a (sdd: false). Contract = 4-item acceptance list in
+`feature_list.json` + `specs/shared/domain-model.md` §2 (value objects) and
+§7.1 (fact envelope), which the reviewer used as the authority.
+**Tests:** 10 Vitest suites, 68 tests, **100% coverage on every metric**
+(167/167 statements, 87/87 branches, 76/76 functions, 166/166 lines) —
+and the coverage is not theatre: the reviewer's four hostile mutations
+(GLN weights swapped, `Money.add` currency check removed, `Quantity`
+accepting zero, `pullDomainEvents` not clearing) were each killed by at
+least one failing test. Full probe log in `progress/review_shared_kernel.md`.
+
+**What was built:**
+
+`packages/shared-kernel` — the dependency-free domain kernel (only
+non-relative import: `node:crypto`). Value objects per domain-model.md §2:
+`Money` (integer minor units + ISO 4217 alpha-3, M1–M4 invariants,
+cross-currency add/subtract/compare all throw, `mod100()` for the `.99`
+simulator, safe for negative amounts), `Quantity` (strictly positive
+integer), `GLN` (13 digits, real GS1 mod-10 check digit — verified by the
+reviewer against GS1's published examples `0614141000005` and
+`4012345000009`, plus an exhaustive 117-case single-digit-mutation test),
+`UniqueId` (UUID v4 in the domain via `crypto.randomUUID()`),
+`OrderNumber`/`DespatchReference`/`InvoiceReference`/`CreditLineReference`
+(nominally distinct `<PREFIX>-######` types). Base classes: `DomainError`
+(stable `code`), `Entity<T>` (identity equality, phantom-typed),
+`AggregateRoot<T>` (`addDomainEvent`/`pullDomainEvents`, returns-and-clears
+in order), and the §7.1 fact envelope (`DomainEventEnvelope`,
+`createDomainEvent` — `eventId` generated in the domain —
+`assertValidDomainEventEnvelope` enforcing R11 field completeness and the
+`<aggregate>.<fact>.v<n>` pattern). Deliberate barrel in `src/index.ts`
+with an exact-export-list test. ESLint domain-purity glob extended to
+`packages/shared-kernel/src/**` and probed in both directions.
+
+**Test-matrix flips:** R2, R3, R4, R11 → DONE; R1 → honestly **partial**
+(domain-unit half DONE, API half stays TODO for the Gateway feature).
+
+**Carry-forward for the Orders context:** `Money` validates ISO 4217
+*shape* only; membership in the seeded currency catalogue must be enforced
+by the Orders reference data when it lands (documented in `money.ts`).
+
+**Notes for #8 and #9:**
+
+- The GLN independent-oracle pattern (hand-derive check digits in a comment,
+  then an exhaustive single-digit-mutation sweep justified by gcd(3,10)=1)
+  is cheap and portable — reuse it verbatim in .NET and FastAPI.
+- Reviewer mutation probes (3–4 hostile edits, confirm each is killed,
+  restore) caught nothing here but cost ~10 minutes; keep them as the
+  standard counterweight to 100%-coverage claims.
+
+---
+
+## contracts_package (id 8, phase 5) — 2026-08-19
+
+**Effort:** 1 session (third feature of the 2026-08-19 phase-5 session, shared
+with monorepo_scaffold and shared_kernel), ~2.5h wall-clock — implementation
+~2h (including two generator-tooling surprises: the single-line `{}`
+root-interface regex bug and `title`-beats-key naming), review ~0.5h
+(approved first pass).
+
+**Status:** APPROVED first pass — `progress/review_contracts_package.md`.
+
+**What was built:**
+
+`packages/contracts` — types generated from the two shared specs, never
+hand-transcribed. OpenAPI 3.1 → `openapi-typescript@7`
+(`paths`/`components`/`operations`); AsyncAPI 3.0 → extract
+`components.schemas` (95 plain JSON-Schema definitions covering all 43
+messages) + `json-schema-to-typescript@15`, with exactly two documented,
+regression-tested transforms: `#/components/schemas/X` → `#/definitions/X`
+ref rewriting, and stripping the three `title` keywords so exported names
+stay 1:1 with schema keys (naming only — reviewer diffed all three shapes
+against the spec field-by-field). Deterministic `pnpm contracts:generate`
+(sorted definitions, banner without timestamp/absolute path), drift check
+`pnpm contracts:check` (regenerates to a temp dir, diffs, exit 1 on drift —
+also re-asserted inside `pnpm test`), deliberate barrel (`src/index.ts`:
+kernel primitives, Envelope + both header shapes, 13 fact Payload/Event
+pairs, 14 RPC request/reply pairs, RpcError/RpcTimeout, Gateway
+paths/components/operations + 10 convenience aliases). 22 tests, incl. a
+YAML-parsing completeness oracle (95 schema keys ↔ 95 exports). Generated
+dir lint/prettier-ignored, generators devDependencies-only.
+
+**Reviewer probes (all passed):** determinism (two runs, identical md5);
+corrupt → check exits 1 with diff → regenerate → green; spec-copy mutation
+(`heldAmount` rename in a scratch copy) surfaces in the generated diff while
+the real specs stayed byte-clean; grep of all apps found no hand-written
+contract shapes (only the scaffold `HealthPayload` stub, shape-distinct from
+the spec's `HealthResponse` — to be retired at the gateway feature);
+`pnpm quality`, `pnpm -r build`, `./init.sh` all exit 0.
+
+**Notes for #8 and #9:**
+
+- AsyncAPI 3.0 codegen tooling is thin in every stack; "extract
+  `components.schemas`, feed a plain JSON-Schema-to-types generator" is the
+  portable recipe (NJsonSchema for .NET, datamodel-code-generator for
+  Python). Budget for the same two transforms: ref-base rewriting and
+  `title`-vs-key naming.
+- The completeness oracle (parse the YAML, assert one exported type per
+  schema key, and assert the counts match) is the single test that catches
+  silent type-dropping — port it verbatim.
+
+**Phase 5 complete** — monorepo_scaffold, shared_kernel, contracts_package
+all done.

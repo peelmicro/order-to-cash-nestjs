@@ -4,7 +4,28 @@
   "private": true,
   "packageManager": "pnpm@11.22.0",
   "description": "Order-To-Cash — order lifecycle backbone for a B2B EDI / e-invoicing platform (assessment #7 of a trilogy).",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
+    "build": "pnpm -r --if-present run build",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:coverage": "pnpm -r --if-present run test:coverage",
+    "quality": "pnpm run lint && pnpm run typecheck && pnpm run test",
+    "contracts:generate": "pnpm --filter @otc/contracts run generate",
+    "contracts:check": "pnpm --filter @otc/contracts run check",
+    "dev:gateway": "pnpm --filter @otc/gateway run dev",
+    "dev:orders": "pnpm --filter @otc/orders run dev",
+    "dev:fulfillment": "pnpm --filter @otc/fulfillment run dev",
+    "dev:billing": "pnpm --filter @otc/billing run dev",
+    "dev:notifications": "pnpm --filter @otc/notifications run dev",
+    "dev:projector": "pnpm --filter @otc/projector run dev",
+    "dev:web": "pnpm --filter @otc/web run dev",
     "dc:up:infra": "docker compose -f docker-compose.infra.yml up -d",
     "kafka:topics": "docker compose -f docker-compose.infra.yml run --rm kafka-init",
     "dc:down:infra": "docker compose -f docker-compose.infra.yml down",
@@ -24,5 +45,13 @@
     "dc:up:sonar": "docker compose -f docker-compose.infra.yml --profile sonar up -d sonarqube",
     "dc:down:sonar": "docker compose -f docker-compose.infra.yml --profile sonar stop sonarqube",
     "dc:logs:sonarqube": "docker compose -f docker-compose.infra.yml --profile sonar logs -f sonarqube"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "^8.67.0"
   }
 }

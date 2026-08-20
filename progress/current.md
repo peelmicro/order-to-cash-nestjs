@@ -5,17 +5,30 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle
-**Session started:** —
+**Status:** idle — phase 5 complete (features 6, 7, 8 all done, each approved with real probes)
+`progress/impl_monorepo_scaffold.md` for the full report (TS7 spike verdict,
+everything scaffolded, dependencies, verification output).
+**Session started:** 2026-08-19
 
 ## Goal
 
-Next up: phase 5 — `monorepo_scaffold` (id 6), `shared_kernel` (id 7),
-`contracts_package` (id 8). First decision on entry: TypeScript major version
-(`typescript@latest` resolves to 7.x; NestJS 11 depends on decorators +
-`emitDecoratorMetadata` — pin 5.x unless 7 is verified against `@nestjs/cli`).
+pnpm workspaces scaffold: tsconfig base, ESLint/Prettier, the domain-purity
+`no-restricted-imports` rule (proven to fail before trusting it), `pnpm quality`,
+and the 6 NestJS + 1 Nuxt app skeletons. Then `shared_kernel` (id 7) and
+`contracts_package` (id 8).
 
 ## Decisions taken this session
+
+- **TS verdict: fallback to 5.9.3.** TS7 passed NestJS DI + Vitest but vue-tsc@3.3.10
+  cannot load typescript@7 (`ERR_PACKAGE_PATH_NOT_EXPORTED`, reproduced
+  independently by the reviewer) — the agreed fallback rule fired. TS7 goes in
+  the README's "what I would do differently".
+- **TypeScript 7** originally chosen by Juan Pablo (over the leader's 5.x recommendation),
+  structured as a timeboxed validation spike inside `monorepo_scaffold` with an
+  explicit fallback: if NestJS 11 decorators/`emitDecoratorMetadata`,
+  `@nestjs/cli`, Vitest or Nuxt 4 cannot be made to work under TS 7 within the
+  timebox, pin `typescript@^5.9` and record TS 7 under "what I would do
+  differently". Either outcome is documented with evidence.
 
 ## Blockers
 
