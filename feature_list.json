@@ -184,7 +184,7 @@
       "phase": 8,
       "title": "Order aggregate + full status state machine",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "every legal transition allowed, every illegal one throws",
         "no empty orders, no line mutation after confirmed",

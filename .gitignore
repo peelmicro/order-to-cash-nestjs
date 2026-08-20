@@ -32,7 +32,10 @@ blob-report/
 !.env.example
 
 # ---------- Docker bind mounts / local volumes ----------
-data/
+# NOTE: anchored with a leading slash. A bare `data/` also matches source
+# directories such as apps/seed/src/data/, which silently kept 11 source files
+# out of version control until it was caught in phase 8.
+/data/
 infra/**/data/
 
 # ---------- Logs ----------

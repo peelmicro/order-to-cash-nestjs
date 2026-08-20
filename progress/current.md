@@ -5,14 +5,17 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — phase 7 complete (seed_job approved, 0 defects)
+**Status:** idle — orders_aggregate (13) done; next `outbox_and_idempotency` (14)
 **Session started:** —
 
 ## Goal
 
-Deterministic one-shot seed job (`apps/seed`): master data + sample saga history across the three MySQL databases AND the MongoDB `order_timeline` read model. Fixed UUIDs/dates, idempotent re-run. Seeded outbox rows inserted already-published so the phase-8 relay never re-publishes fabricated history.
+Phase 8, one feature at a time (decision: specs written per-feature, not batched). Order: orders_aggregate (sdd) → outbox_and_idempotency (sdd, inherits causation_id + poll-tiebreak advisories) → orders_acceptance → order_saga_orchestrator (sdd). Each sdd feature stops at spec_ready for the human gate.
 
 ## Decisions taken this session
+
+- **Human gate on `specs/orders_aggregate/`**: 16 open points reviewed, 14 accepted as written, 2 amended — (a) the `order_items.description` migration pulled INTO this feature rather than deferred to 15, so the schema stops contradicting the domain model; (b) the missing `@otc/*` workspace deps fixed in all three apps (orders, billing, fulfillment), not just orders, with a clean-clone proof task. Plus OA4 (reason↔status pairing) and OA1 (single-currency invariant) recorded as **promotion candidates** for `specs/shared/` at feature 38 — without promotion, #8/#9 would not enforce them.
+- Root cause note: 2 of the 16 open points were genuine earlier-phase defects (the missing column traces to the plan document's table shape, implemented faithfully in phase 6; the missing workspace deps are a phase-5 scaffold defect the reviewer missed because they were latent). The rest are the normal stack-agnostic-spec → implementation gap.
 
 - **`seed_job` implemented and moved to `in_review`.** `apps/seed` (plain
   Node/TS, not NestJS) reuses each of `@otc/orders`/`@otc/fulfillment`/

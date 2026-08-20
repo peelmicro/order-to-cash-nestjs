@@ -19,6 +19,8 @@
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
     "@nestjs/platform-express": "catalog:",
+    "@otc/contracts": "workspace:*",
+    "@otc/shared-kernel": "workspace:*",
     "drizzle-orm": "catalog:",
     "mysql2": "catalog:",
     "reflect-metadata": "catalog:",

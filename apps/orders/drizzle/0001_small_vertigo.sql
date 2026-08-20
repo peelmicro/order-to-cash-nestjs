@@ -1,0 +1,1 @@
+ALTER TABLE `order_items` ADD `description` varchar(255) NOT NULL;

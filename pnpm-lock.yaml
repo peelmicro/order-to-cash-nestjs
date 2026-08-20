@@ -98,6 +98,12 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(supports-color@10.2.2)
+      '@otc/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@otc/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.2(mysql2@3.23.3(@types/node@24.13.3))
@@ -150,6 +156,12 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(supports-color@10.2.2)
+      '@otc/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@otc/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.2(mysql2@3.23.3(@types/node@24.13.3))
@@ -276,6 +288,12 @@ importers:
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.2.1(@nestjs/common@11.2.1(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(supports-color@10.2.2)
+      '@otc/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@otc/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
       drizzle-orm:
         specifier: 'catalog:'
         version: 0.45.2(mysql2@3.23.3(@types/node@24.13.3))

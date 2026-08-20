@@ -219,7 +219,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 | `progress/spec_*.md` | The spec author's record per spec pass | Contains the **ambiguity-resolution tables** — what the human gate actually reviews | Phase 3 | Phase 3 |
 | `specs/shared/` (7 files) | The system's definition, before the code | Stack-agnostic; reused verbatim by assessments #8 and #9. AsyncAPI drives real topic creation; both API docs drive type generation | Phase 3 | Phase 3 (amendments via the human gate) |
 | `specs/shared/test-matrix.md` | Requirement → test traceability | 61 rows; flipped from `TODO` to green as features land | Phase 3 | Phase 5 |
-| `specs/<feature>/` | Per-feature triple-doc for the 8 large features | requirements (EARS) + design + tasks; human gate between spec and code | Phase 8 (planned) | — |
+| `specs/<feature>/` | Per-feature triple-doc for the 8 large features | requirements (EARS) + design + tasks; human gate between spec and code. First one (`orders_aggregate`) went through 16 open points at the gate: 14 accepted, 2 amended | Phase 8 | Phase 8 |
 | `docs/PROCESS.md` | This document | Updated at the end of every phase — registry + status | Phase 6 | Phase 6 |
 | `README.md` | Honest front door at every commit | Grows incrementally each phase; never describes software that does not exist yet | Phase 1 | every phase |
 | `docker-compose.infra.yml` + `infra/` | The runnable infrastructure | 10 pinned services + SonarQube behind a profile; `kafka-init` derives topics from the AsyncAPI spec | Phase 4 | Phase 4 |
@@ -232,7 +232,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phase 7 of 25 complete — 12 of 38 features done.**
+**Position: Phase 7 of 25 complete, Phase 8 underway — 13 of 38 features done.**
 
 | Phase | What | State |
 |---|---|---|
@@ -244,8 +244,9 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 6 | Drizzle schemas + migrations for the three service databases, Testcontainers suites | ✅ |
 | 7 | Deterministic seed job (four stores, valid GLNs, pre-published outbox history) | ✅ |
 | 8 | Orders service + saga orchestrator — first `sdd: true` features through the full spec loop | next |
-| 8–15 | Services, saga, reliability, observability — the `sdd: true` heart of the build | pending |
+| 8 | Orders service — `orders_aggregate` ✅ (first full SDD loop); outbox, acceptance, orchestrator next | 🚧 |
+| 9–15 | Remaining services, saga, reliability, observability | pending |
 | 16–19 | Web app + all test layers | pending |
 | 20–25 | n8n workflows, quality gates, dashboards, full compose, documentation, final checkpoint | pending |
 
-Notable so far: the review of the seed feature ran on an explicitly overridden model after the default was twice blocked by an API-side flag — recorded as a one-off process deviation, agent definitions unchanged. Earlier:  TypeScript 7 was evaluated and rejected on reproducible evidence (vue-tsc cannot load it) — the monorepo is on 5.9.3; the reviewer has rejected 2 features on first pass with real defects behind confident reports; every Kafka topic and every API type in the codebase is derived from `specs/shared/`, never hand-maintained.
+Notable so far: the first full SDD loop (spec → human gate → implement → review) ran in Phase 8 and surfaced two genuine earlier-phase defects before any code was written — a database column missing against the domain model, and undeclared workspace dependencies that would have broken a clean clone. A third was found during implementation: a `.gitignore` pattern intended for Docker bind mounts also matched a source directory, silently keeping 11 files out of version control across two commits. All three are fixed; the last is the clearest argument in this repository for why review probes the system rather than reading reports. Earlier: the review of the seed feature ran on an explicitly overridden model after the default was twice blocked by an API-side flag — recorded as a one-off process deviation, agent definitions unchanged. Earlier:  TypeScript 7 was evaluated and rejected on reproducible evidence (vue-tsc cannot load it) — the monorepo is on 5.9.3; the reviewer has rejected 2 features on first pass with real defects behind confident reports; every Kafka topic and every API type in the codebase is derived from `specs/shared/`, never hand-maintained.

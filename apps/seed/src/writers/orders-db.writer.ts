@@ -150,6 +150,7 @@ export async function seedOrdersSagas(
           id: deterministicId(`order:${saga.sequence}:item:${line.productCode}`),
           orderId: saga.orderId,
           productId: productByCode(line.productCode).id,
+          description: line.description,
           price: line.unitPrice,
           quantity: line.quantity,
           discount: line.lineDiscount,
@@ -157,7 +158,16 @@ export async function seedOrdersSagas(
           updatedAt: saga.orderDate,
         })),
       )
-      .onDuplicateKeyUpdate({ set: { updatedAt: sql`VALUES(${schema.orderItems.updatedAt})` } });
+      .onDuplicateKeyUpdate({
+        // `description` is included so a warm database (from before the
+        // `order_items.description` migration, design.md §9.1) backfills on
+        // the next seed run rather than staying stuck on whatever a
+        // `NOT NULL` column with no default coerced it to.
+        set: {
+          description: sql`VALUES(${schema.orderItems.description})`,
+          updatedAt: sql`VALUES(${schema.orderItems.updatedAt})`,
+        },
+      });
 
     if (saga.ordersOutbox.length > 0) {
       await db
