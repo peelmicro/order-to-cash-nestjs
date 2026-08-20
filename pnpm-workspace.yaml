@@ -42,3 +42,8 @@ catalog:
   # (mysql:8.4.11) the compose file uses, never a mocked broker/store.
   testcontainers: ^12.1.0
   "@testcontainers/mysql": ^12.1.0
+  # MongoDB read model (apps/projector, apps/seed) — the official driver,
+  # never mocked. @testcontainers/mongodb pinned to the same major as the
+  # rest of the testcontainers family above.
+  mongodb: ^7.5.0
+  "@testcontainers/mongodb": ^12.1.0

@@ -171,7 +171,7 @@
       "phase": 7,
       "title": "Deterministic one-shot seed job (master data + sample orders)",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "idempotent: re-running changes nothing",
         "10+ products, 7 retailers, 20+ companies, credit limits for every retailer, initial stock",

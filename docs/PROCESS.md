@@ -223,8 +223,8 @@ Every process artifact in this repository: what it is for, and where it came fro
 | `docs/PROCESS.md` | This document | Updated at the end of every phase — registry + status | Phase 6 | Phase 6 |
 | `README.md` | Honest front door at every commit | Grows incrementally each phase; never describes software that does not exist yet | Phase 1 | every phase |
 | `docker-compose.infra.yml` + `infra/` | The runnable infrastructure | 10 pinned services + SonarQube behind a profile; `kafka-init` derives topics from the AsyncAPI spec | Phase 4 | Phase 4 |
-| `.env.example` | Every credential, port and flag, documented | Extended whenever a feature adds configuration | Phase 4 | Phase 6 |
-| `package.json` (root) | Workspace scripts + exact `packageManager` pin | The exact pin matters: corepack rejects ranged pins outright | Phase 4 | Phase 6 |
+| `.env.example` | Every credential, port and flag, documented | Extended whenever a feature adds configuration | Phase 4 | Phase 7 |
+| `package.json` (root) | Workspace scripts + exact `packageManager` pin | The exact pin matters: corepack rejects ranged pins outright | Phase 4 | Phase 7 |
 
 ---
 
@@ -232,7 +232,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phase 6 of 25 complete — 11 of 38 features done.**
+**Position: Phase 7 of 25 complete — 12 of 38 features done.**
 
 | Phase | What | State |
 |---|---|---|
@@ -242,9 +242,10 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 4 | Infrastructure compose (10 pinned services) + spec-derived Kafka topology | ✅ |
 | 5 | Monorepo scaffold, shared-kernel (100% coverage), spec-generated contracts | ✅ |
 | 6 | Drizzle schemas + migrations for the three service databases, Testcontainers suites | ✅ |
-| 7 | Deterministic seed job | next |
+| 7 | Deterministic seed job (four stores, valid GLNs, pre-published outbox history) | ✅ |
+| 8 | Orders service + saga orchestrator — first `sdd: true` features through the full spec loop | next |
 | 8–15 | Services, saga, reliability, observability — the `sdd: true` heart of the build | pending |
 | 16–19 | Web app + all test layers | pending |
 | 20–25 | n8n workflows, quality gates, dashboards, full compose, documentation, final checkpoint | pending |
 
-Notable so far: TypeScript 7 was evaluated and rejected on reproducible evidence (vue-tsc cannot load it) — the monorepo is on 5.9.3; the reviewer has rejected 2 features on first pass with real defects behind confident reports; every Kafka topic and every API type in the codebase is derived from `specs/shared/`, never hand-maintained.
+Notable so far: the review of the seed feature ran on an explicitly overridden model after the default was twice blocked by an API-side flag — recorded as a one-off process deviation, agent definitions unchanged. Earlier:  TypeScript 7 was evaluated and rejected on reproducible evidence (vue-tsc cannot load it) — the monorepo is on 5.9.3; the reviewer has rejected 2 features on first pass with real defects behind confident reports; every Kafka topic and every API type in the codebase is derived from `specs/shared/`, never hand-maintained.

@@ -26,6 +26,7 @@
     "db:migrate:fulfillment": "pnpm --filter @otc/fulfillment run db:migrate",
     "db:generate:billing": "pnpm --filter @otc/billing run db:generate",
     "db:migrate:billing": "pnpm --filter @otc/billing run db:migrate",
+    "seed": "pnpm --filter @otc/seed run seed",
     "dev:gateway": "pnpm --filter @otc/gateway run dev",
     "dev:orders": "pnpm --filter @otc/orders run dev",
     "dev:fulfillment": "pnpm --filter @otc/fulfillment run dev",

@@ -94,6 +94,8 @@ pnpm dc:up:infra   # 10 containers + a one-shot kafka-init job
 
 Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
 
+With the infrastructure up, `pnpm seed` loads the demo data: master data (3 currencies, 12 products, 7 retailers and 22 suppliers with valid GS1 GLNs, credit limits, stock) plus six sample orders — five completed sagas and one cancelled by the `.99` credit rule — consistent across the three MySQL databases and the MongoDB `order_timeline`. Deterministic and idempotent: run it twice, nothing changes.
+
 > **Deviation from the task document:** MongoDB is 8.3.8 rather than the mandated 7.x — version 7 was current when the task was written; nothing in the specification depends on 7-only behaviour, and the deviation is deliberate.
 
 ## How this is being built
@@ -147,7 +149,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 4 | Infrastructure compose + Kafka topics & NATS subjects | ✅ |
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ✅ |
 | 6 | Database entities (orders, fulfillment, billing) | ✅ |
-| 7 | Deterministic seed job | ⬜ |
+| 7 | Deterministic seed job | ✅ |
 | 8 | Orders service + saga orchestrator | ⬜ |
 | 9 | Fulfillment service | ⬜ |
 | 10 | Billing service | ⬜ |

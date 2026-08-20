@@ -1,0 +1,21 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "../orders/src/infrastructure/persistence/db-config.ts",
+    "../orders/src/infrastructure/persistence/client.ts",
+    "../orders/src/infrastructure/persistence/migrator.ts",
+    "../orders/src/infrastructure/persistence/schema/index.ts",
+    "../fulfillment/src/infrastructure/persistence/db-config.ts",
+    "../fulfillment/src/infrastructure/persistence/client.ts",
+    "../fulfillment/src/infrastructure/persistence/migrator.ts",
+    "../fulfillment/src/infrastructure/persistence/schema/index.ts",
+    "../billing/src/infrastructure/persistence/db-config.ts",
+    "../billing/src/infrastructure/persistence/client.ts",
+    "../billing/src/infrastructure/persistence/migrator.ts",
+    "../billing/src/infrastructure/persistence/schema/index.ts"
+  ]
+}

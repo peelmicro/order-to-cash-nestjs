@@ -669,3 +669,83 @@ document why the race is impossible).
   ledger-derived sums no CHECK can express (B1). Static per-column uniqueness
   (F8/B7 order_reference) is the one class where a DB backstop is genuinely
   on the table — carry that decision into the aggregate features explicitly.
+
+---
+
+## seed_job (id 12, phase 7) — 2026-08-20
+
+**Effort:** 1 session, ~0.5h wall-clock — implementation ~22min (file
+timestamps 10:39–11:01 local: package/tsconfig scaffolding at 10:39, data
+modules through 10:40–10:54, writers/integration spec through 10:59,
+`feature_list.json`/`progress/current.md`/impl report by 11:01), review
+~1h (full test re-run, live `pnpm seed` ×2 against compose, two full
+cross-store order traces, independent GLN arithmetic, dependency/coverage
+sweep).
+**APPROVED on the first pass**, zero defects. **Phase 7 complete** — the
+seed job is the last feature before the aggregate-implementation phases
+(8–10) begin.
+**Spec:** n/a (`sdd: false`). Contract = the 3-item acceptance list in
+`feature_list.json` #12 + `specs/shared/domain-model.md` (read-model shape,
+GLN check digit, money-as-minor-units) + `specs/shared/saga.md` (exact fact
+sequence and compensation ordering).
+**Tests:** 94 unit tests (pure — `src/data/*.spec.ts`,
+`src/deterministic.spec.ts`, `src/writers/mongo.writer.spec.ts`, no
+framework/DB imports) + 4 integration tests via real
+`@testcontainers/mysql` + `@testcontainers/mongodb` (three logical MySQL
+databases on one container, real migrations, no mocked brokers) — all
+re-run independently by the reviewer, all green.
+**Live verification (reviewer, against the running compose stack, not
+relayed from the implementer):** ran `pnpm seed` twice; identical summaries
+both times; independently recomputed
+`MD5(GROUP_CONCAT(orders.id ORDER BY id))` = `23c7f093e43aac39f5318393be207070`
+both runs, matching the implementer's reported value exactly.
+`SELECT COUNT(*) FROM outbox WHERE published_at IS NULL` = **0** and
+`published_at < occurred_at` count = **0** in all three live DBs.
+**Traced `ORD-000001` (completed) end to end**: order total 17492 = Σ
+line totals (hand re-added); reservations `consumed`; despatch
+`DES-000001` matching reservation lines; credit ledger `hold → consume →
+release`, each 17492, in the right causal order; invoice `INV-000001`
+`paid`, payment `PAY-SEED-000001` 17492; all nine outbox facts across the
+three DBs in exact `saga.md` §3.1 order with matching `correlationId` /
+fact-appropriate `aggregateId` / spec-shaped payloads; MongoDB
+`order_timeline` document matches field-by-field, same nine `eventId`s as
+the outbox rows, ordered by `occurredAt`.
+**Traced `ORD-000006` (cancelled) end to end**: `.99` total
+(`24999 mod 100 = 99`), reservation `released`, no despatch/invoice/credit
+rows, five-fact compensation sequence
+(`order.placed → stock.reserved → credit.rejected → stock.released →
+order.cancelled`) in both MySQL outbox and the MongoDB timeline, exactly
+matching `saga.md` §4.2/§4.4's release-then-cancel ordering.
+**GLN check digits — hand-computed independently** (own arithmetic per
+`domain-model.md` §2.4's mod-10 algorithm, not a re-run of the library):
+`CarrefourEs 5400000000010` (sum 20 → check 0), `AldiDe 5400000000065`
+(sum 35 → check 5), `ALBIONFOODS 5400000000331` (sum 29 → check 1),
+`BAUWERK 5400000000294` (sum 46 → check 4) — all four correct.
+**Idempotency semantics** — read every writer: all use
+`INSERT … ON DUPLICATE KEY UPDATE` on the deterministic key, never
+delete-and-recreate — safe to re-run mid-demo without breaking references.
+**Determinism** — grepped for `Math.random`/`Date.now()`/bare
+`new Date()`/stray `randomUUID`: none found outside `deterministic.ts`'s
+SHA-256 derivation and `clock.ts`'s fixed-epoch helpers.
+**Stock arithmetic** — IBERFOODS: PRD-0001 stays at the 500-unit baseline
+(released reservation, units correctly unchanged per domain-model.md §4.2),
+PRD-0002 495 (500 − 5 consumed), PRD-0003 497 (500 − 3 consumed) — all
+consistent, hand-recomputed.
+**Credit limits** — 500000 minor units (5000.00) for every one of the 7
+retailers; over-limit rejection genuinely constructible against product
+prices up to 24999 without an absurd order size.
+**`causationId` omission** — verified directly against all three committed
+`outbox.schema.ts` files: none has the column yet (feature 14's decision),
+so the seed's omission is faithful, not a shortcut.
+**Data/writer separation** — `src/data/*.data.ts` import no
+Drizzle/mysql2/mongodb/service-schema; only `src/writers/*.writer.ts` do —
+genuinely portable fixture shapes for #8/#9.
+**Gates:** `pnpm run quality` (lint + typecheck + test, whole monorepo) —
+all green, including `apps/seed` (94/94); `./init.sh` exit 0; `git status`
+scope clean (only `apps/seed/` + expected config diffs).
+**Notes for #8 and #9:** the data/writer split (`src/data/` fixture
+modules with zero infrastructure imports, `src/writers/` the only layer
+touching a driver) is the reusable idea, not the code — a .NET or FastAPI
+seed job can mirror the same fixture *shapes* (7 retailers, 22 companies,
+12 products, one credit line per retailer, the 5-completed +
+1-`.99`-cancelled saga set) without porting any TypeScript.
