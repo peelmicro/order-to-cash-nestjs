@@ -61,7 +61,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
     await container?.stop();
   });
 
-  it('applies the committed migrations from empty and creates all 8 tables plus drizzle’s own migrations table', async () => {
+  it('applies the committed migrations from empty and creates all 9 tables plus drizzle’s own migrations table', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name`,
       [container.getDatabase()],
@@ -74,6 +74,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
         'companies',
         'currencies',
         'order_items',
+        'order_number_sequences',
         'orders',
         'outbox',
         'processed_events',
@@ -331,6 +332,13 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
       consumer: 'saga-orchestrator',
     });
     expect(processedEvent?.processedAt.getTime()).toBe(nowUtc.getTime());
+
+    await db.insert(schema.orderNumberSequences).values({ id: 1, nextValue: 1 });
+    const [sequenceRow] = await db
+      .select()
+      .from(schema.orderNumberSequences)
+      .where(eq(schema.orderNumberSequences.id, 1));
+    expect(sequenceRow).toMatchObject({ id: 1, nextValue: 1 });
   });
 
   it('rejects a duplicate event_id in outbox — dual-write of the same fact must fail loudly, not silently duplicate', async () => {

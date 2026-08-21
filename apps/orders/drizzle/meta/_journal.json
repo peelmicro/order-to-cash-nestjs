@@ -22,6 +22,13 @@
       "when": 1787237906211,
       "tag": "0002_outbox_causation_seq_trace_parent",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "5",
+      "when": 1787285672083,
+      "tag": "0003_smooth_machine_man",
+      "breakpoints": true
     }
   ]
 }

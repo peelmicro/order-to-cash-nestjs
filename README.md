@@ -152,7 +152,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 5 | pnpm monorepo scaffold, shared-kernel, contracts | ✅ |
 | 6 | Database entities (orders, fulfillment, billing) | ✅ |
 | 7 | Deterministic seed job | ✅ |
-| 8 | Orders service + saga orchestrator | 🚧 aggregate + outbox/idempotency done; acceptance, orchestrator pending |
+| 8 | Orders service + saga orchestrator | 🚧 aggregate, outbox/idempotency, acceptance done; orchestrator pending |
 | 9 | Fulfillment service | ⬜ |
 | 10 | Billing service | ⬜ |
 | 11 | Notifications service | ⬜ |

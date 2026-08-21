@@ -19,6 +19,36 @@ import eslintConfigPrettier from "eslint-config-prettier";
 const DOMAIN_PURITY_MESSAGE =
   "Domain layer must stay framework/infrastructure free (see CLAUDE.md § Non-negotiables).";
 
+// DI-tokens rule (review_orders_acceptance.md §12 — the DI-metadata
+// divergence): `tsconfig.base.json` sets `emitDecoratorMetadata: true`, so
+// `pnpm build` (`tsc`) emits `design:paramtypes` and Nest CAN infer a
+// bare-typed constructor parameter's token from it — but that inference
+// makes DI resolution depend on which compiler produced the running code.
+// A dev-time compiler that does not emit that metadata (an esbuild-based
+// watcher, for instance) resolves the SAME parameter to `undefined`,
+// silently — Nest's container still builds, and the failure appears only
+// at first use (`apps/orders/src/di-metadata-divergence.spec.ts`
+// reproduces both sides directly). Enforced here with the built-in
+// `no-restricted-syntax` rule — same "zero extra dependencies, one
+// selector per block" instrument the domain-purity rule above uses —
+// rather than a custom rule package.
+//
+// Matches a `TSParameterProperty` (a constructor parameter carrying an
+// accessibility/`readonly` modifier — the only shape that becomes an
+// injected, stored field in this codebase's style) with no `@Inject(...)`
+// decorator of its own, inside the constructor of a class carrying one of
+// the Nest DI decorators below. Provider wiring that instead uses
+// `useFactory` + `inject: [...]` (every provider in every `app.module.ts`
+// today) is untouched — there is no constructor for this selector to
+// match.
+const NEST_DI_DECORATOR_NAMES = ["Injectable", "Controller", "Catch", "CommandHandler", "EventsHandler", "QueryHandler", "Resolver"];
+const REQUIRE_EXPLICIT_INJECT_SELECTOR =
+  `ClassDeclaration:has(Decorator[expression.callee.name=/^(${NEST_DI_DECORATOR_NAMES.join("|")})$/]) ` +
+  `MethodDefinition[kind="constructor"] ` +
+  `TSParameterProperty:not(:has(Decorator[expression.callee.name="Inject"]))`;
+const REQUIRE_EXPLICIT_INJECT_MESSAGE =
+  "Bare-type constructor injection on a Nest-decorated class is forbidden here — add an explicit @Inject(TOKEN). Without it, DI resolution silently depends on which compiler produced the running code (tsc vs an esbuild-based dev runner) — see CLAUDE.md § Non-negotiables.";
+
 export default tseslint.config(
   {
     ignores: [
@@ -48,6 +78,21 @@ export default tseslint.config(
       "@typescript-eslint/no-unused-vars": [
         "warn",
         { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
+  {
+    // Scoped to every service's app source. `test-support/` is excluded
+    // deliberately: `di-metadata-probe.ts` reproduces the bare-type
+    // injection failure ON PURPOSE, as the reproduction this very rule
+    // exists to prevent in production code — it is never imported from a
+    // production module.
+    files: ["apps/*/src/**/*.{ts,mts,cts}"],
+    ignores: ["**/test-support/**", "**/*.spec.ts"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        { selector: REQUIRE_EXPLICIT_INJECT_SELECTOR, message: REQUIRE_EXPLICIT_INJECT_MESSAGE },
       ],
     },
   },

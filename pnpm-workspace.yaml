@@ -29,6 +29,7 @@ catalog:
   "@nestjs/common": ^11.2.1
   "@nestjs/core": ^11.2.1
   "@nestjs/platform-express": ^11.2.1
+  "@nestjs/testing": ^11.2.1
   reflect-metadata: ^0.2.2
   rxjs: ^7.8.2
   vue-tsc: ^3.3.10
@@ -54,3 +55,36 @@ catalog:
   # same tag docker-compose.infra.yml uses (design.md §9).
   kafkajs: ^2.2.4
   "@testcontainers/kafka": ^12.1.0
+  # NATS RPC transport (apps/orders — orders_acceptance feature: the
+  # `orders.create` responder and the `fulfillment.stock.check` client).
+  # `@nestjs/microservices` for the inbound `@MessagePattern` responder only
+  # (design.md-equivalent asymmetry to the outbox relay's kafkajs-direct
+  # producer, see kafka-fact-publisher.ts) — the outbound stock-check call
+  # uses the plain `nats` client directly for explicit per-call timeout
+  # control. `@testcontainers/nats` pinned to the same major as the rest of
+  # the testcontainers family above; the container it drives is pinned
+  # separately, to nats:2.14.5-alpine, the same tag docker-compose.infra.yml
+  # uses.
+  "@nestjs/microservices": ^11.2.1
+  nats: ^2.29.3
+  "@testcontainers/nats": ^12.1.0
+  # DTO validation at the presentation boundary (CLAUDE.md's own description
+  # of the presentation layer: "@MessagePattern NATS ... DTOs,
+  # class-validator").
+  class-validator: ^0.14.2
+  class-transformer: ^0.5.1
+  # DI-metadata divergence fix (review_orders_acceptance.md, cross-cutting
+  # item folded into feature 15's fix pass): `tsconfig.base.json` sets
+  # `emitDecoratorMetadata: true`, so `pnpm build` (tsc) emits
+  # `design:paramtypes` — but `tsx watch` is esbuild-based and does NOT
+  # implement that compiler flag, so a bare-type constructor-injected
+  # provider that resolves correctly under `pnpm start` silently resolves
+  # to `undefined` under `pnpm dev:*`. `tsc-watch` runs the SAME `tsc`
+  # compiler `pnpm build` uses, in watch mode, restarting `node` on every
+  # successful recompilation — so `pnpm dev:*` and `pnpm start` now compile
+  # with the identical compiler and can no longer disagree on decorator
+  # metadata. All six NestJS services (orders, fulfillment, billing,
+  # gateway, notifications, projector) use it; `apps/web` (Nuxt/Vite, not
+  # NestJS) and `apps/seed` (plain `tsx`, no DI container) are unaffected
+  # and keep their existing dev scripts.
+  tsc-watch: ^7.2.1

@@ -5,7 +5,7 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — outbox_and_idempotency (14) done; next `orders_acceptance` (15)
+**Status:** idle — orders_acceptance (15) done after two review passes; next `order_saga_orchestrator` (16)
 **Session started:** —
 
 ## Goal
@@ -13,6 +13,8 @@
 Phase 8, one feature at a time (decision: specs written per-feature, not batched). Order: orders_aggregate (sdd) → outbox_and_idempotency (sdd, inherits causation_id + poll-tiebreak advisories) → orders_acceptance → order_saga_orchestrator (sdd). Each sdd feature stops at spec_ready for the human gate.
 
 ## Decisions taken this session
+
+- **DI-metadata divergence — leader-level, must land before feature 16.** `tsconfig.base.json` sets `emitDecoratorMetadata: true`, so `pnpm build` (tsc) emits `design:paramtypes` — but all six services' `dev` script is `tsx watch`, and esbuild does not implement it. The same source therefore behaves differently under `pnpm dev:*` and `pnpm start`, and Vitest catches neither (specs use `new` or `useValue`). Blast radius today is nil (only two decorator-injected classes exist, both already using `@Inject`), but feature 16 is the first `@nestjs/cqrs` graph where bare-type constructor injection is the idiom. Fixing at source (dev script) + convention + lint guard, folded into this feature's fix pass.
 
 - **Gate on `specs/outbox_and_idempotency/`**: all 26 open points accepted as written. Two given conscious approval: row 5 (add `trace_parent` now rather than migrate three DBs twice) and **row 11, which reverses feature 13's ruling** — the Drizzle adapter lands in feature 14, not 15, because `save()` is then written once together with its transaction and outbox. Amendment: a parity guard (`OI12`) for the five per-service copies of the idempotent-consumer pattern, mirroring row 20's byte-identity test for the three outbox schemas — duplication guarded by a check, not by discipline.
 - Both Phase-6 advisories resolved: `causation_id char(36) NOT NULL` in all three outbox tables (one coordinated migration), and `seq bigint AUTO_INCREMENT` as the sole poll ordering key (a timestamp is the wrong tool for a total order; `DATETIME(3)` narrows ties without closing them).
@@ -61,6 +63,9 @@ Phase 8, one feature at a time (decision: specs written per-feature, not batched
 None.
 
 ## Notes
+
+- **Parked advisories with owners** (from review_orders_acceptance second pass): N3 — the DI ESLint guard only matches `TSParameterProperty`, so a manually-assigned bare-typed parameter evades it; leader tightens the selector **before feature 16** (the first @nestjs/cqrs graph). N4 — the `test-support` build exclude landed only in apps/orders; features 17/19 replicate it when siblings gain test-support dirs. N2 — nothing guards `emitDecoratorMetadata`/the six dev scripts against reversion; a config-guard spec dispatched to test_maintainer alongside N1/N5.
+- **Leader lesson, third occurrence**: current.md must be updated at every status transition. The reviewer has now failed C2 on this three times. New personal rule: the same edit that changes feature_list.json changes current.md — one block, never two steps.
 
 - **Process deviation (2026-08-20):** the `seed_job` review was run with an explicit `model: sonnet` override instead of the reviewer's unpinned default — the inherited-model run was blocked twice by an API-side safeguard flag (`reasoning_extraction`) before producing any output. One-off, not a change to the agent definition; revisit only if it recurs.
 

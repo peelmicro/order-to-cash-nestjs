@@ -4,7 +4,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "dotenv -e ../../.env -- tsx watch src/main.ts",
+    "dev": "dotenv -e ../../.env -- tsc-watch --noClear -p tsconfig.build.json --onSuccess \"node dist/main.js\"",
     "build": "tsc -p tsconfig.build.json",
     "start": "dotenv -e ../../.env -- node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -23,6 +23,7 @@
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "dotenv-cli": "catalog:",
+    "tsc-watch": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"

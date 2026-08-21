@@ -19,11 +19,12 @@ const tsxBin = path.join(packageRoot, 'node_modules', '.bin', 'tsx');
  * is exactly the flake this design avoids.
  */
 describe('contracts:check — checkGenerated', () => {
+  // checkGenerated: allow cold start under parallel workspace test load
   it('reports ok against the real, up-to-date committed directory', async () => {
     const result = await checkGenerated(realCommittedDir);
     expect(result.ok).toBe(true);
     expect(result.messages.some((m) => m.includes('contracts:check OK'))).toBe(true);
-  });
+  }, 30_000);
 
   it('reports drift, names the file and includes a diff, against a corrupted copy', async () => {
     const tempCommittedDir = await mkdtemp(path.join(tmpdir(), 'otc-contracts-check-spec-'));

@@ -1,8 +1,8 @@
 {
-  "id": "cc7967bb-6efb-42a0-930c-53a167a0936d",
-  "prevId": "2265a095-475d-49c7-af2e-9a0031c44768",
   "version": "5",
   "dialect": "mysql",
+  "id": "33ed0633-7e60-4f4b-b3fc-ed7525d6dce4",
+  "prevId": "cc7967bb-6efb-42a0-930c-53a167a0936d",
   "tables": {
     "currencies": {
       "name": "currencies",
@@ -156,15 +156,15 @@
         "products_currency_id_currencies_id_fk": {
           "name": "products_currency_id_currencies_id_fk",
           "tableFrom": "products",
+          "tableTo": "currencies",
           "columnsFrom": [
             "currency_id"
           ],
-          "tableTo": "currencies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -270,15 +270,15 @@
         "retailers_currency_id_currencies_id_fk": {
           "name": "retailers_currency_id_currencies_id_fk",
           "tableFrom": "retailers",
+          "tableTo": "currencies",
           "columnsFrom": [
             "currency_id"
           ],
-          "tableTo": "currencies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -378,15 +378,15 @@
         "companies_currency_id_currencies_id_fk": {
           "name": "companies_currency_id_currencies_id_fk",
           "tableFrom": "companies",
+          "tableTo": "currencies",
           "columnsFrom": [
             "currency_id"
           ],
-          "tableTo": "currencies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -531,41 +531,41 @@
         "orders_company_id_companies_id_fk": {
           "name": "orders_company_id_companies_id_fk",
           "tableFrom": "orders",
+          "tableTo": "companies",
           "columnsFrom": [
             "company_id"
           ],
-          "tableTo": "companies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "orders_retailer_id_retailers_id_fk": {
           "name": "orders_retailer_id_retailers_id_fk",
           "tableFrom": "orders",
+          "tableTo": "retailers",
           "columnsFrom": [
             "retailer_id"
           ],
-          "tableTo": "retailers",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         },
         "orders_currency_id_currencies_id_fk": {
           "name": "orders_currency_id_currencies_id_fk",
           "tableFrom": "orders",
+          "tableTo": "currencies",
           "columnsFrom": [
             "currency_id"
           ],
-          "tableTo": "currencies",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
@@ -658,33 +658,64 @@
         "order_items_order_id_orders_id_fk": {
           "name": "order_items_order_id_orders_id_fk",
           "tableFrom": "order_items",
+          "tableTo": "orders",
           "columnsFrom": [
             "order_id"
           ],
-          "tableTo": "orders",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "cascade"
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         },
         "order_items_product_id_products_id_fk": {
           "name": "order_items_product_id_products_id_fk",
           "tableFrom": "order_items",
+          "tableTo": "products",
           "columnsFrom": [
             "product_id"
           ],
-          "tableTo": "products",
           "columnsTo": [
             "id"
           ],
-          "onUpdate": "no action",
-          "onDelete": "no action"
+          "onDelete": "no action",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {
         "order_items_id": {
           "name": "order_items_id",
+          "columns": [
+            "id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraint": {}
+    },
+    "order_number_sequences": {
+      "name": "order_number_sequences",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "tinyint",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "next_value": {
+          "name": "next_value",
+          "type": "int",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "order_number_sequences_id": {
+          "name": "order_number_sequences_id",
           "columns": [
             "id"
           ]
@@ -888,9 +919,9 @@
   },
   "views": {},
   "_meta": {
-    "columns": {},
     "schemas": {},
-    "tables": {}
+    "tables": {},
+    "columns": {}
   },
   "internal": {
     "tables": {},

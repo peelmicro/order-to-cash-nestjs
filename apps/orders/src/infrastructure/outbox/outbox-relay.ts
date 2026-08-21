@@ -15,6 +15,30 @@ export interface OutboxRelayResult {
   readonly published: number;
 }
 
+/** Raised when `publisher.publish(...)` has not settled within `config.publishTimeoutMs` — design.md §5.2's stated bound on the open claim transaction (fixes defect D1: the config value was parsed but never enforced). Handled the same way any other publish failure is (§5.3, OI8): the batch is left unstamped and retried, unchanged, on the next poll. */
+export class OutboxPublishTimeoutError extends Error {
+  constructor(timeoutMs: number, batchSize: number) {
+    super(`outbox-relay: publish of ${batchSize} fact(s) did not settle within OUTBOX_PUBLISH_TIMEOUT_MS=${timeoutMs}`);
+    this.name = new.target.name;
+  }
+}
+
+function withPublishTimeout(publish: Promise<void>, timeoutMs: number, batchSize: number): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new OutboxPublishTimeoutError(timeoutMs, batchSize)), timeoutMs);
+    publish.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error as Error);
+      },
+    );
+  });
+}
+
 export interface OutboxRelayLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
@@ -84,7 +108,12 @@ export class OutboxRelay {
       });
 
       try {
-        await this.publisher.publish(facts);
+        // Bounds the open claim transaction by OUTBOX_PUBLISH_TIMEOUT_MS
+        // (design.md §5.2) — a producer that never settles (broker
+        // unreachable, hung TCP connection) must not hold the claimed rows'
+        // locks indefinitely; a timeout is handled exactly like any other
+        // publish failure below (OI8: left unstamped, retried unchanged).
+        await withPublishTimeout(this.publisher.publish(facts), this.config.publishTimeoutMs, claimed.length);
       } catch (error) {
         for (const row of claimed) {
           this.logger.error('outbox-relay: publish failed, batch left unstamped for the next poll', {

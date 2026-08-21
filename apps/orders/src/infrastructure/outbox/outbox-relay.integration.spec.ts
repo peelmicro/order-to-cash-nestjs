@@ -43,6 +43,15 @@ class RejectingFactPublisher implements FactPublisher {
   }
 }
 
+/** Never settles — simulates a broker that accepted the TCP connection but never acknowledges (D1: the claim transaction must be bounded by `OUTBOX_PUBLISH_TIMEOUT_MS`, not left open indefinitely). */
+class HangingFactPublisher implements FactPublisher {
+  publish(): Promise<void> {
+    return new Promise<void>(() => {
+      /* never resolves, never rejects */
+    });
+  }
+}
+
 describe('outbox-relay — R14, OI2, OI3, OI8 (Testcontainers, mysql:8.4.11 + apache/kafka:4.3.1)', () => {
   let mysqlFixture: OrdersTestFixture;
   let kafkaFixture: KafkaTestFixture;
@@ -283,6 +292,47 @@ describe('outbox-relay — R14, OI2, OI3, OI8 (Testcontainers, mysql:8.4.11 + ap
       .from(ordersSchema.outbox)
       .where(eq(ordersSchema.outbox.aggregateId, order.id.value));
     expect(rows).toHaveLength(1);
+    expect(rows[0]?.publishedAt).toBeNull();
+  }, 60_000);
+
+  it('bounds the open claim transaction by OUTBOX_PUBLISH_TIMEOUT_MS (design.md §5.2, defect D1) instead of holding it open indefinitely against a publisher that never settles', async () => {
+    const clock = new FakeClock(new Date('2026-08-20T15:00:00.000Z'));
+    const repository = new DrizzleOrderRepository(mysqlFixture.db, clock);
+    const unitOfWork = new DrizzleUnitOfWork(mysqlFixture.db);
+    const input = placeOrderInput();
+    const order = Order.place(input, { occurredAt: clock.now(), causationId: UniqueId.generate() });
+    await unitOfWork.execute((tx) => repository.save(order, tx));
+
+    const relay = new OutboxRelay({
+      db: mysqlFixture.db,
+      publisher: new HangingFactPublisher(),
+      clock,
+      // A short bound so the test itself stays fast — proves the VALUE is
+      // actually enforced, not merely parsed (D1: it was loaded into
+      // OutboxRelayConfig but never read by the relay's own publish call).
+      config: { enabled: true, pollIntervalMs: 0, batchSize: 10, publishTimeoutMs: 300 },
+    });
+
+    const startedAt = Date.now();
+    const result = await relay.runOnce();
+    const elapsedMs = Date.now() - startedAt;
+
+    // >= 1, not === 1: this describe block shares one MySQL fixture across
+    // every `it()`, and an earlier test ("leaves every record of a
+    // rejected batch unstamped...") deliberately leaves its own row
+    // unpublished forever — this poll's batch legitimately claims that
+    // one too. What THIS test proves is the bound on elapsed time and that
+    // NOTHING in the batch got stamped, not the exact batch size.
+    expect(result.claimed).toBeGreaterThanOrEqual(1);
+    expect(result.published).toBe(0);
+    // Bounded by the configured timeout, not by the test's own 60s hook
+    // timeout — proves the transaction did not stay open indefinitely.
+    expect(elapsedMs).toBeLessThan(5_000);
+
+    const rows = await mysqlFixture.db
+      .select()
+      .from(ordersSchema.outbox)
+      .where(eq(ordersSchema.outbox.aggregateId, order.id.value));
     expect(rows[0]?.publishedAt).toBeNull();
   }, 60_000);
 });

@@ -213,7 +213,7 @@
       "phase": 8,
       "title": "Order acceptance: orders.create RPC + stock check + OrderPlaced via outbox",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "synchronous stock check via NATS fulfillment.stock.check",
         "order id returned synchronously",
@@ -520,6 +520,20 @@
         "progress/ snapshots versioned in different states",
         "specs/shared/ clean for #8"
       ]
+    },
+    {
+      "id": 39,
+      "name": "orders_idempotent_replay",
+      "phase": 8,
+      "title": "orders.create requestId idempotent replay (asyncapi.yaml OrdersCreateRequestPayload.requestId)",
+      "sdd": true,
+      "status": "pending",
+      "acceptance": [
+        "a repeated orders.create request carrying the same requestId returns the ORIGINAL order (same orderId/orderReference/money fields), not a second placement",
+        "concurrent duplicate requests for the same requestId never place two orders",
+        "requestId remains optional: omitting it places a normal, non-deduplicated order"
+      ],
+      "notes": "Opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) does not implement it — requestId is accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass because it is schema-affecting, not a local bug fix."
     }
   ]
 }

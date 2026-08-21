@@ -8,5 +8,6 @@ export * from './retailers.schema';
 export * from './companies.schema';
 export * from './orders.schema';
 export * from './order-items.schema';
+export * from './order-number-sequences.schema';
 export * from './outbox.schema';
 export * from './processed-events.schema';
