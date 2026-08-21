@@ -49,6 +49,18 @@ const REQUIRE_EXPLICIT_INJECT_SELECTOR =
 const REQUIRE_EXPLICIT_INJECT_MESSAGE =
   "Bare-type constructor injection on a Nest-decorated class is forbidden here — add an explicit @Inject(TOKEN). Without it, DI resolution silently depends on which compiler produced the running code (tsc vs an esbuild-based dev runner) — see CLAUDE.md § Non-negotiables.";
 
+// Every service from feature 16 onward is a HYBRID app (HTTP + NATS + Kafka).
+// A `@MessagePattern`/`@EventPattern` without an explicit `Transport` argument
+// binds to EVERY connected microservice transport — so a NATS-only pattern
+// such as `orders.create` also gets registered on the Kafka server, which then
+// tries to subscribe to a topic named "orders.create" and crashes the boot.
+// Found live in feature 16; invisible to any single-transport TestingModule.
+// Matches a pattern decorator carrying fewer than two arguments.
+const REQUIRE_EXPLICIT_TRANSPORT_SELECTOR =
+  `Decorator[expression.callee.name=/^(MessagePattern|EventPattern)$/][expression.arguments.length<2]`;
+const REQUIRE_EXPLICIT_TRANSPORT_MESSAGE =
+  "@MessagePattern/@EventPattern must name its Transport (e.g. Transport.NATS, Transport.KAFKA). A bare pattern binds to every connected transport and crashes hybrid apps at boot — see CLAUDE.md § Non-negotiables.";
+
 export default tseslint.config(
   {
     ignores: [
@@ -93,6 +105,7 @@ export default tseslint.config(
       "no-restricted-syntax": [
         "error",
         { selector: REQUIRE_EXPLICIT_INJECT_SELECTOR, message: REQUIRE_EXPLICIT_INJECT_MESSAGE },
+        { selector: REQUIRE_EXPLICIT_TRANSPORT_SELECTOR, message: REQUIRE_EXPLICIT_TRANSPORT_MESSAGE },
       ],
     },
   },

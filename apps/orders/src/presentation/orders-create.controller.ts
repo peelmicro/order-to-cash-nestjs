@@ -14,7 +14,7 @@
 // exact `RpcError` shape under this feature's own control instead of
 // Nest's default microservices exception handling.
 import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, Payload } from '@nestjs/microservices';
+import { MessagePattern, Payload, Transport } from '@nestjs/microservices';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { OrdersCreateReplyPayload, RpcError } from '@otc/contracts';
@@ -34,7 +34,13 @@ export class OrdersCreateController {
   // `Symbol` one does).
   constructor(@Inject(PlaceOrderHandler) private readonly placeOrder: PlaceOrderHandler) {}
 
-  @MessagePattern('orders.create')
+  // `Transport.NATS` explicit (order_saga_orchestrator, feature 16's live-
+  // stack finding, see saga-facts.controller.ts's header comment): without
+  // a declared transport, this pattern was also being bound to the KAFKA
+  // microservice added by main.ts, and `ServerKafka` tried to
+  // `consumer.subscribe()` a Kafka topic literally named "orders.create",
+  // crashing the process at boot.
+  @MessagePattern('orders.create', Transport.NATS)
   async create(@Payload() payload: unknown): Promise<OrdersCreateReplyPayload | RpcError> {
     const dto = plainToInstance(OrdersCreateRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true, forbidNonWhitelisted: false });

@@ -68,6 +68,13 @@ catalog:
   "@nestjs/microservices": ^11.2.1
   nats: ^2.29.3
   "@testcontainers/nats": ^12.1.0
+  # order_saga_orchestrator (feature 16) — the application-layer command/
+  # event bus and the `@Saga` construct the durable orchestrator composes
+  # with (design.md §5.5, §9; gate ruling, progress/spec_order_saga_orchestrator.md
+  # §5, open point 3 overruled): every service's application layer now uses
+  # `CommandBus`/`QueryBus`/`EventBus` handlers per CLAUDE.md. Matches the
+  # Nest 11 line already pinned above.
+  "@nestjs/cqrs": ^11.0.3
   # DTO validation at the presentation boundary (CLAUDE.md's own description
   # of the presentation layer: "@MessagePattern NATS ... DTOs,
   # class-validator").

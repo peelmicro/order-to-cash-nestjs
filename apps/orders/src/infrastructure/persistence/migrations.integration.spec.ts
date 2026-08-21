@@ -61,7 +61,7 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
     await container?.stop();
   });
 
-  it('applies the committed migrations from empty and creates all 9 tables plus drizzle’s own migrations table', async () => {
+  it('applies the committed migrations from empty and creates all 11 tables plus drizzle’s own migrations table', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name`,
       [container.getDatabase()],
@@ -80,6 +80,8 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
         'processed_events',
         'products',
         'retailers',
+        'saga_commands',
+        'saga_ignored_facts',
       ].sort(),
     );
   });
@@ -110,6 +112,168 @@ describe('otc_orders — migrations + round-trip (Testcontainers, mysql:8.4.11)'
       'published_at',
       'seq',
     ]);
+  });
+
+  it('asserts saga_commands carries its unique (order_id, command) index and both sweeper-claim indexes (design.md §6.3, §6.4)', async () => {
+    const [uniqueRows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'saga_commands' AND index_name = 'uq_saga_commands_order_command'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+    expect(uniqueRows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'order_id',
+      'command',
+    ]);
+
+    const [statusCreatedRows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'saga_commands' AND index_name = 'idx_saga_commands_status_created'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+    expect(statusCreatedRows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'status',
+      'created_at',
+    ]);
+
+    const [statusNextAttemptRows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'saga_commands' AND index_name = 'idx_saga_commands_status_next_attempt'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+    expect(statusNextAttemptRows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'status',
+      'next_attempt_at',
+    ]);
+  });
+
+  it('asserts the correlation_id index exists on saga_ignored_facts', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'saga_ignored_facts' AND index_name = 'idx_saga_ignored_facts_correlation'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual(['correlation_id']);
+  });
+
+  it('round-trips a saga_commands row (typed insert/select) and rejects a duplicate (order_id, command) pair (design.md §6.3)', async () => {
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const orderId = randomUUID();
+    const payload = {
+      orderReference: 'ORD-000010',
+      retailerCode: 'RET-0001',
+      companyCode: 'COM-0001',
+      lines: [{ productCode: 'PROD-0001', units: 2 }],
+    };
+
+    const rowId = randomUUID();
+    await db.insert(schema.sagaCommands).values({
+      id: rowId,
+      orderId,
+      orderReference: 'ORD-000010',
+      command: 'stock.reserve',
+      payload,
+      triggeringEventId: randomUUID(),
+      status: 'pending',
+      attempts: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      createdAt: now,
+      updatedAt: now,
+      sentAt: null,
+    });
+    const [row] = await db.select().from(schema.sagaCommands).where(eq(schema.sagaCommands.id, rowId));
+    expect(row).toMatchObject({
+      id: rowId,
+      orderId,
+      orderReference: 'ORD-000010',
+      command: 'stock.reserve',
+      status: 'pending',
+      attempts: 0,
+      lastError: null,
+      nextAttemptAt: null,
+      sentAt: null,
+    });
+    expect(row?.payload).toEqual(payload);
+    expect(row?.createdAt.getTime()).toBe(now.getTime());
+
+    await expect(
+      db.insert(schema.sagaCommands).values({
+        id: randomUUID(),
+        orderId, // duplicate pair — same orderId, same command
+        orderReference: 'ORD-000010',
+        command: 'stock.reserve',
+        payload,
+        triggeringEventId: randomUUID(),
+        status: 'pending',
+        attempts: 0,
+        lastError: null,
+        nextAttemptAt: null,
+        createdAt: now,
+        updatedAt: now,
+        sentAt: null,
+      }),
+    ).rejects.toMatchObject({ cause: { code: 'ER_DUP_ENTRY' } });
+  });
+
+  it('round-trips a saga_ignored_facts row (typed insert/select), including the nullable unknown-order case', async () => {
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+    const orderId = randomUUID();
+
+    const preconditionRowId = randomUUID();
+    await db.insert(schema.sagaIgnoredFacts).values({
+      id: preconditionRowId,
+      eventId: randomUUID(),
+      eventType: 'credit.approved.v1',
+      orderId,
+      correlationId: orderId,
+      observedStatus: 'placed',
+      expectedStatus: 'stock_reserved',
+      marker: 'precondition_unmet',
+      recordedAt: now,
+    });
+    const [preconditionRow] = await db
+      .select()
+      .from(schema.sagaIgnoredFacts)
+      .where(eq(schema.sagaIgnoredFacts.id, preconditionRowId));
+    expect(preconditionRow).toMatchObject({
+      eventType: 'credit.approved.v1',
+      orderId,
+      correlationId: orderId,
+      observedStatus: 'placed',
+      expectedStatus: 'stock_reserved',
+      marker: 'precondition_unmet',
+    });
+    expect(preconditionRow?.recordedAt.getTime()).toBe(now.getTime());
+
+    const unknownOrderRowId = randomUUID();
+    const unknownCorrelationId = randomUUID();
+    await db.insert(schema.sagaIgnoredFacts).values({
+      id: unknownOrderRowId,
+      eventId: randomUUID(),
+      eventType: 'stock.reserved.v1',
+      orderId: null,
+      correlationId: unknownCorrelationId,
+      observedStatus: null,
+      expectedStatus: 'placed',
+      marker: 'unknown_order',
+      recordedAt: now,
+    });
+    const [unknownOrderRow] = await db
+      .select()
+      .from(schema.sagaIgnoredFacts)
+      .where(eq(schema.sagaIgnoredFacts.id, unknownOrderRowId));
+    expect(unknownOrderRow).toMatchObject({
+      eventType: 'stock.reserved.v1',
+      orderId: null,
+      correlationId: unknownCorrelationId,
+      observedStatus: null,
+      expectedStatus: 'placed',
+      marker: 'unknown_order',
+    });
   });
 
   it('round-trips one row per table via typed Drizzle insert/select, field-level equality including outbox JSON payload and datetime handling', async () => {

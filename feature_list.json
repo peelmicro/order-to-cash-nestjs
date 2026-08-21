@@ -226,7 +226,7 @@
       "phase": 8,
       "title": "Saga orchestrator: advances on Kafka facts, commands over NATS, both compensation paths",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "happy path reaches invoiced against stubbed responders",
         "CreditRejected releases stock and cancels the order",

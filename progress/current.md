@@ -5,7 +5,7 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — orders_acceptance (15) done after two review passes; next `order_saga_orchestrator` (16)
+**Status:** idle — PHASE 8 COMPLETE (features 13–16 done; 16 reopened once for a racy test assertion, fixed and re-approved on a third review pass)
 **Session started:** —
 
 ## Goal
@@ -63,6 +63,11 @@ Phase 8, one feature at a time (decision: specs written per-feature, not batched
 None.
 
 ## Notes
+
+- **Testing pattern for features 17–22 (reviewer ruling, third pass on feature 16):** saga integration tests synchronise only on terminal or monotonic evidence (a `saga_commands`/outbox status that never regresses, an append-only request log) — never on a transient live column the correct saga can pass through faster than one poll interval. Polling a state the system is supposed to leave is a race by construction.
+
+- **Binding advisories inherited by feature 17 (from review_order_saga_orchestrator):** D1 — a distinct-eventId duplicate of a fact whose precondition still holds (e.g. a second `credit.rejected.v1` while `stock.release` is parked) hits `uq_saga_commands_order_command` and crash-loops the consumer on that offset (reproduced); fix = idempotent `enqueue` on `(order_id, command)`, must land before R16/DLQ is claimed at feature 27 — **feature 17's implementer fixes it first** since 17 is the first real responder that will produce such facts. D2 — dispatcher uses `Date.now()` not the `Clock` port (why no integration test runs the real sweeper service). D3 — R26's integration test asserts the wire, not the durable row. D6 — three interface-typed `@Optional()` params evade the DI guard. D4 — `0002_snapshot.json.prevId` still points at the feature-14 orphan; fix at the next Orders migration. D5 — consumer group is actually `orders.saga-server` (Nest appends `-server`); document or rename at feature 27.
+- **Transport-binding convention (leader, landing now):** every `@MessagePattern`/`@EventPattern` must name its `Transport` — bare decorators bind to every connected transport, and a NATS-only pattern registered on Kafka crashes a hybrid app at boot (found live in feature 16; invisible to single-transport TestingModules). CLAUDE.md non-negotiable + ESLint guard.
 
 - **Parked advisories with owners** (from review_orders_acceptance second pass): N3 — the DI ESLint guard only matches `TSParameterProperty`, so a manually-assigned bare-typed parameter evades it; leader tightens the selector **before feature 16** (the first @nestjs/cqrs graph). N4 — the `test-support` build exclude landed only in apps/orders; features 17/19 replicate it when siblings gain test-support dirs. N2 — nothing guards `emitDecoratorMetadata`/the six dev scripts against reversion; a config-guard spec dispatched to test_maintainer alongside N1/N5.
 - **Leader lesson, third occurrence**: current.md must be updated at every status transition. The reviewer has now failed C2 on this three times. New personal rule: the same edit that changes feature_list.json changes current.md — one block, never two steps.

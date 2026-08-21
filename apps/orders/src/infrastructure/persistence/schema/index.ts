@@ -11,3 +11,5 @@ export * from './order-items.schema';
 export * from './order-number-sequences.schema';
 export * from './outbox.schema';
 export * from './processed-events.schema';
+export * from './saga-commands.schema';
+export * from './saga-ignored-facts.schema';

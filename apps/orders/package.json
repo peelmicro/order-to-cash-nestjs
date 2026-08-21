@@ -18,6 +18,7 @@
   "dependencies": {
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
+    "@nestjs/cqrs": "catalog:",
     "@nestjs/microservices": "catalog:",
     "@nestjs/platform-express": "catalog:",
     "@otc/contracts": "workspace:*",

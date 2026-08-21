@@ -15,6 +15,13 @@ export interface KafkaConfig {
 
 export const ORDERS_FACTS_TOPIC = 'otc.orders.facts.v1';
 
+// The two additional fact topics the saga orchestrator consumes (feature
+// 16, design.md §3.1) — same "never derived at runtime from
+// asyncapi.yaml, guarded by kafka.config.spec.ts's read-the-spec-as-text
+// assertion" discipline as ORDERS_FACTS_TOPIC above.
+export const FULFILLMENT_FACTS_TOPIC = 'otc.fulfillment.facts.v1';
+export const BILLING_FACTS_TOPIC = 'otc.billing.facts.v1';
+
 export function loadKafkaConfig(env: NodeJS.ProcessEnv = process.env): KafkaConfig {
   const brokers = (env.KAFKA_BROKERS ?? 'localhost:9092')
     .split(',')

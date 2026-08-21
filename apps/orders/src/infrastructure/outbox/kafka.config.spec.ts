@@ -6,27 +6,36 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { loadKafkaConfig, ORDERS_FACTS_TOPIC } from './kafka.config';
+import { BILLING_FACTS_TOPIC, FULFILLMENT_FACTS_TOPIC, loadKafkaConfig, ORDERS_FACTS_TOPIC } from './kafka.config';
 
 const ASYNCAPI_SPEC_PATH = path.resolve(__dirname, '../../../../../specs/shared/asyncapi.yaml');
 
-function ordersFactsChannelBlock(specText: string): string {
-  const match = specText.match(/\n {2}ordersFacts:\n([\s\S]*?)\n {2}\S/);
+function channelBlock(specText: string, channelName: string): string {
+  const match = specText.match(new RegExp(`\\n {2}${channelName}:\\n([\\s\\S]*?)\\n {2}\\S`));
   if (!match) {
-    throw new Error('kafka.config.spec: could not locate the ordersFacts channel block in asyncapi.yaml');
+    throw new Error(`kafka.config.spec: could not locate the ${channelName} channel block in asyncapi.yaml`);
   }
   return match[1]!;
 }
 
-describe('kafka.config — uses the fact topic the AsyncAPI channel declares', () => {
-  it('uses the fact topic the AsyncAPI channel declares', () => {
+function kafkaTopicOf(block: string): string {
+  const topicMatch = block.match(/bindings:\s*\n\s*kafka:\s*\n\s*topic:\s*(\S+)/);
+  if (!topicMatch) {
+    throw new Error('kafka.config.spec: channel block has no bindings.kafka.topic');
+  }
+  return topicMatch[1]!;
+}
+
+describe('kafka.config — uses the fact topics the AsyncAPI channels declare', () => {
+  it('uses the fact topic the AsyncAPI ordersFacts channel declares', () => {
     const specText = readFileSync(ASYNCAPI_SPEC_PATH, 'utf8');
-    const block = ordersFactsChannelBlock(specText);
+    expect(ORDERS_FACTS_TOPIC).toBe(kafkaTopicOf(channelBlock(specText, 'ordersFacts')));
+  });
 
-    const topicMatch = block.match(/bindings:\s*\n\s*kafka:\s*\n\s*topic:\s*(\S+)/);
-    expect(topicMatch, 'ordersFacts channel has no bindings.kafka.topic').not.toBeNull();
-
-    expect(ORDERS_FACTS_TOPIC).toBe(topicMatch![1]);
+  it('uses the fact topics the AsyncAPI fulfillmentFacts and billingFacts channels declare (order_saga_orchestrator, design.md §3.1)', () => {
+    const specText = readFileSync(ASYNCAPI_SPEC_PATH, 'utf8');
+    expect(FULFILLMENT_FACTS_TOPIC).toBe(kafkaTopicOf(channelBlock(specText, 'fulfillmentFacts')));
+    expect(BILLING_FACTS_TOPIC).toBe(kafkaTopicOf(channelBlock(specText, 'billingFacts')));
   });
 
   it('defaults KAFKA_BROKERS to localhost:9092 and KAFKA_CLIENT_ID to otc-orders (design.md §8)', () => {

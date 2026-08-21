@@ -2,7 +2,7 @@
   "version": "5",
   "dialect": "mysql",
   "id": "33ed0633-7e60-4f4b-b3fc-ed7525d6dce4",
-  "prevId": "cc7967bb-6efb-42a0-930c-53a167a0936d",
+  "prevId": "82ea016c-79fe-4462-b647-71f3e84dc4d7",
   "tables": {
     "currencies": {
       "name": "currencies",
