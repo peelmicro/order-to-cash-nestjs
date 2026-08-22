@@ -235,7 +235,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phase 9 of 25 complete, Phase 10 underway — 19 of 39 features done** (the backlog grew by one along the way: `requestId` idempotent replay was scoped out of order acceptance honestly, as a tracked `sdd: true` feature, rather than left silently absent).
+**Position: Phase 9 of 25 complete, Phase 10 underway — 20 of 39 features done** (the backlog grew by one along the way: `requestId` idempotent replay was scoped out of order acceptance honestly, as a tracked `sdd: true` feature, rather than left silently absent).
 
 | Phase | What | State |
 |---|---|---|
@@ -249,7 +249,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 8 | Orders service + saga orchestrator — first `sdd: true` features through the full spec loop | next |
 | 8 | Orders service — aggregate, outbox/idempotency, acceptance, and the saga orchestrator (the centrepiece: `@nestjs/cqrs` over durable `saga_commands`, both compensation paths, park-then-recover) | ✅ |
 | 9 | Fulfillment — stock reservations and DESADV creation. The saga now advances across two services unattended | ✅ |
-| 10 | Billing — `billing_credit` ✅ (the first genuine end-to-end compensation, no simulator needed); simulator, invoicing and remittances next | 🚧 |
+| 10 | Billing — buyer credit ✅ and the `.99` simulator ✅ (every compensation path now demoable on demand); invoicing and remittances next | 🚧 |
 | 11–15 | Notifications, projector, gateway, reliability, observability | pending |
 | 16–19 | Web app + all test layers | pending |
 | 20–25 | n8n workflows, quality gates, dashboards, full compose, documentation, final checkpoint | pending |

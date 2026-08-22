@@ -156,7 +156,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 7 | Deterministic seed job | ✅ |
 | 8 | Orders service + saga orchestrator | ✅ |
 | 9 | Fulfillment service | ✅ |
-| 10 | Billing service | 🚧 buyer credit done; simulator, invoicing, remittances pending |
+| 10 | Billing service | 🚧 buyer credit + `.99` simulator done; invoicing, remittances pending |
 | 11 | Notifications service | ⬜ |
 | 12 | Projector service + MongoDB read model | ⬜ |
 | 13 | Gateway / BFF | ⬜ |
