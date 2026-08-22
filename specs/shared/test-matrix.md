@@ -1,5 +1,7 @@
 # Shared Test Matrix — `R1`–`R61` → named tests
 
+> **Fact-emission rule.** Every branch that emits — or deliberately suppresses — a domain fact must be covered by a test that **fails when that emission is deleted**. Structure and comments are not coverage. This applies with double force to branches that have no live caller yet, since integration harnesses bind the happy-path adapter and cannot reach them. Any assessment implementing this matrix should arm the deletion itself before claiming the row.
+
 > **Scope.** The **stack-agnostic** traceability matrix of the Order-To-Cash
 > trilogy, reused **verbatim** by assessments **#7**, **#8** and **#9**. Every
 > EARS requirement of [`requirements.md`](./requirements.md) appears here
@@ -64,11 +66,11 @@ The `›` separator introduces the **test case name** inside the file.
 | 2. `outbox_and_idempotency` | R11 – R18 | 8 | 7 |
 | 3. `order_saga_orchestrator` | R19 – R29 | 11 | 8 |
 | 4. `fulfillment_stock` | R30 – R36, R61 | 8 | 7 |
-| 5. `billing_credit` | R37 – R44 | 8 | 0 |
+| 5. `billing_credit` | R37 – R44 | 8 | 5 |
 | 6. `billing_invoicing` | R45 – R49 | 5 | 0 |
 | 7. `projector_read_model` | R50 – R55 | 6 | 0 |
 | 8. `observability_reliability` | R56 – R60 | 5 | 0 |
-| **Total** | **R1 – R61** | **61** | **31** |
+| **Total** | **R1 – R61** | **61** | **36** |
 
 ---
 
@@ -138,11 +140,11 @@ demo, in the API tests and in the end-to-end tests.
 
 | Id | Requirement (short) | Level | Test file › case | Status |
 |---|---|---|---|---|
-| **R37** | Holds + exposure ≤ limit; ledger is append-only (**B1**, **B2**) | domain unit | `billing/domain/buyer-credit.spec` › *keeps active holds plus open exposure within the credit limit and raises on any update or deletion of a ledger entry* | TODO |
-| **R38** | Approved hold → one `hold` entry + one `credit.approved.v1` | domain unit | `billing/domain/credit-hold.spec` › *appends a hold entry and emits exactly one credit.approved.v1 carrying the held amount and the resulting available credit* | TODO |
-| **R39** | Refused hold → no entry, unchanged credit, `credit.rejected.v1` with a reason | domain unit | `billing/domain/credit-hold.spec` › *appends no ledger entry and emits credit.rejected.v1 with a machine-readable reason when the amount exceeds the limit or the currency differs* | TODO |
-| **R40** | Invoice issue converts the hold into exposure, leaving available credit unchanged | domain unit | `billing/domain/credit-ledger.spec` › *appends a consume entry at invoice issue that leaves available credit numerically unchanged and emits no fact* | TODO |
-| **R41** | Payment and pre-invoice cancellation release credit with the right reason (**B5**) | domain unit | `billing/domain/credit-ledger.spec` › *releases with reason invoice_paid on payment and with reason order_cancelled on cancellation, restoring available credit without going below zero* | TODO |
+| **R37** | Holds + exposure ≤ limit; ledger is append-only (**B1**, **B2**) | domain unit | `billing/domain/buyer-credit.spec` › *keeps active holds plus open exposure within the credit limit and raises on any update or deletion of a ledger entry* | DONE — `apps/billing/src/domain/buyer-credit.spec.ts` › `buyer-credit.spec — R37` › *keeps active holds plus open exposure within the credit limit and raises on any update or deletion of a ledger entry* |
+| **R38** | Approved hold → one `hold` entry + one `credit.approved.v1` | domain unit | `billing/domain/credit-hold.spec` › *appends a hold entry and emits exactly one credit.approved.v1 carrying the held amount and the resulting available credit* | DONE — `apps/billing/src/domain/credit-hold.spec.ts` › `credit-hold.spec — R38` › *appends a hold entry and emits exactly one credit.approved.v1 carrying the held amount and the resulting available credit*; integration half: `apps/billing/src/credit-hold.integration.spec.ts` |
+| **R39** | Refused hold → no entry, unchanged credit, `credit.rejected.v1` with a reason (amended — the currency clause moved to `BC4`, a contract violation, per `requirements.md` §3 and the human-gate ruling) | domain unit | `billing/domain/credit-hold.spec` › *appends no ledger entry and emits credit.rejected.v1 with a machine-readable reason when the amount exceeds the available credit or the credit port refuses* | DONE — `apps/billing/src/domain/credit-hold.spec.ts` › `credit-hold.spec — R39` › *appends no ledger entry and emits credit.rejected.v1 with a machine-readable reason when the amount exceeds the available credit or the credit port refuses*; the *port-refusal* sub-clause is proven at handler level by `apps/billing/src/application/credit-hold.handler.spec.ts` › *returns rejected with the port's reason and records a credit.rejected.v1 fact when the port refuses a fitting hold* — the integration harness binds an always-approve adapter and therefore cannot reach that branch, noted so no assessment mistakes the integration suite for coverage of it |
+| **R40** | Invoice issue converts the hold into exposure, leaving available credit unchanged | domain unit | `billing/domain/credit-ledger.spec` › *appends a consume entry at invoice issue that leaves available credit numerically unchanged and emits no fact* | DONE — `apps/billing/src/domain/credit-ledger.spec.ts` › `credit-ledger.spec — R40` › *appends a consume entry at invoice issue that leaves available credit numerically unchanged and emits no fact* (ledger arithmetic only — `consumeHold` has no caller until feature 21, per `requirements.md`'s preamble) |
+| **R41** | Payment and pre-invoice cancellation release credit with the right reason (**B5**) | domain unit | `billing/domain/credit-ledger.spec` › *releases with reason invoice_paid on payment and with reason order_cancelled on cancellation, restoring available credit without going below zero* | DONE — `apps/billing/src/domain/credit-ledger.spec.ts` › `credit-ledger.spec — R41` › *releases with reason invoice_paid on payment and with reason order_cancelled on cancellation, restoring available credit without going below zero* (ledger arithmetic only — `releaseHold` has no caller until features 22/25, per `requirements.md`'s preamble) |
 | **R42** | Simulator: `totalAmount mod 100 = 99` → reject `simulated_cents_rule` regardless of credit | domain unit | `billing/domain/credit-simulator.spec` › *rejects a total whose minor units end in 99 with reason simulated_cents_rule even when the retailer has ample credit* | TODO |
 | **R43** | `CREDIT_FAILURE_RATE` defaults to 0 and an out-of-range value fails startup | domain unit | `billing/domain/credit-simulator.spec` › *defaults the failure rate to zero, rejects a configured proportion when set, and fails to start reporting the offending value when it is outside the closed interval zero to one* | TODO |
 | **R44** | Simulated and genuine rejections are indistinguishable downstream except by `reason` | integration | `billing/integration/credit-rejection-parity.spec` › *produces the same fact type, payload shape and compensation path for a simulated and a genuine over-limit rejection, and keeps the over-limit rejection reachable with the simulator bound and the failure rate at zero* | TODO |

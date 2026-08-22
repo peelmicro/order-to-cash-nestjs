@@ -315,11 +315,21 @@ append a `hold` ledger entry for the order and SHALL emit exactly one
 `credit.approved.v1` carrying the held amount and the resulting available credit.
 
 **R39.** IF a `credit.hold` command is received whose amount exceeds the
-retailer's available credit, or whose currency differs from the credit line's
-currency, or which the credit port rejects, THEN THE SYSTEM SHALL append **no**
-ledger entry, SHALL leave the available credit unchanged, and SHALL emit
-`credit.rejected.v1` carrying the requested amount, the available credit and a
-machine-readable reason.
+retailer's available credit, or which the credit port rejects, THEN THE SYSTEM
+SHALL append **no** ledger entry, SHALL leave the available credit unchanged, and
+SHALL emit `credit.rejected.v1` carrying the requested amount, the available
+credit and a machine-readable reason.
+
+> **Currency and identity are contract violations, not credit decisions.** IF a
+> `credit.hold` command names a currency other than the credit line's, or names a
+> `(retailerCode, companyCode)` pair for which no credit line exists, THEN THE
+> SYSTEM SHALL append no ledger entry, SHALL emit **no** fact, and SHALL answer
+> the command with an error reply. An order is single-currency by **M2**/**O1**
+> and a credit line is master data, so neither case is a statement about the
+> buyer's credit and neither may cause an order to be cancelled; and a fact whose
+> aggregate does not exist has no `aggregateId` to carry (§7.1 of
+> `domain-model.md`). This keeps the three `reason` values of
+> `credit.rejected.v1` closed, as **R44** requires.
 
 **R40.** WHEN an invoice is issued for an order holding an active credit hold,
 THE SYSTEM SHALL append a `consume` ledger entry that converts the hold into open
