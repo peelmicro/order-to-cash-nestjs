@@ -5,7 +5,12 @@
 // exported here.
 export { StockItem, type StockContext } from './stock-item.js';
 
-export { Reservation, RESERVATION_STATUSES, type ReservationStatus, type ReservationView } from './reservation.js';
+export {
+  Reservation,
+  RESERVATION_STATUSES,
+  type ReservationStatus,
+  type ReservationView,
+} from './reservation.js';
 
 export {
   reserveOrderStock,
@@ -28,3 +33,17 @@ export {
 
 export type { StockItemSnapshot } from './stock-item-snapshot.js';
 export type { ReservationSnapshot } from './reservation.js';
+
+export { DespatchAdvice, type DespatchLineEntry } from './despatch-advice.js';
+
+export { orderDespatchedEvent } from './despatch-events.js';
+
+export {
+  createDespatchForOrder,
+  type CreateDespatchInput,
+  type CreateDespatchOutcome,
+} from './order-despatch.js';
+
+export { EmptyDespatchLinesError } from './despatch-errors.js';
+
+export type { DespatchAdviceSnapshot, DespatchLineSnapshot } from './despatch-advice-snapshot.js';

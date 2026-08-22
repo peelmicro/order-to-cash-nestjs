@@ -10,7 +10,12 @@ import type { ValidationError } from 'class-validator';
 import { DomainError } from '@otc/shared-kernel';
 import type { RpcError } from '@otc/contracts';
 import { ReservationTerminalError } from '../domain/stock-errors';
-import { ConcurrentReservationChangeError, NoKnownStockItemError, UnknownStockItemError } from '../application/stock-application-errors';
+import {
+  ConcurrentReservationChangeError,
+  NoKnownStockItemError,
+  UnknownStockItemError,
+} from '../application/stock-application-errors';
+import { NoReservedStockForDespatchError } from '../application/despatch-application-errors';
 
 function flattenViolations(violations: readonly ValidationError[]): string[] {
   return violations.flatMap((violation) => {
@@ -32,7 +37,12 @@ export function toRpcError(error: unknown): RpcError {
   const occurredAt = new Date().toISOString();
 
   if (error instanceof NoKnownStockItemError) {
-    return { code: 'NOT_FOUND', message: error.message, details: { orderReference: error.orderReference }, occurredAt };
+    return {
+      code: 'NOT_FOUND',
+      message: error.message,
+      details: { orderReference: error.orderReference },
+      occurredAt,
+    };
   }
   if (error instanceof UnknownStockItemError) {
     return {
@@ -43,10 +53,35 @@ export function toRpcError(error: unknown): RpcError {
     };
   }
   if (error instanceof ReservationTerminalError) {
-    return { code: 'PRECONDITION_FAILED', message: error.message, details: { code: error.code }, occurredAt };
+    return {
+      code: 'PRECONDITION_FAILED',
+      message: error.message,
+      details: { code: error.code },
+      occurredAt,
+    };
+  }
+  if (error instanceof NoReservedStockForDespatchError) {
+    // R36's refusal — the order holds no `reserved` reservation (never
+    // reserved, or already released). Not a client validation mistake and
+    // not "resource missing" (NOT_FOUND is reserved for an unknown
+    // productCode/orderReference shape): the order and its reservations
+    // exist, they are simply not in the state `despatch.create` requires —
+    // the same PRECONDITION_FAILED vocabulary `ReservationTerminalError`
+    // uses one line above, for the same reason.
+    return {
+      code: 'PRECONDITION_FAILED',
+      message: error.message,
+      details: { orderReference: error.orderReference },
+      occurredAt,
+    };
   }
   if (error instanceof ConcurrentReservationChangeError) {
-    return { code: 'CONFLICT', message: error.message, details: { orderReference: error.orderReference }, occurredAt };
+    return {
+      code: 'CONFLICT',
+      message: error.message,
+      details: { orderReference: error.orderReference },
+      occurredAt,
+    };
   }
   if (error instanceof DomainError) {
     // Fulfillment's remaining domain refusals (InsufficientStockError,
@@ -54,7 +89,12 @@ export function toRpcError(error: unknown): RpcError {
     // UnknownReservationError) are not client-caused the way an order's
     // are — DOMAIN_ERROR rather than Orders' VALIDATION_FAILED mapping
     // (design.md §6.4).
-    return { code: 'DOMAIN_ERROR', message: error.message, details: { code: error.code }, occurredAt };
+    return {
+      code: 'DOMAIN_ERROR',
+      message: error.message,
+      details: { code: error.code },
+      occurredAt,
+    };
   }
 
   return {

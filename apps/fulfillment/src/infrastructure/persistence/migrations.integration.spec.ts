@@ -62,7 +62,7 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
     await container?.stop();
   });
 
-  it('applies the committed migrations from empty and creates all 6 tables plus drizzle’s own migrations table', async () => {
+  it('applies the committed migrations from empty and creates all 7 tables plus drizzle’s own migrations table', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name`,
       [container.getDatabase()],
@@ -73,6 +73,7 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       [
         '__drizzle_migrations',
         'despatch_items',
+        'despatch_number_sequences',
         'despatches',
         'outbox',
         'processed_events',
@@ -80,6 +81,19 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
         'stock',
       ].sort(),
     );
+  });
+
+  it('asserts the uq_despatches_order_reference unique constraint exists — F8, at most one DespatchAdvice per order (fulfillment_despatch)', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'despatches' AND index_name = 'uq_despatches_order_reference'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual([
+      'order_reference',
+    ]);
   });
 
   it('asserts the (published_at, occurred_at) index exists on outbox — the relay poll must be an index scan', async () => {
@@ -191,7 +205,10 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       createdAt: nowUtc,
       updatedAt: nowUtc,
     });
-    const [despatch] = await db.select().from(schema.despatches).where(eq(schema.despatches.id, despatchId));
+    const [despatch] = await db
+      .select()
+      .from(schema.despatches)
+      .where(eq(schema.despatches.id, despatchId));
     expect(despatch).toMatchObject({
       id: despatchId,
       despatchReference: 'DES-000001',
@@ -243,7 +260,10 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       publishedAt: null,
       createdAt: nowUtc,
     });
-    const [outboxRow] = await db.select().from(schema.outbox).where(eq(schema.outbox.eventId, eventId));
+    const [outboxRow] = await db
+      .select()
+      .from(schema.outbox)
+      .where(eq(schema.outbox.eventId, eventId));
     expect(outboxRow).toMatchObject({
       eventId,
       eventType: 'stock.reserved.v1',
@@ -274,6 +294,42 @@ describe('otc_fulfillment — migrations + round-trip (Testcontainers, mysql:8.4
       consumer: 'saga-orchestrator',
     });
     expect(processedEvent?.processedAt.getTime()).toBe(nowUtc.getTime());
+
+    // despatch_number_sequences — the DES-###### counter row (fulfillment_despatch).
+    await db.insert(schema.despatchNumberSequences).values({ id: 1, nextValue: 1 });
+    const [sequenceRow] = await db
+      .select()
+      .from(schema.despatchNumberSequences)
+      .where(eq(schema.despatchNumberSequences.id, 1));
+    expect(sequenceRow).toMatchObject({ id: 1, nextValue: 1 });
+  });
+
+  it('rejects a duplicate order_reference in despatches — F8, at most one DespatchAdvice per order', async () => {
+    const now = new Date(Math.floor(Date.now() / 1000) * 1000);
+
+    await db.insert(schema.despatches).values({
+      id: randomUUID(),
+      despatchReference: 'DES-000200',
+      despatchDate: now,
+      companyCode: 'COM-0001',
+      retailerCode: 'RET-0001',
+      orderReference: 'ORD-000200',
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    await expect(
+      db.insert(schema.despatches).values({
+        id: randomUUID(),
+        despatchReference: 'DES-000201', // different despatch reference — SAME order reference
+        despatchDate: now,
+        companyCode: 'COM-0001',
+        retailerCode: 'RET-0001',
+        orderReference: 'ORD-000200',
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ).rejects.toMatchObject({ cause: { code: 'ER_DUP_ENTRY' } });
   });
 
   it('rejects a duplicate (company_code, product_code) pair in stock — one StockItem per product per supplier', async () => {

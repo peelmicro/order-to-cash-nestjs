@@ -3,8 +3,17 @@
 import { UniqueId } from '@otc/shared-kernel';
 import { describe, expect, it } from 'vitest';
 import type { ValidationError } from 'class-validator';
-import { FactAggregateMismatchError, InsufficientStockError, ReservationTerminalError } from '../domain/stock-errors';
-import { ConcurrentReservationChangeError, NoKnownStockItemError, UnknownStockItemError } from '../application/stock-application-errors';
+import {
+  FactAggregateMismatchError,
+  InsufficientStockError,
+  ReservationTerminalError,
+} from '../domain/stock-errors';
+import {
+  ConcurrentReservationChangeError,
+  NoKnownStockItemError,
+  UnknownStockItemError,
+} from '../application/stock-application-errors';
+import { NoReservedStockForDespatchError } from '../application/despatch-application-errors';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
 describe('rpc-error-mapper — toRpcError', () => {
@@ -20,7 +29,9 @@ describe('rpc-error-mapper — toRpcError', () => {
   });
 
   it('ReservationTerminalError -> PRECONDITION_FAILED with details.code', () => {
-    const error = toRpcError(new ReservationTerminalError(UniqueId.generate(), 'consumed', 'release'));
+    const error = toRpcError(
+      new ReservationTerminalError(UniqueId.generate(), 'consumed', 'release'),
+    );
     expect(error.code).toBe('PRECONDITION_FAILED');
     expect(error.details).toMatchObject({ code: 'RESERVATION_TERMINAL' });
   });
@@ -30,12 +41,20 @@ describe('rpc-error-mapper — toRpcError', () => {
     expect(error.code).toBe('CONFLICT');
   });
 
+  it('NoReservedStockForDespatchError -> PRECONDITION_FAILED with details.orderReference (R36)', () => {
+    const error = toRpcError(new NoReservedStockForDespatchError('ORD-000001'));
+    expect(error.code).toBe('PRECONDITION_FAILED');
+    expect(error.details).toMatchObject({ orderReference: 'ORD-000001' });
+  });
+
   it('any other DomainError -> DOMAIN_ERROR with details.code', () => {
     const error = toRpcError(new InsufficientStockError('PRD-0001', 5, 2));
     expect(error.code).toBe('DOMAIN_ERROR');
     expect(error.details).toMatchObject({ code: 'INSUFFICIENT_STOCK' });
 
-    const error2 = toRpcError(new FactAggregateMismatchError(UniqueId.generate(), UniqueId.generate()));
+    const error2 = toRpcError(
+      new FactAggregateMismatchError(UniqueId.generate(), UniqueId.generate()),
+    );
     expect(error2.code).toBe('DOMAIN_ERROR');
     expect(error2.details).toMatchObject({ code: 'FACT_AGGREGATE_MISMATCH' });
   });
@@ -50,7 +69,10 @@ describe('rpc-error-mapper — toRpcError', () => {
 describe('rpc-error-mapper — validationRpcError', () => {
   it('flattens class-validator violations into one VALIDATION_FAILED message', () => {
     const violations: ValidationError[] = [
-      { property: 'companyCode', constraints: { isString: 'companyCode must be a string' } } as ValidationError,
+      {
+        property: 'companyCode',
+        constraints: { isString: 'companyCode must be a string' },
+      } as ValidationError,
     ];
 
     const error = validationRpcError(violations);

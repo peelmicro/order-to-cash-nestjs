@@ -255,7 +255,7 @@
       "phase": 9,
       "title": "DespatchAdvice (DESADV) creation consuming reservations",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "reservations move to consumed",
         "OrderDespatched emitted via outbox"

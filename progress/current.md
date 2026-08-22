@@ -5,7 +5,7 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — `fulfillment_stock` (17) done on the second review pass; next `fulfillment_despatch` (18)
+**Status:** idle — PHASE 9 COMPLETE (features 17–18 done); next phase 10 `billing_credit` (19, sdd:true)
 **Session started:** —
 
 ## Goal
@@ -64,7 +64,9 @@ None.
 
 ## Notes
 
-- **Seed data-coherence defect, owed by feature 18's live-boot pass (reviewer ruling, feature 17):** `apps/seed` stocks only 5 of its 22 companies, and its own demo orders ORD-000007/8/9 target the unstocked `ALBIONFOODS` — so those three park on `NOT_FOUND` rather than reserving. Not a feature-17 defect (the park is the designed negative path, observed live), but it must be fixed no later than feature 28 (`saga_e2e_verification`); the natural slot is 18's live boot.
+- **Inherited by feature 19 (`billing_credit`), from `review_fulfillment_despatch`:** N1 — `apps/seed/src/outbox-parity.spec.ts` matches its `outbox|processed_events` regex against migration *comments*, which forced migration 0002's header to call the outbox "the fact-relay table"; one-line fix in `normalise()`. N2 — `despatch-creation.handler.ts:99-100` sources `companyCode` from `items[0]` but `retailerCode` from the reservation (correct, asymmetric to read). N3 — `apps/seed/src/verify.ts`'s `orders.orders === SAGAS.length` exits 1 on a long-lived dev DB (pre-existing; due no later than feature 28). **Also owed at 19: the outbox-relay service-neutral refactor + the retroactive OI12-style parity guard** (feature 17 deferred it to the third copy, which 19 creates).
+- **Historical artefact, not owed:** `apps/fulfillment/drizzle/meta/0001_snapshot.json` was never regenerated after migration 0001 and is wrong as an audit record. Harmless now — drizzle diffs against the latest snapshot, and `0002_snapshot.json` is full and truthful.
+
 
 - **`fulfillment_stock` (17) implementer pass, done.** All of A–I in `specs/fulfillment_stock/tasks.md` ticked; `pnpm quality`/`./init.sh` green; 11 integration files / 36 tests green (Testcontainers MySQL+Kafka+NATS); domain coverage 93.63%. Live boot found a genuine `apps/seed` data gap (only 5 of ~22 seeded companies have a Fulfillment `stock` row — `ALBIONFOODS`, the three originally-parked demo orders' company, is not one of them) that happens to collide with design.md §3.3's own documented "no carrier — NOT_FOUND, park for a human" edge case; a freshly-placed order against a seeded company (`IBERFOODS`/`PRD-0001`) reached `stock_reserved` + parked `credit.hold` unattended, confirming the designed happy path. Also reproduced live: `orders.create`'s Nest-packet reply shape (unlike Fulfillment's five bare-JSON responders) — a raw bare-JSON client times out even though the order is placed, exactly as design.md §6.3 predicted; feature 25's hand-over. Full report: `progress/impl_fulfillment_stock.md`.
 

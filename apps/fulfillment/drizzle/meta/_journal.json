@@ -15,6 +15,13 @@
       "when": 1787237908901,
       "tag": "0001_outbox_causation_seq_trace_parent",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1787374813377,
+      "tag": "0002_despatch_number_sequence_and_order_reference_unique",
+      "breakpoints": true
     }
   ]
 }

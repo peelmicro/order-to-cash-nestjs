@@ -153,7 +153,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 6 | Database entities (orders, fulfillment, billing) | ✅ |
 | 7 | Deterministic seed job | ✅ |
 | 8 | Orders service + saga orchestrator | ✅ |
-| 9 | Fulfillment service | 🚧 stock + reservations done; despatch pending |
+| 9 | Fulfillment service | ✅ |
 | 10 | Billing service | ⬜ |
 | 11 | Notifications service | ⬜ |
 | 12 | Projector service + MongoDB read model | ⬜ |

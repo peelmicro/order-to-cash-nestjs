@@ -28,8 +28,15 @@ import * as schema from '../infrastructure/persistence/schema';
 import { BareJsonNatsDeserializer } from '../infrastructure/messaging/bare-json-nats.deserializer';
 import { BareJsonNatsSerializer } from '../infrastructure/messaging/bare-json-nats.serializer';
 import { FULFILLMENT_FACTS_TOPIC } from '../infrastructure/outbox/kafka.config';
-import { createTopic, startKafkaTestFixture, type KafkaTestFixture } from '../infrastructure/outbox/test-support/kafka-test-fixture';
-import { startNatsTestFixture, type NatsTestFixture } from '../infrastructure/messaging/test-support/nats-test-fixture';
+import {
+  createTopic,
+  startKafkaTestFixture,
+  type KafkaTestFixture,
+} from '../infrastructure/outbox/test-support/kafka-test-fixture';
+import {
+  startNatsTestFixture,
+  type NatsTestFixture,
+} from '../infrastructure/messaging/test-support/nats-test-fixture';
 
 export const MYSQL_IMAGE = 'mysql:8.4.11';
 
@@ -56,12 +63,29 @@ export interface StockIntegrationHarness {
   readonly db: FulfillmentDb;
   readonly testNatsConnection: NatsConnection;
   /** A raw `nats` request — the production caller's shape (Orders' adapters), never `ClientProxy`. Bare JSON in, bare JSON (or RpcError) out. */
-  requestBare<TReply>(subject: string, payload: unknown, headers?: Record<string, string>, timeoutMs?: number): Promise<TReply | RpcError>;
+  requestBare<TReply>(
+    subject: string,
+    payload: unknown,
+    headers?: Record<string, string>,
+    timeoutMs?: number,
+  ): Promise<TReply | RpcError>;
   seedStock(rows: readonly SeedStockRow[]): Promise<Map<string, string>>;
   seedReservation(row: SeedReservationRow): Promise<string>;
   outboxRowsFor(correlationId: string): Promise<(typeof schema.outbox.$inferSelect)[]>;
   reservationsOf(orderReference: string): Promise<(typeof schema.reservations.$inferSelect)[]>;
-  stockRowOf(companyCode: string, productCode: string): Promise<typeof schema.stock.$inferSelect | undefined>;
+  stockRowOf(
+    companyCode: string,
+    productCode: string,
+  ): Promise<typeof schema.stock.$inferSelect | undefined>;
+  despatchOf(
+    orderReference: string,
+  ): Promise<
+    | {
+        despatch: typeof schema.despatches.$inferSelect;
+        items: (typeof schema.despatchItems.$inferSelect)[];
+      }
+    | undefined
+  >;
   teardown(): Promise<void>;
 }
 
@@ -77,7 +101,11 @@ function natsHeadersOf(record?: Record<string, string>) {
 }
 
 export async function startStockIntegrationHarness(): Promise<StockIntegrationHarness> {
-  const [mysqlContainer, kafkaFixture, natsFixture]: [StartedMySqlContainer, KafkaTestFixture, NatsTestFixture] = await Promise.all([
+  const [mysqlContainer, kafkaFixture, natsFixture]: [
+    StartedMySqlContainer,
+    KafkaTestFixture,
+    NatsTestFixture,
+  ] = await Promise.all([
     new MySqlContainer(MYSQL_IMAGE)
       .withDatabase('otc_fulfillment')
       .withUsername('otc_app')
@@ -105,7 +133,10 @@ export async function startStockIntegrationHarness(): Promise<StockIntegrationHa
   const db = drizzle(probePool, { schema, mode: 'default' });
 
   const natsConnectionOptions = natsFixture.container.getConnectionOptions();
-  const natsServers = typeof natsConnectionOptions.servers === 'string' ? natsConnectionOptions.servers : natsConnectionOptions.servers![0]!;
+  const natsServers =
+    typeof natsConnectionOptions.servers === 'string'
+      ? natsConnectionOptions.servers
+      : natsConnectionOptions.servers![0]!;
 
   // Point the process environment at the started containers BEFORE
   // compiling `AppModule` — every `useFactory` in it reads these via
@@ -198,7 +229,10 @@ export async function startStockIntegrationHarness(): Promise<StockIntegrationHa
   }
 
   async function reservationsOf(orderReference: string) {
-    return db.select().from(schema.reservations).where(eq(schema.reservations.orderReference, orderReference));
+    return db
+      .select()
+      .from(schema.reservations)
+      .where(eq(schema.reservations.orderReference, orderReference));
   }
 
   async function stockRowOf(companyCode: string, productCode: string) {
@@ -207,6 +241,21 @@ export async function startStockIntegrationHarness(): Promise<StockIntegrationHa
       .from(schema.stock)
       .where(eq(schema.stock.companyCode, companyCode));
     return rows.find((row) => row.productCode === productCode);
+  }
+
+  async function despatchOf(orderReference: string) {
+    const [despatch] = await db
+      .select()
+      .from(schema.despatches)
+      .where(eq(schema.despatches.orderReference, orderReference));
+    if (!despatch) {
+      return undefined;
+    }
+    const items = await db
+      .select()
+      .from(schema.despatchItems)
+      .where(eq(schema.despatchItems.despatchId, despatch.id));
+    return { despatch, items };
   }
 
   return {
@@ -219,6 +268,7 @@ export async function startStockIntegrationHarness(): Promise<StockIntegrationHa
     outboxRowsFor,
     reservationsOf,
     stockRowOf,
+    despatchOf,
     async teardown(): Promise<void> {
       await testNatsConnection.close();
       await app.close();

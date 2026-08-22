@@ -1,16 +1,34 @@
 import { describe, expect, it } from 'vitest';
+import { COMPANIES } from './companies.data';
+import { PRODUCTS } from './products.data';
 import { SAGAS } from './sagas.data';
 import { STOCK } from './stock.data';
 
-describe('STOCK — derived from SAGAS, never hand-duplicated (single source of truth)', () => {
-  it('has one row per distinct (companyCode, productCode) pair touched by a seeded saga', () => {
-    const pairs = new Set<string>();
+describe('STOCK — derived from SAGAS, plus baseline coverage for every other company (fulfillment_despatch, F/decision 2)', () => {
+  it('has one row per distinct (companyCode, productCode) pair touched by a seeded saga, PLUS one row per PRODUCT for every company no saga ever touches', () => {
+    const sagaPairs = new Set<string>();
+    const sagaCompanies = new Set<string>();
     for (const saga of SAGAS) {
       for (const reservation of saga.reservations) {
-        pairs.add(`${reservation.companyCode}::${reservation.productCode}`);
+        sagaPairs.add(`${reservation.companyCode}::${reservation.productCode}`);
+        sagaCompanies.add(reservation.companyCode);
       }
     }
-    expect(STOCK).toHaveLength(pairs.size);
+    const uncoveredCompanies = COMPANIES.filter((company) => !sagaCompanies.has(company.code));
+    expect(STOCK).toHaveLength(sagaPairs.size + uncoveredCompanies.length * PRODUCTS.length);
+  });
+
+  it('every seeded company has at least one stock row — no company can hit NOT_FOUND on stock.reserve (fulfillment_despatch decision 2)', () => {
+    const stockedCompanies = new Set(STOCK.map((item) => item.companyCode));
+    for (const company of COMPANIES) {
+      expect(stockedCompanies.has(company.code)).toBe(true);
+    }
+  });
+
+  it('a company outside SAGAS (e.g. ALBIONFOODS, the concrete gap review_fulfillment_stock.md reported) is stocked for every product', () => {
+    const albionRows = STOCK.filter((item) => item.companyCode === 'ALBIONFOODS');
+    expect(albionRows).toHaveLength(PRODUCTS.length);
+    expect(albionRows.every((row) => row.units === 500 && row.reservedUnits === 0)).toBe(true);
   });
 
   it('every row has non-negative units and zero reservedUnits (every saga is terminal)', () => {
@@ -52,7 +70,9 @@ describe('STOCK — derived from SAGAS, never hand-duplicated (single source of 
     for (const key of releasedOnlyPairs) {
       if (consumedPairs.has(key)) continue; // touched by both — skip, covered by the consumed assertion above
       const [companyCode, productCode] = key.split('::');
-      const item = STOCK.find((s) => s.companyCode === companyCode && s.productCode === productCode);
+      const item = STOCK.find(
+        (s) => s.companyCode === companyCode && s.productCode === productCode,
+      );
       expect(item?.units).toBe(500);
     }
   });

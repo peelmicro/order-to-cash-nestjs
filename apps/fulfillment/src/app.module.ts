@@ -8,17 +8,34 @@ import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { AppController } from './presentation/app.controller';
 import { StockController } from './presentation/stock.controller';
+import { DespatchController } from './presentation/despatch.controller';
 import { CLOCK, type Clock } from './application/ports/clock.port';
+import {
+  DESPATCH_NUMBER_ALLOCATOR,
+  type DespatchNumberAllocator,
+} from './application/ports/despatch-number-allocator.port';
+import { DESPATCH_REPOSITORY } from './application/ports/despatch-repository.port';
 import { FACT_PUBLISHER } from './application/ports/fact-publisher.port';
-import { STOCK_ITEM_REPOSITORY } from './application/ports/stock-item-repository.port';
+import {
+  STOCK_ITEM_REPOSITORY,
+  type StockItemRepository,
+} from './application/ports/stock-item-repository.port';
 import { STOCK_READ } from './application/ports/stock-read.port';
 import { UNIT_OF_WORK, type UnitOfWork } from './application/ports/unit-of-work.port';
 import { STOCK_COMMAND_HANDLERS } from './application/commands/stock.command-handlers';
+import { DESPATCH_COMMAND_HANDLERS } from './application/commands/despatch.command-handlers';
 import { STOCK_QUERY_HANDLERS } from './application/queries/stock.query-handlers';
 import { StockReservationHandler } from './application/stock-reservation.handler';
-import { createFulfillmentDb, createFulfillmentPool, type FulfillmentDb } from './infrastructure/persistence/client';
+import { DespatchCreationHandler } from './application/despatch-creation.handler';
+import {
+  createFulfillmentDb,
+  createFulfillmentPool,
+  type FulfillmentDb,
+} from './infrastructure/persistence/client';
 import { loadFulfillmentDbConfig } from './infrastructure/persistence/db-config';
 import { DrizzleUnitOfWork } from './infrastructure/persistence/drizzle-unit-of-work';
+import { DrizzleDespatchNumberAllocator } from './infrastructure/persistence/despatch-number-allocator';
+import { DrizzleDespatchRepository } from './infrastructure/persistence/despatch.repository';
 import { DrizzleStockItemRepository } from './infrastructure/persistence/stock-item.repository';
 import { DrizzleStockReadRepository } from './infrastructure/persistence/stock-read.repository';
 import { SystemClock } from './infrastructure/system-clock';
@@ -26,20 +43,28 @@ import { createKafkaClient } from './infrastructure/outbox/create-kafka-client';
 import { KafkaFactPublisher } from './infrastructure/outbox/kafka-fact-publisher';
 import { loadKafkaConfig } from './infrastructure/outbox/kafka.config';
 import { OutboxRelay } from './infrastructure/outbox/outbox-relay';
-import { loadOutboxRelayConfig, type OutboxRelayConfig } from './infrastructure/outbox/outbox-relay.config';
-import { OUTBOX_RELAY, OUTBOX_RELAY_CONFIG, OutboxRelayService } from './infrastructure/outbox/outbox-relay.service';
+import {
+  loadOutboxRelayConfig,
+  type OutboxRelayConfig,
+} from './infrastructure/outbox/outbox-relay.config';
+import {
+  OUTBOX_RELAY,
+  OUTBOX_RELAY_CONFIG,
+  OutboxRelayService,
+} from './infrastructure/outbox/outbox-relay.service';
 
 /** Module-local token — the shared `FulfillmentDb` connection every persistence provider below is built from. Not exported: nothing outside this module needs to depend on the raw Drizzle handle. */
 const FULFILLMENT_DB = Symbol('FulfillmentDb');
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, StockController],
+  controllers: [AppController, StockController, DespatchController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
       provide: FULFILLMENT_DB,
-      useFactory: (): FulfillmentDb => createFulfillmentDb(createFulfillmentPool(loadFulfillmentDbConfig())),
+      useFactory: (): FulfillmentDb =>
+        createFulfillmentDb(createFulfillmentPool(loadFulfillmentDbConfig())),
     },
     {
       provide: UNIT_OF_WORK,
@@ -48,13 +73,25 @@ const FULFILLMENT_DB = Symbol('FulfillmentDb');
     },
     {
       provide: STOCK_ITEM_REPOSITORY,
-      useFactory: (db: FulfillmentDb, clock: Clock): DrizzleStockItemRepository => new DrizzleStockItemRepository(db, clock),
+      useFactory: (db: FulfillmentDb, clock: Clock): DrizzleStockItemRepository =>
+        new DrizzleStockItemRepository(db, clock),
       inject: [FULFILLMENT_DB, CLOCK],
     },
     {
       provide: STOCK_READ,
-      useFactory: (db: FulfillmentDb): DrizzleStockReadRepository => new DrizzleStockReadRepository(db),
+      useFactory: (db: FulfillmentDb): DrizzleStockReadRepository =>
+        new DrizzleStockReadRepository(db),
       inject: [FULFILLMENT_DB],
+    },
+    {
+      provide: DESPATCH_REPOSITORY,
+      useFactory: (db: FulfillmentDb, clock: Clock): DrizzleDespatchRepository =>
+        new DrizzleDespatchRepository(db, clock),
+      inject: [FULFILLMENT_DB, CLOCK],
+    },
+    {
+      provide: DESPATCH_NUMBER_ALLOCATOR,
+      useFactory: (): DrizzleDespatchNumberAllocator => new DrizzleDespatchNumberAllocator(),
     },
     {
       provide: StockReservationHandler,
@@ -66,8 +103,27 @@ const FULFILLMENT_DB = Symbol('FulfillmentDb');
       inject: [UNIT_OF_WORK, STOCK_ITEM_REPOSITORY, CLOCK],
     },
     {
+      provide: DespatchCreationHandler,
+      useFactory: (
+        unitOfWork: UnitOfWork,
+        stock: StockItemRepository,
+        despatches: DrizzleDespatchRepository,
+        despatchNumbers: DespatchNumberAllocator,
+        clock: Clock,
+      ): DespatchCreationHandler =>
+        new DespatchCreationHandler(unitOfWork, stock, despatches, despatchNumbers, clock),
+      inject: [
+        UNIT_OF_WORK,
+        STOCK_ITEM_REPOSITORY,
+        DESPATCH_REPOSITORY,
+        DESPATCH_NUMBER_ALLOCATOR,
+        CLOCK,
+      ],
+    },
+    {
       provide: FACT_PUBLISHER,
-      useFactory: (): KafkaFactPublisher => new KafkaFactPublisher(createKafkaClient(loadKafkaConfig())),
+      useFactory: (): KafkaFactPublisher =>
+        new KafkaFactPublisher(createKafkaClient(loadKafkaConfig())),
     },
     {
       provide: OUTBOX_RELAY_CONFIG,
@@ -87,6 +143,7 @@ const FULFILLMENT_DB = Symbol('FulfillmentDb');
 
     ...STOCK_QUERY_HANDLERS,
     ...STOCK_COMMAND_HANDLERS,
+    ...DESPATCH_COMMAND_HANDLERS,
   ],
 })
 export class AppModule {}
