@@ -121,6 +121,8 @@ export interface StubSagaRespondersOptions {
   readonly rejectStockReserve?: boolean;
   /** Set to answer `credit.hold` as rejected instead of approved. */
   readonly rejectCreditHold?: boolean;
+  /** Set to `false` to leave `stock.release` with NO subscriber at all — used by the FS1/D1 crash-loop reproduction, which needs a `stock.release` row that stays `parked` (NATS `NoResponders`) long enough to redeliver a duplicate `credit.rejected.v1` against it. Defaults to `true` (a responder answers, as every other test in this codebase expects). */
+  readonly respondToStockRelease?: boolean;
 }
 
 /**
@@ -170,21 +172,24 @@ export async function startStubSagaResponders(
     stockReserveRequests,
   );
 
-  const stockRelease = await respond<StockReleaseRequestPayload, StockReleaseReplyPayload>(
-    connection,
-    STOCK_RELEASE_SUBJECT,
-    async (request) => {
-      const orderId = await resolveOrderId(request.orderReference);
-      await publishFact(factPublishers.fulfillment, 'stock.released.v1', orderId, {
-        orderReference: request.orderReference,
-        companyCode: 'COM-0001',
-        released: [{ reservationId: randomUUID(), productCode: 'PRD-0001', units: 1 }],
-        reason: request.reason,
-      });
-      return { outcome: 'released', orderReference: request.orderReference, released: [] };
-    },
-    stockReleaseRequests,
-  );
+  const stockRelease =
+    options.respondToStockRelease === false
+      ? { async stop(): Promise<void> {} }
+      : await respond<StockReleaseRequestPayload, StockReleaseReplyPayload>(
+          connection,
+          STOCK_RELEASE_SUBJECT,
+          async (request) => {
+            const orderId = await resolveOrderId(request.orderReference);
+            await publishFact(factPublishers.fulfillment, 'stock.released.v1', orderId, {
+              orderReference: request.orderReference,
+              companyCode: 'COM-0001',
+              released: [{ reservationId: randomUUID(), productCode: 'PRD-0001', units: 1 }],
+              reason: request.reason,
+            });
+            return { outcome: 'released', orderReference: request.orderReference, released: [] };
+          },
+          stockReleaseRequests,
+        );
 
   const despatchCreate = await respond<DespatchCreateRequestPayload, DespatchCreateReplyPayload>(
     connection,

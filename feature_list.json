@@ -241,7 +241,7 @@
       "phase": 9,
       "title": "StockItem aggregate + reservation lifecycle (reserve / release / consume)",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "invariant reservedUnits <= units enforced in the aggregate",
         "StockRejected when insufficient",

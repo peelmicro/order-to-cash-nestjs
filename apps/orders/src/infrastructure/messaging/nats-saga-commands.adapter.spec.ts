@@ -5,14 +5,15 @@
 // normally (SO6, unit half).
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { ErrorCode, JSONCodec, NatsError } from 'nats';
+import { ErrorCode, JSONCodec, NatsError, type MsgHdrs } from 'nats';
+import { UniqueId } from '@otc/shared-kernel';
 import { describe, expect, it } from 'vitest';
 import type {
   CreditHoldReplyPayload,
   RpcError,
   StockReserveReplyPayload,
 } from '@otc/contracts';
-import { SagaCommandTimeoutError, SagaCommandTransportError } from '../../application/ports/saga-commands.port';
+import { SagaCommandTimeoutError, SagaCommandTransportError, type SagaCommandMeta } from '../../application/ports/saga-commands.port';
 import {
   CREDIT_HOLD_SUBJECT,
   DESPATCH_CREATE_SUBJECT,
@@ -26,6 +27,8 @@ import {
 function fakeClient(handler: NatsRequestClient['request']): NatsRequestClient {
   return { request: handler };
 }
+
+const META: SagaCommandMeta = { correlationId: UniqueId.generate(), requestId: UniqueId.generate() };
 
 const ASYNCAPI_SPEC_PATH = path.resolve(__dirname, '../../../../../specs/shared/asyncapi.yaml');
 
@@ -66,14 +69,41 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
     });
     const adapter = new NatsSagaCommandsAdapter(client, 5000);
 
-    const result = await adapter.reserveStock({
-      orderReference: 'ORD-000001',
-      retailerCode: 'RET-0001',
-      companyCode: 'COM-0001',
-      lines: [{ productCode: 'PRD-0001', units: 1 }],
-    });
+    const result = await adapter.reserveStock(
+      {
+        orderReference: 'ORD-000001',
+        retailerCode: 'RET-0001',
+        companyCode: 'COM-0001',
+        lines: [{ productCode: 'PRD-0001', units: 1 }],
+      },
+      META,
+    );
 
     expect(result).toEqual(body);
+  });
+
+  it('FS2 — sends x-correlation-id and x-request-id headers on every saga command request', async () => {
+    const body: StockReserveReplyPayload = { outcome: 'accepted', orderReference: 'ORD-000001', reservations: [] };
+    let capturedHeaders: MsgHdrs | undefined;
+    const client = fakeClient(async (_subject, _data, opts) => {
+      capturedHeaders = opts.headers;
+      return { data: replyCodec.encode(body) };
+    });
+    const adapter = new NatsSagaCommandsAdapter(client, 5000);
+
+    await adapter.reserveStock(
+      {
+        orderReference: 'ORD-000001',
+        retailerCode: 'RET-0001',
+        companyCode: 'COM-0001',
+        lines: [{ productCode: 'PRD-0001', units: 1 }],
+      },
+      META,
+    );
+
+    expect(capturedHeaders).toBeDefined();
+    expect(capturedHeaders!.get('x-correlation-id')).toBe(META.correlationId.value);
+    expect(capturedHeaders!.get('x-request-id')).toBe(META.requestId.value);
   });
 
   it('throws SagaCommandTimeoutError on a NATS timeout', async () => {
@@ -83,12 +113,15 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
     const adapter = new NatsSagaCommandsAdapter(client, 1500);
 
     await expect(
-      adapter.reserveStock({
-        orderReference: 'ORD-000001',
-        retailerCode: 'RET-0001',
-        companyCode: 'COM-0001',
-        lines: [{ productCode: 'PRD-0001', units: 1 }],
-      }),
+      adapter.reserveStock(
+        {
+          orderReference: 'ORD-000001',
+          retailerCode: 'RET-0001',
+          companyCode: 'COM-0001',
+          lines: [{ productCode: 'PRD-0001', units: 1 }],
+        },
+        META,
+      ),
     ).rejects.toThrow(SagaCommandTimeoutError);
   });
 
@@ -99,12 +132,15 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
     const adapter = new NatsSagaCommandsAdapter(client, 1500);
 
     await expect(
-      adapter.reserveStock({
-        orderReference: 'ORD-000001',
-        retailerCode: 'RET-0001',
-        companyCode: 'COM-0001',
-        lines: [{ productCode: 'PRD-0001', units: 1 }],
-      }),
+      adapter.reserveStock(
+        {
+          orderReference: 'ORD-000001',
+          retailerCode: 'RET-0001',
+          companyCode: 'COM-0001',
+          lines: [{ productCode: 'PRD-0001', units: 1 }],
+        },
+        META,
+      ),
     ).rejects.toThrow(SagaCommandTransportError);
   });
 
@@ -114,12 +150,15 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
     const adapter = new NatsSagaCommandsAdapter(client, 1500);
 
     await expect(
-      adapter.reserveStock({
-        orderReference: 'ORD-000001',
-        retailerCode: 'RET-0001',
-        companyCode: 'COM-0001',
-        lines: [{ productCode: 'PRD-0001', units: 1 }],
-      }),
+      adapter.reserveStock(
+        {
+          orderReference: 'ORD-000001',
+          retailerCode: 'RET-0001',
+          companyCode: 'COM-0001',
+          lines: [{ productCode: 'PRD-0001', units: 1 }],
+        },
+        META,
+      ),
     ).rejects.toThrow(SagaCommandTransportError);
   });
 
@@ -128,12 +167,15 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
     const adapter = new NatsSagaCommandsAdapter(client, 1500);
 
     await expect(
-      adapter.reserveStock({
-        orderReference: 'ORD-000001',
-        retailerCode: 'RET-0001',
-        companyCode: 'COM-0001',
-        lines: [{ productCode: 'PRD-0001', units: 1 }],
-      }),
+      adapter.reserveStock(
+        {
+          orderReference: 'ORD-000001',
+          retailerCode: 'RET-0001',
+          companyCode: 'COM-0001',
+          lines: [{ productCode: 'PRD-0001', units: 1 }],
+        },
+        META,
+      ),
     ).rejects.toThrow(SagaCommandTransportError);
   });
 });
@@ -155,12 +197,15 @@ describe('NatsSagaCommandsAdapter — holdCredit (business rejection is not an e
     });
     const adapter = new NatsSagaCommandsAdapter(client, 5000);
 
-    const result = await adapter.holdCredit({
-      orderReference: 'ORD-000001',
-      retailerCode: 'RET-0001',
-      companyCode: 'COM-0001',
-      amount: { amount: 10_000, currency: 'EUR' },
-    });
+    const result = await adapter.holdCredit(
+      {
+        orderReference: 'ORD-000001',
+        retailerCode: 'RET-0001',
+        companyCode: 'COM-0001',
+        amount: { amount: 10_000, currency: 'EUR' },
+      },
+      META,
+    );
 
     expect(result.outcome).toBe('rejected');
   });
@@ -176,7 +221,7 @@ describe('NatsSagaCommandsAdapter — releaseStock, createDespatch, issueInvoice
     });
     const adapter = new NatsSagaCommandsAdapter(client, 5000);
 
-    await adapter.releaseStock({ orderReference: 'ORD-000001', reason: 'credit_rejected' });
+    await adapter.releaseStock({ orderReference: 'ORD-000001', reason: 'credit_rejected' }, META);
 
     expect(calledSubject).toBe(STOCK_RELEASE_SUBJECT);
   });
@@ -197,7 +242,7 @@ describe('NatsSagaCommandsAdapter — releaseStock, createDespatch, issueInvoice
     });
     const adapter = new NatsSagaCommandsAdapter(client, 5000);
 
-    await adapter.createDespatch({ orderReference: 'ORD-000001' });
+    await adapter.createDespatch({ orderReference: 'ORD-000001' }, META);
 
     expect(calledSubject).toBe(DESPATCH_CREATE_SUBJECT);
   });
@@ -221,13 +266,16 @@ describe('NatsSagaCommandsAdapter — releaseStock, createDespatch, issueInvoice
     });
     const adapter = new NatsSagaCommandsAdapter(client, 5000);
 
-    await adapter.issueInvoice({
-      orderReference: 'ORD-000001',
-      retailerCode: 'RET-0001',
-      companyCode: 'COM-0001',
-      currency: 'EUR',
-      lines: [{ productCode: 'PRD-0001', units: 1, unitPrice: 1000 }],
-    });
+    await adapter.issueInvoice(
+      {
+        orderReference: 'ORD-000001',
+        retailerCode: 'RET-0001',
+        companyCode: 'COM-0001',
+        currency: 'EUR',
+        lines: [{ productCode: 'PRD-0001', units: 1, unitPrice: 1000 }],
+      },
+      META,
+    );
 
     expect(calledSubject).toBe(INVOICE_ISSUE_SUBJECT);
   });

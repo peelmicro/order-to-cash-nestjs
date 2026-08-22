@@ -39,6 +39,9 @@ blob-report/
 infra/**/data/
 
 # ---------- Logs ----------
+# Test/verification run logs kept locally for reference (see logs/ at the repo
+# root). Deliberately not committed: they are large, machine-specific and
+# regenerable — the durable record of what was verified lives in progress/.
 logs/
 *.log
 npm-debug.log*

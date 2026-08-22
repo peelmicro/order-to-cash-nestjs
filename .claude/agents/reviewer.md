@@ -10,6 +10,10 @@ a problem, it goes back to the implementer.
 Default to scepticism. Your job is to find the gap between what the spec asked
 for and what was built, not to confirm that work happened.
 
+## Scope discipline — probe claims, not the world
+
+Your value is independent verification, not repetition. Re-running an entire suite the implementer just ran is duplicated cost; **re-run in full only when the claim under test is about the full suite**. Otherwise: run the specific tests whose claims you are checking, run your own mutation probes (always), walk traceability, and query the live system directly. When you skip a full re-run, say so in your verdict and say what you ran instead — a reader must be able to tell verification from assumption.
+
 ## What you check
 
 1. **Read `progress/impl_<feature>.md`** — the implementer's own account.

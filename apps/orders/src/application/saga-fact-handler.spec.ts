@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ConsumerName } from './ports/consumer-name.js';
 import type { OrderRepository } from './ports/order-repository.port.js';
 import type {
+  EnqueueOutcome,
   EnqueueSagaCommandInput,
   SagaCommandRecord,
   SagaCommandStore,
@@ -104,9 +105,11 @@ class FakeOrderRepository implements OrderRepository {
 
 class FakeSagaCommandStore implements SagaCommandStore {
   enqueued: EnqueueSagaCommandInput[] = [];
+  nextEnqueueOutcome: EnqueueOutcome = 'enqueued';
 
-  async enqueue(_tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<void> {
+  async enqueue(_tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<EnqueueOutcome> {
     this.enqueued.push(input);
+    return this.nextEnqueueOutcome;
   }
 
   async findByOrderAndCommand(): Promise<SagaCommandRecord | null> {
@@ -222,6 +225,19 @@ describe('SagaFactHandler', () => {
       command: 'stock.reserve',
       triggeringEventId: UniqueId.from(envelope.eventId),
     });
+  });
+
+  it('FS1 — reports the owed command as enqueued when the store answers already_owed, so the fast path re-dispatches the existing row', async () => {
+    const order = Order.place(placeInput(), ctx());
+    order.pullDomainEvents();
+    orders.seed(order);
+    commandStore.nextEnqueueOutcome = 'already_owed';
+    const envelope = fact({ eventType: 'order.placed.v1', correlationId: order.id.value });
+
+    const result = await handler.handle(envelope);
+
+    expect(result).toEqual({ outcome: 'processed', enqueued: 'stock.reserve' });
+    expect(commandStore.enqueued).toHaveLength(1);
   });
 
   it('a step with no commandAfter (e.g. invoice.issued.v1) processes and saves, but enqueues nothing and returns no enqueued field', async () => {

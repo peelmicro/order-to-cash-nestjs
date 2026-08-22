@@ -5,7 +5,7 @@
 // need no broker, the same error taxonomy. Subjects are the AsyncAPI
 // addresses, guarded by `nats-saga-commands.adapter.spec.ts`'s
 // read-the-spec-as-text assertion (design.md §6.1).
-import { ErrorCode, JSONCodec, type NatsConnection } from 'nats';
+import { ErrorCode, headers as natsHeaders, JSONCodec, type MsgHdrs, type NatsConnection } from 'nats';
 import type {
   CreditHoldReplyPayload,
   CreditHoldRequestPayload,
@@ -22,6 +22,7 @@ import type {
 import {
   SagaCommandTimeoutError,
   SagaCommandTransportError,
+  type SagaCommandMeta,
   type SagaCommandsPort,
 } from '../../application/ports/saga-commands.port';
 
@@ -36,7 +37,15 @@ export interface NatsRequestMessage {
 }
 
 export interface NatsRequestClient {
-  request(subject: string, data: Uint8Array, opts: { timeout: number }): Promise<NatsRequestMessage>;
+  request(subject: string, data: Uint8Array, opts: { timeout: number; headers?: MsgHdrs }): Promise<NatsRequestMessage>;
+}
+
+/** `x-correlation-id`/`x-request-id` as `nats` `MsgHdrs` (FS2, asyncapi.yaml `RpcHeaders`). */
+function requestHeaders(meta: SagaCommandMeta): MsgHdrs {
+  const h = natsHeaders();
+  h.set('x-correlation-id', meta.correlationId.value);
+  h.set('x-request-id', meta.requestId.value);
+  return h;
 }
 
 function isRpcErrorReply(body: unknown): body is RpcError {
@@ -67,33 +76,36 @@ export class NatsSagaCommandsAdapter implements SagaCommandsPort {
     private readonly timeoutMs: number,
   ) {}
 
-  reserveStock(request: StockReserveRequestPayload): Promise<StockReserveReplyPayload> {
-    return this.call(STOCK_RESERVE_SUBJECT, request);
+  reserveStock(request: StockReserveRequestPayload, meta: SagaCommandMeta): Promise<StockReserveReplyPayload> {
+    return this.call(STOCK_RESERVE_SUBJECT, request, meta);
   }
 
-  releaseStock(request: StockReleaseRequestPayload): Promise<StockReleaseReplyPayload> {
-    return this.call(STOCK_RELEASE_SUBJECT, request);
+  releaseStock(request: StockReleaseRequestPayload, meta: SagaCommandMeta): Promise<StockReleaseReplyPayload> {
+    return this.call(STOCK_RELEASE_SUBJECT, request, meta);
   }
 
-  createDespatch(request: DespatchCreateRequestPayload): Promise<DespatchCreateReplyPayload> {
-    return this.call(DESPATCH_CREATE_SUBJECT, request);
+  createDespatch(request: DespatchCreateRequestPayload, meta: SagaCommandMeta): Promise<DespatchCreateReplyPayload> {
+    return this.call(DESPATCH_CREATE_SUBJECT, request, meta);
   }
 
-  holdCredit(request: CreditHoldRequestPayload): Promise<CreditHoldReplyPayload> {
-    return this.call(CREDIT_HOLD_SUBJECT, request);
+  holdCredit(request: CreditHoldRequestPayload, meta: SagaCommandMeta): Promise<CreditHoldReplyPayload> {
+    return this.call(CREDIT_HOLD_SUBJECT, request, meta);
   }
 
-  issueInvoice(request: InvoiceIssueRequestPayload): Promise<InvoiceIssueReplyPayload> {
-    return this.call(INVOICE_ISSUE_SUBJECT, request);
+  issueInvoice(request: InvoiceIssueRequestPayload, meta: SagaCommandMeta): Promise<InvoiceIssueReplyPayload> {
+    return this.call(INVOICE_ISSUE_SUBJECT, request, meta);
   }
 
-  private async call<TRequest, TReply>(subject: string, request: TRequest): Promise<TReply> {
+  private async call<TRequest, TReply>(subject: string, request: TRequest, meta: SagaCommandMeta): Promise<TReply> {
     const requestCodec = JSONCodec<TRequest>();
     const replyCodec = JSONCodec<TReply | RpcError>();
 
     let reply: NatsRequestMessage;
     try {
-      reply = await this.connection.request(subject, requestCodec.encode(request), { timeout: this.timeoutMs });
+      reply = await this.connection.request(subject, requestCodec.encode(request), {
+        timeout: this.timeoutMs,
+        headers: requestHeaders(meta),
+      });
     } catch (error) {
       if (isTimeoutError(error)) {
         throw new SagaCommandTimeoutError(subject, this.timeoutMs);

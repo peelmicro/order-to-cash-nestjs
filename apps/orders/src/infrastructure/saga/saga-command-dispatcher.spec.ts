@@ -130,6 +130,31 @@ describe('SagaCommandDispatcher — SO4 retry policy', () => {
     expect(store.parkCalls[0]?.lastError).toContain('no responders');
   });
 
+  it('FS2 — passes the order id and the row id as correlation and request ids on every attempt, unchanged across retries', async () => {
+    const row = pendingRow();
+    const store = fakeStore(row);
+    const seenMeta: Array<{ correlationId: unknown; requestId: unknown }> = [];
+    let calls = 0;
+    const reserveStock = vi.fn().mockImplementation(async (_payload, meta) => {
+      calls += 1;
+      seenMeta.push(meta);
+      if (calls < 3) {
+        throw new SagaCommandTimeoutError('fulfillment.stock.reserve', 5000);
+      }
+      return { outcome: 'accepted', orderReference: 'ORD-000001' };
+    });
+    const dispatcher = new SagaCommandDispatcher(fakePort({ reserveStock }), store, DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, noDelay);
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.reserve');
+
+    expect(outcome).toBe('sent');
+    expect(seenMeta).toHaveLength(3);
+    for (const meta of seenMeta) {
+      expect(meta.correlationId).toEqual(row.orderId);
+      expect(meta.requestId).toEqual(row.id);
+    }
+  });
+
   it('SO6 — a business rejection resolves normally, is marked sent, and is never retried', async () => {
     const row = pendingRow({ command: 'credit.hold' });
     const store = fakeStore(row);

@@ -9,6 +9,7 @@ import { and, eq, lt, lte, or, sql } from 'drizzle-orm';
 import { OrderNumber, UniqueId } from '@otc/shared-kernel';
 import type { Clock } from '../../application/ports/clock.port.js';
 import type {
+  EnqueueOutcome,
   EnqueueSagaCommandInput,
   SagaCommandRecord,
   SagaCommandStore,
@@ -41,24 +42,29 @@ export class DrizzleSagaCommandStore implements SagaCommandStore {
     private readonly clock: Clock,
   ) {}
 
-  async enqueue(tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<void> {
+  /** `INSERT ... ON DUPLICATE KEY UPDATE id = id` — MySQL's idiom for "insert or leave untouched" on `uq_saga_commands_order_command` (D1). `affectedRows` is 1 for a fresh insert, 0 when the duplicate-key branch fired and changed nothing (setting `id` to its own value never counts as a row update). */
+  async enqueue(tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<EnqueueOutcome> {
     const db = asDrizzleTx(tx);
     const now = this.clock.now();
-    await db.insert(sagaCommands).values({
-      id: input.id.value,
-      orderId: input.orderId.value,
-      orderReference: input.orderReference.value,
-      command: input.command,
-      payload: input.payload,
-      triggeringEventId: input.triggeringEventId.value,
-      status: 'pending',
-      attempts: 0,
-      lastError: null,
-      nextAttemptAt: null,
-      createdAt: now,
-      updatedAt: now,
-      sentAt: null,
-    });
+    const result = await db
+      .insert(sagaCommands)
+      .values({
+        id: input.id.value,
+        orderId: input.orderId.value,
+        orderReference: input.orderReference.value,
+        command: input.command,
+        payload: input.payload,
+        triggeringEventId: input.triggeringEventId.value,
+        status: 'pending',
+        attempts: 0,
+        lastError: null,
+        nextAttemptAt: null,
+        createdAt: now,
+        updatedAt: now,
+        sentAt: null,
+      })
+      .onDuplicateKeyUpdate({ set: { id: sql`id` } });
+    return affectedRows(result) === 1 ? 'enqueued' : 'already_owed';
   }
 
   async findByOrderAndCommand(orderId: UniqueId, command: SagaCommandKind): Promise<SagaCommandRecord | null> {

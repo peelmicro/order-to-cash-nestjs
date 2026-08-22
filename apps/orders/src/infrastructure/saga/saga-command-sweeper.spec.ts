@@ -62,7 +62,9 @@ describe('SagaCommandSweeperService', () => {
   it('never starts a second sweep cycle while one is still in progress', async () => {
     const claim = deferred<readonly SagaCommandRecord[]>();
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },
@@ -94,7 +96,9 @@ describe('SagaCommandSweeperService', () => {
   it('claims due rows in one transaction, then dispatches each claimed row OUTSIDE it, directly (not via any bus)', async () => {
     const claimed = [row({ command: 'stock.reserve' }), row({ command: 'credit.hold' })];
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },
@@ -124,7 +128,9 @@ describe('SagaCommandSweeperService', () => {
 
   it('passes the pending grace and a batch limit through to claimDue', async () => {
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },
@@ -155,7 +161,9 @@ describe('SagaCommandSweeperService', () => {
 
   it('does not start any cycle when SAGA_SWEEPER_ENABLED is false', async () => {
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },
@@ -180,7 +188,9 @@ describe('SagaCommandSweeperService', () => {
   it('a dispatch that throws for one claimed row does not stop the others from being dispatched', async () => {
     const claimed = [row({ command: 'stock.reserve' }), row({ command: 'credit.hold' })];
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },
@@ -208,7 +218,9 @@ describe('SagaCommandSweeperService', () => {
   it('clears the pending timer and awaits the in-flight cycle on shutdown, starting no further cycle', async () => {
     const claim = deferred<readonly SagaCommandRecord[]>();
     const store: SagaCommandStore = {
-      async enqueue() {},
+      async enqueue() {
+        return 'enqueued' as const;
+      },
       async findByOrderAndCommand() {
         return null;
       },

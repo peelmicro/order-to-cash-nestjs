@@ -34,9 +34,12 @@ export interface SagaCommandRecord {
   readonly attempts: number;
 }
 
+/** `enqueued` — a new row was inserted; `already_owed` — a row for `(order_id, command)` already existed and was left untouched (D1: a distinct-eventId duplicate of a fact whose precondition still holds must not crash the consumer). Either outcome means the same thing to the caller: the command is owed and the existing row is the one to (re-)dispatch. */
+export type EnqueueOutcome = 'enqueued' | 'already_owed';
+
 export interface SagaCommandStore {
-  /** Inserts the pending-command row inside `tx` — same transaction as the status change that owes it (SO3). Unique on `(order_id, command)`: a step can never owe the same command twice. */
-  enqueue(tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<void>;
+  /** Inserts the pending-command row inside `tx` — same transaction as the status change that owes it (SO3). Idempotent on `(order_id, command)`: a step can never owe the same command twice, and re-enqueuing an existing row is never a reset — its `id`, `status`, `attempts` and `payload` are left exactly as they were (D1). */
+  enqueue(tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<EnqueueOutcome>;
 
   /** The `(order_id, command)` lookup the fast-path `Issue…Command` handlers claim by (design.md §5.5) — `null` when the row is absent or no longer `pending` (a stale hop; the caller treats this as a silent no-op). */
   findByOrderAndCommand(orderId: UniqueId, command: SagaCommandKind): Promise<SagaCommandRecord | null>;

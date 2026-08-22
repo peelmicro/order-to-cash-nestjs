@@ -18,6 +18,7 @@ import type { SagaCommandStore } from '../../application/ports/saga-command-stor
 import {
   SagaCommandTimeoutError,
   SagaCommandTransportError,
+  type SagaCommandMeta,
   type SagaCommandsPort,
 } from '../../application/ports/saga-commands.port';
 import type { SagaCommandPayload } from '../../application/saga-command-payloads';
@@ -65,18 +66,18 @@ const CONSOLE_LOGGER: SagaCommandDispatcherLogger = {
 function callFor(
   port: SagaCommandsPort,
   command: SagaCommandKind,
-): (payload: SagaCommandPayload) => Promise<unknown> {
+): (payload: SagaCommandPayload, meta: SagaCommandMeta) => Promise<unknown> {
   switch (command) {
     case 'stock.reserve':
-      return (payload) => port.reserveStock(payload as Parameters<SagaCommandsPort['reserveStock']>[0]);
+      return (payload, meta) => port.reserveStock(payload as Parameters<SagaCommandsPort['reserveStock']>[0], meta);
     case 'stock.release':
-      return (payload) => port.releaseStock(payload as Parameters<SagaCommandsPort['releaseStock']>[0]);
+      return (payload, meta) => port.releaseStock(payload as Parameters<SagaCommandsPort['releaseStock']>[0], meta);
     case 'despatch.create':
-      return (payload) => port.createDespatch(payload as Parameters<SagaCommandsPort['createDespatch']>[0]);
+      return (payload, meta) => port.createDespatch(payload as Parameters<SagaCommandsPort['createDespatch']>[0], meta);
     case 'credit.hold':
-      return (payload) => port.holdCredit(payload as Parameters<SagaCommandsPort['holdCredit']>[0]);
+      return (payload, meta) => port.holdCredit(payload as Parameters<SagaCommandsPort['holdCredit']>[0], meta);
     case 'invoice.issue':
-      return (payload) => port.issueInvoice(payload as Parameters<SagaCommandsPort['issueInvoice']>[0]);
+      return (payload, meta) => port.issueInvoice(payload as Parameters<SagaCommandsPort['issueInvoice']>[0], meta);
     default: {
       const exhaustive: never = command;
       throw new Error(`saga-command-dispatcher: unmapped saga command kind "${String(exhaustive)}"`);
@@ -107,13 +108,18 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
     }
 
     const call = callFor(this.commands, command);
+    // FS2: correlationId is the order id, requestId is the row id — both
+    // stable across every in-line retry and sweeper re-issue of this row
+    // (asyncapi.yaml RpcHeaders: "a retry after a timeout reuses the same
+    // value, which is what lets a responder recognise a duplicate").
+    const meta: SagaCommandMeta = { correlationId: orderId, requestId: row.id };
     let lastError = '';
     let attemptsThisCycle = 0;
 
     for (let attempt = 1; attempt <= this.config.maxAttempts; attempt += 1) {
       attemptsThisCycle = attempt;
       try {
-        await call(row.payload);
+        await call(row.payload, meta);
         const sent = await this.store.markSent(row.id);
         if (sent) {
           this.logger.info('saga-command-dispatcher: command sent', {

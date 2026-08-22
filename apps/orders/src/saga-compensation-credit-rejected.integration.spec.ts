@@ -4,10 +4,14 @@
 // observed fact. The business-rejected credit.hold is marked sent and
 // never retried (SO6) — the saga advances only on the credit.rejected.v1
 // FACT, not the reply.
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as ordersSchema from './infrastructure/persistence/schema/index';
-import { startStubSagaResponders, type StubSagaResponders } from './infrastructure/messaging/test-support/stub-saga-responders';
+import {
+  publishFact,
+  startStubSagaResponders,
+  type StubSagaResponders,
+} from './infrastructure/messaging/test-support/stub-saga-responders';
 import { startSagaIntegrationHarness, type SagaIntegrationHarness } from './test-support/saga-integration-harness';
 
 // Budget (post-approval hardening, 2026-08-21): the harness now blocks
@@ -128,5 +132,117 @@ describe('saga-compensation-credit-rejected — R27, R28, SO6, SO7 (Testcontaine
 
     const stockReleaseRequest = responders.stockReleaseRequests[0]?.request;
     expect(stockReleaseRequest?.reason).toBe('credit_rejected');
+  }, 60_000);
+}, 300_000);
+
+// FS1/D1 — the reviewer's P3 crash-loop reproduction (progress/review_order_saga_orchestrator.md):
+// a distinct-eventId duplicate of a fact whose precondition still holds (here,
+// credit.rejected.v1 redelivered mid-compensation, while stock.release sits
+// PARKED because no responder answers it) must not violate
+// uq_saga_commands_order_command, must not crash the Kafka consumer, and must
+// re-dispatch the SAME existing row rather than creating a second one. Own
+// harness/containers: this scenario needs stock.release to have NO responder,
+// which the shared beforeAll's responders (this file's first describe) do not
+// provide.
+describe('saga-compensation-credit-rejected — FS1/D1: a duplicate credit.rejected.v1 mid-compensation (Testcontainers: mysql:8.4.11 + apache/kafka:4.3.1 + nats:2.14.5-alpine)', () => {
+  let harness: SagaIntegrationHarness;
+  let responders: StubSagaResponders;
+
+  beforeAll(async () => {
+    harness = await startSagaIntegrationHarness({
+      // Fast, bounded retry/park budget so a `stock.release` with no
+      // responder reaches `parked` well inside this test's own timeout.
+      dispatcherConfig: { timeoutMs: 500, maxAttempts: 3, backoffBaseMs: 20, parkRetryCapMs: 2_000 },
+    });
+    responders = await startStubSagaResponders(
+      harness.testNatsConnection,
+      { fulfillment: harness.fulfillmentFactPublisher, billing: harness.billingFactPublisher },
+      harness.resolveOrderId,
+      { rejectCreditHold: true, respondToStockRelease: false },
+    );
+  }, 300_000);
+
+  afterAll(async () => {
+    await responders?.stop();
+    await harness?.teardown();
+  }, 120_000);
+
+  async function waitFor(check: () => Promise<boolean>, timeoutMs = 45_000, intervalMs = 200): Promise<void> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      if (await check()) return;
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error(`saga-compensation-credit-rejected FS1/D1: condition not met within ${timeoutMs}ms`);
+  }
+
+  async function releaseRow(orderId: string) {
+    const rows = await harness.db
+      .select()
+      .from(ordersSchema.sagaCommands)
+      .where(and(eq(ordersSchema.sagaCommands.orderId, orderId), eq(ordersSchema.sagaCommands.command, 'stock.release')));
+    return rows[0];
+  }
+
+  async function processedEventsCount(): Promise<number> {
+    const rows = await harness.db.select().from(ordersSchema.processedEvents).where(eq(ordersSchema.processedEvents.consumer, 'orders.saga'));
+    return rows.length;
+  }
+
+  it('a distinct-eventId duplicate of credit.rejected.v1 mid-compensation neither crashes the consumer nor creates a second stock.release row, and the existing row is re-dispatched', async () => {
+    const order = await harness.placeOrderAndRelay();
+
+    // stock.release stays parked — no responder is subscribed
+    // (`respondToStockRelease: false`) — so the in-line dispatcher's 3
+    // attempts all fail with NoResponders and the row parks. `parked` is
+    // terminal for this row until the (disabled) sweeper next runs, so
+    // waiting on it is durable/monotonic evidence, not a transient poll.
+    await waitFor(async () => (await releaseRow(order.id.value))?.status === 'parked');
+
+    const original = await releaseRow(order.id.value);
+    expect(original).toBeDefined();
+    const originalId = original!.id;
+    const originalAttempts = original!.attempts;
+    const baselineProcessed = await processedEventsCount();
+
+    // A distinct-eventId redelivery of credit.rejected.v1 — same
+    // correlationId (the order), same payload shape, a fact whose
+    // precondition (order.status === 'stock_reserved') still holds because
+    // the first delivery's compensation never completed (stock.release
+    // never got a reply). Before D1 this crashed the consumer on
+    // ER_DUP_ENTRY against uq_saga_commands_order_command.
+    await publishFact(harness.billingFactPublisher, 'credit.rejected.v1', order.id.value, {
+      orderReference: order.orderReference.value,
+      retailerCode: 'RET-0001',
+      companyCode: 'COM-0001',
+      currency: 'EUR',
+      reason: 'over_limit',
+    });
+
+    // Durable, append-only evidence that the duplicate was consumed (not
+    // ignored, not crashed) rather than polling a transient status.
+    await waitFor(async () => (await processedEventsCount()) > baselineProcessed);
+
+    // D1's whole point: still exactly one stock.release row, same id — not
+    // reset, not duplicated — and it was re-dispatched (attempts climbed
+    // again from the fast path's retry loop rather than staying frozen).
+    const allReleaseRows = await harness.db
+      .select()
+      .from(ordersSchema.sagaCommands)
+      .where(
+        and(eq(ordersSchema.sagaCommands.orderId, order.id.value), eq(ordersSchema.sagaCommands.command, 'stock.release')),
+      );
+    expect(allReleaseRows).toHaveLength(1);
+    expect(allReleaseRows[0]?.id).toBe(originalId);
+
+    await waitFor(async () => {
+      const row = await releaseRow(order.id.value);
+      return row?.status === 'parked' && row.attempts > originalAttempts;
+    });
+
+    // The order is untouched by the duplicate: no crash, no premature
+    // cancellation, still stock_reserved (compensation never completed).
+    const [orderRow] = await harness.db.select().from(ordersSchema.orders).where(eq(ordersSchema.orders.id, order.id.value));
+    expect(orderRow?.status).toBe('stock_reserved');
   }, 60_000);
 }, 300_000);

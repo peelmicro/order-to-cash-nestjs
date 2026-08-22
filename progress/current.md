@@ -5,12 +5,12 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — PHASE 8 COMPLETE (features 13–16 done; 16 reopened once for a racy test assertion, fixed and re-approved on a third review pass)
+**Status:** idle — `fulfillment_stock` (17) done on the second review pass; next `fulfillment_despatch` (18)
 **Session started:** —
 
 ## Goal
 
-Phase 8, one feature at a time (decision: specs written per-feature, not batched). Order: orders_aggregate (sdd) → outbox_and_idempotency (sdd, inherits causation_id + poll-tiebreak advisories) → orders_acceptance → order_saga_orchestrator (sdd). Each sdd feature stops at spec_ready for the human gate.
+Phase 9 — Fulfillment, the first service that answers. `fulfillment_stock` (17, sdd:true): StockItem aggregate (reservedUnits ≤ units), reservation lifecycle, the NATS responders (`stock.check`, `stock.reserve` → StockReserved|StockRejected, `stock.release` compensation, `stock.list`, `stock.replenish`), outbox + idempotent consumer copy. Then `fulfillment_despatch` (18). When 17's responder boots against compose, the three orders parked in `saga_commands` since feature 16 resume unattended — the first cross-service saga execution.
 
 ## Decisions taken this session
 
@@ -63,6 +63,10 @@ Phase 8, one feature at a time (decision: specs written per-feature, not batched
 None.
 
 ## Notes
+
+- **Seed data-coherence defect, owed by feature 18's live-boot pass (reviewer ruling, feature 17):** `apps/seed` stocks only 5 of its 22 companies, and its own demo orders ORD-000007/8/9 target the unstocked `ALBIONFOODS` — so those three park on `NOT_FOUND` rather than reserving. Not a feature-17 defect (the park is the designed negative path, observed live), but it must be fixed no later than feature 28 (`saga_e2e_verification`); the natural slot is 18's live boot.
+
+- **`fulfillment_stock` (17) implementer pass, done.** All of A–I in `specs/fulfillment_stock/tasks.md` ticked; `pnpm quality`/`./init.sh` green; 11 integration files / 36 tests green (Testcontainers MySQL+Kafka+NATS); domain coverage 93.63%. Live boot found a genuine `apps/seed` data gap (only 5 of ~22 seeded companies have a Fulfillment `stock` row — `ALBIONFOODS`, the three originally-parked demo orders' company, is not one of them) that happens to collide with design.md §3.3's own documented "no carrier — NOT_FOUND, park for a human" edge case; a freshly-placed order against a seeded company (`IBERFOODS`/`PRD-0001`) reached `stock_reserved` + parked `credit.hold` unattended, confirming the designed happy path. Also reproduced live: `orders.create`'s Nest-packet reply shape (unlike Fulfillment's five bare-JSON responders) — a raw bare-JSON client times out even though the order is placed, exactly as design.md §6.3 predicted; feature 25's hand-over. Full report: `progress/impl_fulfillment_stock.md`.
 
 - **Testing pattern for features 17–22 (reviewer ruling, third pass on feature 16):** saga integration tests synchronise only on terminal or monotonic evidence (a `saga_commands`/outbox status that never regresses, an append-only request log) — never on a transient live column the correct saga can pass through faster than one poll interval. Polling a state the system is supposed to leave is a race by construction.
 

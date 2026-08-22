@@ -112,6 +112,13 @@ export class SagaFactHandler {
         await this.orders.save(order, tx);
         if (step.commandAfter) {
           const payload = buildSagaCommandPayload(step.commandAfter, order);
+          // D1: `enqueue` is idempotent on (order_id, command) — a distinct-eventId
+          // duplicate of a fact whose precondition still holds (e.g. a redelivered
+          // credit.rejected.v1 mid-compensation) resolves to 'already_owed' rather
+          // than a unique-key violation. Either outcome reports the SAME command as
+          // owed, so the fast path always re-dispatches the row that actually exists
+          // — a `sent` row is a silent no-op there, a `pending`/`parked` one is
+          // (re-)dispatched.
           await this.commandStore.enqueue(tx, {
             id: UniqueId.generate(),
             orderId: order.id,
