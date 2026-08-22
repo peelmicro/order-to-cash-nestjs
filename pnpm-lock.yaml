@@ -101,15 +101,24 @@ importers:
       '@eslint/js':
         specifier: ^10.0.1
         version: 10.0.1(eslint@10.8.1(jiti@2.7.0)(supports-color@10.2.2))
+      '@nestjs/microservices':
+        specifier: 'catalog:'
+        version: 11.2.1(@grpc/grpc-js@1.14.4)(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(ioredis@5.11.1(supports-color@10.2.2))(kafkajs@2.2.4)(nats@2.29.3)(reflect-metadata@0.2.2)(rxjs@7.8.2)
       eslint:
         specifier: ^10.8.1
         version: 10.8.1(jiti@2.7.0)(supports-color@10.2.2)
       eslint-config-prettier:
         specifier: ^10.1.8
         version: 10.1.8(eslint@10.8.1(jiti@2.7.0)(supports-color@10.2.2))
+      nats:
+        specifier: 'catalog:'
+        version: 2.29.3
       prettier:
         specifier: ^3.9.6
         version: 3.9.6
+      rxjs:
+        specifier: 'catalog:'
+        version: 7.8.2
       typescript:
         specifier: 5.9.3
         version: 5.9.3

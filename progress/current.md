@@ -5,7 +5,7 @@
 > effort record) and reset this file to the template below.
 
 **Feature:** — none active —
-**Status:** idle — `billing_credit` (19) done after one rejection; next `billing_credit_simulator` (20, sdd:false)
+**Status:** idle — `billing_credit_simulator` (20) done, approved first pass; next `billing_invoicing` (21, sdd:true)
 **Session started:** —
 
 ## Goal
@@ -70,6 +70,9 @@ Phase 9 — Fulfillment, the first service that answers. `fulfillment_stock` (17
 None.
 
 ## Notes
+
+- **Carried to feature 21** (from `review_billing_credit_simulator`): N1 the R44 parity test compares against a hard-coded key list rather than the sibling's observed payload; **N2 — every future billing integration fixture is now silently subject to the `.99` rule, guarded only by a comment** (the one most likely to bite: an invoicing fixture whose total happens to end in 99 will be rejected for reasons the test does not expect); N3 `Number('0x1')` → rate 1 silently rejects everything; N5 the always-approve adapter's header cites a consumer that does not exist; N6 the matrix's stack-agnostic sketch column says `billing/domain/…` for an infrastructure adapter.
+- **N4 was a false finding** — the fact-emission rule *is* in `CLAUDE.md` (`c3f8e85`) and the test-matrix preamble (`b85ce96`), verified against `git show HEAD:`. Response appended to the review file. First reviewer finding in the project that did not hold up.
 
 - **Standing rule landed (second FS5-shaped defect in three features).** Every branch that emits — or deliberately suppresses — a domain fact must be guarded by a test that fails when the emission is deleted; the implementer arms that deletion itself before submitting and records which named test failed. Doubly binding where the branch has no live caller, since integration harnesses bind the happy-path adapter and cannot reach it. In `CLAUDE.md` § Testing conventions **and** in the `specs/shared/test-matrix.md` preamble, so #8/#9 inherit it.
 - **Open nit (N5, reviewer-ruled not a defect):** the new R39 port-refusal test asserts `payload.reason` but not `requestedAmount`, so a mutation corrupting that one field survives. One assertion closes it; the arithmetic is covered at three other levels. Free to fold into feature 20.

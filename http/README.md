@@ -29,8 +29,36 @@ Until then, `kafka.http` is the most useful file here: it shows the facts each s
 
 Use the NATS script instead:
 
+### What needs to be running
+
+The containers run detached, but **each service is a watch process that occupies its own terminal**:
+
 ```bash
-pnpm order:place        # a normal order — should run the happy path
-pnpm order:over-limit   # exceeds the credit limit — triggers a real compensation
+# Terminal 1 — containers, detached; you get your prompt back
+pnpm dc:up:infra
+
+# Terminals 2, 3 and 4 — one each, left running.
+# Each prints "listening on port 300X (HTTP) and NATS" when ready.
+pnpm dev:orders
+pnpm dev:fulfillment
+pnpm dev:billing
+```
+
+`pnpm saga:watch` needs only the containers; placing orders needs the services too.
+
+### Driving the saga
+
+```bash
+pnpm order:place --qty 2    # 49 998 — normal order, runs the happy path to despatched
+pnpm order:place --qty 1    # 24 999 — ends in .99, so the credit simulator rejects it
+pnpm order:over-limit       # 524 979 — genuinely exceeds the credit limit
+sleep 3 && pnpm saga:watch  # the saga runs asynchronously — give it a moment
+```
+
+Those three cover every path the system has: the happy path, a *simulated* rejection (`reason: simulated_cents_rule`) and a *genuine* one (`reason: over_limit`). Both rejections produce the identical fact and the identical compensation — stock released, order `cancelled`, `credit_rejected` — differing only in the reason, which is requirement **R44** made visible.
+
+`place-order.mjs` speaks NATS through `@nestjs/microservices`'s own client, not hand-rolled JSON: `orders.create` is served by a Nest `@MessagePattern`, and Nest treats an id-less bare-JSON packet as a fire-and-forget event and never replies. Other flags: `--product`, `--retailer`, `--company`, `--currency`.
+
+```bash
 pnpm saga:watch         # every order's status, and the saga's command table
 ```

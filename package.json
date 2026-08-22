@@ -59,9 +59,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@nestjs/microservices": "catalog:",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
+    "nats": "catalog:",
     "prettier": "^3.9.6",
+    "rxjs": "catalog:",
     "typescript": "5.9.3",
     "typescript-eslint": "^8.67.0"
   }

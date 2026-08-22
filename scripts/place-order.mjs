@@ -1,41 +1,52 @@
-// Place an order by sending a raw NATS request to `orders.create`.
-// There is no Gateway until feature 25, so this stands in for it.
+// Place an order the way the future Gateway will: over NATS, using the same
+// `@nestjs/microservices` client the Orders service's `@MessagePattern`
+// expects. (A hand-rolled bare-JSON request does NOT work here — Nest treats
+// an id-less packet as a fire-and-forget event and never replies, which is
+// exactly the wire finding recorded in specs/fulfillment_stock/.)
 //
-//   node scripts/place-order.mjs                 # normal order (should complete the happy path)
-//   node scripts/place-order.mjs --over-limit    # exceeds the credit limit -> genuine compensation
-//   node scripts/place-order.mjs --qty 21        # any quantity you like
+//   pnpm order:place                 # 2 × PRD-0001 — normal order, runs the happy path
+//   pnpm order:place --qty 1         # 1 × PRD-0001 = 24 999 → ends in .99 → simulated compensation
+//   pnpm order:over-limit            # 21 × PRD-0001 → exceeds the credit limit → real compensation
+//   pnpm order:place --qty 3 --product PRD-0002 --retailer AldiEs --company GERMANFOODS
 //
-// Requires the compose stack up and orders/fulfillment/billing running.
-import { connect, StringCodec } from 'nats';
-import { randomUUID } from 'node:crypto';
+// Needs: `pnpm dc:up:infra`, plus `pnpm dev:orders`, `dev:fulfillment` and
+// `dev:billing` running (each in its own terminal).
+import { ClientProxyFactory, Transport } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
+import { timeout } from 'rxjs/operators';
 
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1]; };
 const overLimit = process.argv.includes('--over-limit');
 const quantity = Number(arg('--qty', overLimit ? 21 : 2));
 
-const request = {
+const payload = {
   retailerCode: arg('--retailer', 'CarrefourEs'),
-  companyCode:  arg('--company',  'IBERFOODS'),
-  currency:     'EUR',
-  lines: [{ productCode: arg('--product', 'PRD-0001'), quantity, lineDiscount: 0 }],
+  companyCode: arg('--company', 'IBERFOODS'),
+  currency: arg('--currency', 'EUR'),
+  lines: [{ productCode: arg('--product', 'PRD-0001'), quantity }],
 };
 
-const nc = await connect({ servers: process.env.NATS_URL ?? 'nats://localhost:4222' });
-const sc = StringCodec();
-const headers = { 'x-correlation-id': randomUUID(), 'x-request-id': randomUUID() };
+const client = ClientProxyFactory.create({
+  transport: Transport.NATS,
+  options: { servers: [process.env.NATS_URL ?? 'nats://localhost:4222'] },
+});
 
-console.log(`→ orders.create  ${request.retailerCode}/${request.companyCode}  ${quantity} × ${request.lines[0].productCode}`);
+console.log(`→ orders.create   ${payload.retailerCode} / ${payload.companyCode}   ${quantity} × ${payload.lines[0].productCode}`);
 try {
-  const reply = await nc.request('orders.create', sc.encode(JSON.stringify({ ...request, headers })), { timeout: 10_000 });
-  const body = JSON.parse(sc.decode(reply.data));
-  console.log('← reply:', JSON.stringify(body, null, 2));
-  if (body.orderReference) {
-    console.log(`\nWatch it move:\n  docker exec otc-mysql sh -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "SELECT order_reference,status,cancellation_reason,total_amount FROM otc_orders.orders WHERE order_reference=\\"${body.orderReference}\\""'`);
+  await client.connect();
+  const reply = await firstValueFrom(client.send('orders.create', payload).pipe(timeout(15_000)));
+  console.log('← reply:', JSON.stringify(reply, null, 2));
+
+  if (reply?.orderReference) {
+    const total = reply.totalAmount;
+    const cents = typeof total === 'number' ? total % 100 : null;
+    console.log(`\n  total ${total} minor units${cents === 99 ? '  → ends in .99, the simulator will reject this one' : ''}`);
+    console.log(`\n  The saga runs asynchronously. Give it a second, then:\n    pnpm saga:watch`);
   }
 } catch (e) {
-  console.error('✗ request failed:', e.message);
-  console.error('  (is `pnpm dev:orders` running? is the compose stack up?)');
+  console.error('✗ failed:', e?.message ?? e);
+  console.error('  Check: pnpm dc:up:infra, and dev:orders / dev:fulfillment / dev:billing all running.');
   process.exitCode = 1;
 } finally {
-  await nc.drain();
+  await client.close();
 }

@@ -177,6 +177,6 @@ describe('CreditHoldHandler.hold — R39, port refusal', () => {
     const events = savedCredit!.pullDomainEvents();
     expect(events).toHaveLength(1);
     expect(events[0]?.eventType).toBe('credit.rejected.v1');
-    expect(events[0]?.payload).toMatchObject({ reason: refusedReason });
+    expect(events[0]?.payload).toMatchObject({ reason: refusedReason, requestedAmount: 4_000, availableCredit: 10_000 });
   });
 });

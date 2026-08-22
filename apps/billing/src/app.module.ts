@@ -2,9 +2,20 @@
 // handlers as CLASS providers (decorator discovery needs the class),
 // everything else wired with `useFactory` + `inject: [...]` — the same
 // shape `apps/orders/src/app.module.ts` and `apps/fulfillment/src/app.module.ts`
-// established. `CREDIT_DECISION` is bound to `AlwaysApproveCreditDecision`
-// (design.md §6.3) — feature 20's entire footprint is replacing this one
-// provider.
+// established. `CREDIT_DECISION` is bound to `SimulatorCreditDecision`
+// (feature 20, requirements.md §5.1, R42–R44) — the ONE provider feature
+// 20 replaces. Bound UNCONDITIONALLY, not behind an env flag: there is no
+// second, real credit-assessment adapter in this codebase to choose
+// between, `CREDIT_FAILURE_RATE` defaults to `0` so the simulator is a
+// pure superset of `AlwaysApproveCreditDecision`'s behaviour at its
+// default (it only ever narrows an approval — credit-decision.port.ts),
+// and every existing amount used by the fixtures in
+// `credit-hold.integration.spec.ts` / `credit-hold-race.integration.spec.ts`
+// / `credit-wire.integration.spec.ts` / `credit-list.integration.spec.ts`
+// avoids `…99` deliberately, so those harnesses keep passing unchanged.
+// `AlwaysApproveCreditDecision` remains in the tree, still covered by its
+// own spec — nothing about this feature deletes it, only app.module.ts's
+// binding moves off it.
 import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { AppController } from './presentation/app.controller';
@@ -20,7 +31,7 @@ import { CREDIT_QUERY_HANDLERS } from './application/queries/credit.query-handle
 import { CreditHoldHandler } from './application/credit-hold.handler';
 import type { CreditDecisionPort } from './application/ports/credit-decision.port';
 import type { BuyerCreditRepository } from './application/ports/buyer-credit-repository.port';
-import { AlwaysApproveCreditDecision } from './infrastructure/credit/always-approve-credit-decision';
+import { loadCreditSimulatorConfig, SimulatorCreditDecision } from './infrastructure/credit/simulator-credit-decision';
 import { createBillingDb, createBillingPool, type BillingDb } from './infrastructure/persistence/client';
 import { loadBillingDbConfig } from './infrastructure/persistence/db-config';
 import { DrizzleUnitOfWork } from './infrastructure/persistence/drizzle-unit-of-work';
@@ -62,8 +73,12 @@ const BILLING_DB = Symbol('BillingDb');
       inject: [BILLING_DB],
     },
     {
+      // Throws synchronously (via `loadCreditSimulatorConfig`) when
+      // `CREDIT_FAILURE_RATE` is set to a value outside `[0, 1]` — Nest's
+      // module compilation fails and the service fails to start,
+      // reporting the offending value (R43's last clause).
       provide: CREDIT_DECISION,
-      useFactory: (): AlwaysApproveCreditDecision => new AlwaysApproveCreditDecision(),
+      useFactory: (): SimulatorCreditDecision => new SimulatorCreditDecision(loadCreditSimulatorConfig()),
     },
     {
       provide: CreditHoldHandler,
