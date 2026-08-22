@@ -85,6 +85,8 @@ pnpm dc:up:infra   # 10 containers + a one-shot kafka-init job
 ./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
 ```
 
+Poke at the running stack by hand with the [`http/`](http/) files and the REST Client VS Code extension — service liveness, the NATS subjects currently answered, the domain facts on each Kafka topic, and the Prometheus/Jaeger/Grafana APIs. Business operations travel over NATS rather than HTTP until the Gateway lands, so use `pnpm order:place` / `pnpm order:over-limit` / `pnpm saga:watch` to drive and watch the saga in the meantime.
+
 | UI | URL |
 |---|---|
 | Redpanda Console (Kafka topics + DLQs) | http://localhost:8080 |
@@ -154,7 +156,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 7 | Deterministic seed job | ✅ |
 | 8 | Orders service + saga orchestrator | ✅ |
 | 9 | Fulfillment service | ✅ |
-| 10 | Billing service | ⬜ |
+| 10 | Billing service | 🚧 buyer credit done; simulator, invoicing, remittances pending |
 | 11 | Notifications service | ⬜ |
 | 12 | Projector service + MongoDB read model | ⬜ |
 | 13 | Gateway / BFF | ⬜ |

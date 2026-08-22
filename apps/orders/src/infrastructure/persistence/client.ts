@@ -8,6 +8,10 @@ import type { OrdersDbConfig } from './db-config';
 import * as schema from './schema';
 
 export type OrdersDb = MySql2Database<typeof schema>;
+// design.md §9.2 (billing_credit) — the service-neutral alias the canonical
+// outbox-relay family imports instead of `OrdersDb` directly, so the same
+// file text resolves to the right concrete type in every write model.
+export type WriteModelDb = OrdersDb;
 
 export function createOrdersPool(config: OrdersDbConfig): Pool {
   return mysql.createPool({

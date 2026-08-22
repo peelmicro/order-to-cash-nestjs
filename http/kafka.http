@@ -1,0 +1,40 @@
+### Kafka — topics and facts, via the Redpanda Console API
+###
+### The same data the Console UI shows at http://localhost:8080, but callable.
+### This is where you SEE the domain facts the services publish: every saga
+### step leaves one here.
+###
+### Requires: pnpm dc:up:infra
+
+@console = http://localhost:8080
+
+### All topics. Expect the six the kafka-init job derives from
+### specs/shared/asyncapi.yaml — three fact topics and their .dlq companions:
+###   otc.orders.facts.v1        otc.orders.facts.v1.dlq
+###   otc.fulfillment.facts.v1   otc.fulfillment.facts.v1.dlq
+###   otc.billing.facts.v1       otc.billing.facts.v1.dlq
+GET {{console}}/api/topics
+
+### One topic's configuration — partitions, replication, cleanup policy
+GET {{console}}/api/topics/otc.orders.facts.v1
+
+### THE FACTS THEMSELVES — the orders topic, newest first.
+### Every message is an envelope: eventId, eventType, aggregateId,
+### correlationId (the order id), causationId, occurredAt, payload.
+GET {{console}}/api/topics/otc.orders.facts.v1/messages?pageSize=20
+
+### Fulfillment's facts — stock.reserved.v1, stock.rejected.v1,
+### stock.released.v1, order.despatched.v1
+GET {{console}}/api/topics/otc.fulfillment.facts.v1/messages?pageSize=20
+
+### Billing's facts — credit.approved.v1, credit.rejected.v1, credit.released.v1
+### (and, from feature 21, invoice.issued.v1 / payment.received.v1)
+GET {{console}}/api/topics/otc.billing.facts.v1/messages?pageSize=20
+
+### The dead-letter topics. These should be EMPTY: nothing has been
+### dead-lettered, and the retry/DLQ machinery itself lands in feature 27.
+GET {{console}}/api/topics/otc.orders.facts.v1.dlq/messages?pageSize=10
+
+### Consumer groups — the saga orchestrator's group appears here once
+### apps/orders is running (Nest appends "-server" to the configured id).
+GET {{console}}/api/consumer-groups

@@ -1,0 +1,48 @@
+### Observability — Prometheus, Jaeger, Grafana
+###
+### Requires: pnpm dc:up:infra
+###
+### NOTE: the services do not emit traces or custom metrics yet — the
+### OpenTelemetry instrumentation is feature 27. Until then Jaeger shows only
+### its own internal spans and Prometheus scrapes only the collector. These
+### requests are still worth having: they prove the pipeline is wired, and
+### they are the ones you will reuse when the real telemetry arrives.
+
+@prometheus = http://localhost:9090
+@jaeger     = http://localhost:16686
+@grafana    = http://localhost:3030
+
+### --- Prometheus ---
+
+### Which scrape targets are up? Expect otel-collector = 1.
+GET {{prometheus}}/api/v1/query?query=up
+
+### Every metric name currently known to Prometheus
+GET {{prometheus}}/api/v1/label/__name__/values
+
+### Target health in detail — the same view as the /targets UI page
+GET {{prometheus}}/api/v1/targets
+
+### The collector's own throughput (a useful liveness signal for the pipeline)
+GET {{prometheus}}/api/v1/query?query=otelcol_receiver_accepted_spans
+
+### --- Jaeger ---
+
+### Services that have reported traces. Until feature 27 this is Jaeger itself.
+GET {{jaeger}}/api/services
+
+### Traces for one service (change the parameter once real services report)
+GET {{jaeger}}/api/traces?service=jaeger&limit=5
+
+### --- Grafana ---
+
+### Health — expect { "database": "ok", ... }
+GET {{grafana}}/api/health
+
+### Provisioned datasources — Prometheus and Jaeger, wired in feature 4
+GET {{grafana}}/api/datasources
+Authorization: Basic admin:admin
+
+### Dashboards. Empty until feature 22 commits the dashboard JSON.
+GET {{grafana}}/api/search?type=dash-db
+Authorization: Basic admin:admin

@@ -16,8 +16,8 @@ export class OutboxRecorder {
 
   /**
    * Appends one outbox row per envelope, in array order, inside `tx`.
-   * Assigns no sequence — the store does, via AUTO_INCREMENT — and no
-   * MySQL cursor: a single multi-row INSERT assigns strictly increasing
+   * Assigns no sequence — the store does, via AUTO_INCREMENT (§3.2) — and
+   * no MySQL cursor: a single multi-row INSERT assigns strictly increasing
    * `seq` values in statement order, which is what makes emission order
    * (`pullDomainEvents()`'s own append order) survive into `seq` order.
    */

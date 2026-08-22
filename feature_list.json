@@ -267,7 +267,7 @@
       "phase": 10,
       "title": "BuyerCredit aggregate + hold/release/consume ledger",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "availableCredit = limit - active holds - open invoices",
         "ledger is append-only",

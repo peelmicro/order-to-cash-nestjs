@@ -5,7 +5,7 @@
 import { asc, inArray, isNull } from 'drizzle-orm';
 import type { Clock } from '../../application/ports/clock.port';
 import type { FactPublisher, PublishableFact } from '../../application/ports/fact-publisher.port';
-import type { OrdersDb } from '../persistence/client';
+import type { WriteModelDb } from '../persistence/client';
 import { outbox } from '../persistence/schema';
 import type { OutboxRelayConfig } from './outbox-relay.config';
 import { outboxRowToEnvelope } from './outbox-envelope-mapper';
@@ -48,7 +48,7 @@ const CONSOLE_LOGGER: OutboxRelayLogger = {
 };
 
 export interface OutboxRelayDeps {
-  readonly db: OrdersDb;
+  readonly db: WriteModelDb;
   readonly publisher: FactPublisher;
   readonly clock: Clock;
   readonly config: OutboxRelayConfig;
@@ -56,7 +56,7 @@ export interface OutboxRelayDeps {
 }
 
 export class OutboxRelay {
-  private readonly db: OrdersDb;
+  private readonly db: WriteModelDb;
   private readonly publisher: FactPublisher;
   private readonly clock: Clock;
   private readonly config: OutboxRelayConfig;

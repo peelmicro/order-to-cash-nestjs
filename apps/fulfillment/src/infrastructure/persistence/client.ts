@@ -8,6 +8,10 @@ import type { FulfillmentDbConfig } from './db-config';
 import * as schema from './schema';
 
 export type FulfillmentDb = MySql2Database<typeof schema>;
+// design.md §9.2 (billing_credit) — the service-neutral alias the canonical
+// outbox-relay family imports instead of `FulfillmentDb` directly, so the
+// same file text resolves to the right concrete type in every write model.
+export type WriteModelDb = FulfillmentDb;
 
 export function createFulfillmentPool(config: FulfillmentDbConfig): Pool {
   return mysql.createPool({

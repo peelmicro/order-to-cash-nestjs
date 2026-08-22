@@ -223,6 +223,8 @@ Every process artifact in this repository: what it is for, and where it came fro
 | `specs/<feature>/` | Per-feature triple-doc for the 8 large features | requirements (EARS) + design + tasks; human gate between spec and code. First one (`orders_aggregate`) went through 16 open points at the gate: 14 accepted, 2 amended | Phase 8 | Phase 8 |
 | `docs/PROCESS.md` | This document | Updated at the end of every phase — registry + status | Phase 6 | Phase 6 |
 | `README.md` | Honest front door at every commit | Grows incrementally each phase; never describes software that does not exist yet | Phase 1 | every phase |
+| `http/` | Manual probing of a running stack | REST Client files: service liveness, the NATS subjects currently answered, the domain facts on each Kafka topic, and the Prometheus/Jaeger/Grafana APIs. Business operations are NATS, not HTTP, until the Gateway lands at feature 25 — the file set grows there | Phase 10 | Phase 10 |
+| `scripts/` | Driving the system before the Gateway exists | `place-order.mjs` sends a raw NATS `orders.create` request; wrapped as `pnpm order:place` / `order:over-limit`, with `saga:watch` for the resulting state | Phase 10 | Phase 10 |
 | `docker-compose.infra.yml` + `infra/` | The runnable infrastructure | 10 pinned services + SonarQube behind a profile; `kafka-init` derives topics from the AsyncAPI spec | Phase 4 | Phase 4 |
 | `.env.example` | Every credential, port and flag, documented | Extended whenever a feature adds configuration | Phase 4 | Phase 7 |
 | `package.json` (root) | Workspace scripts + exact `packageManager` pin | The exact pin matters: corepack rejects ranged pins outright | Phase 4 | Phase 7 |
@@ -233,7 +235,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phase 8 of 25 complete — 16 of 39 features done** (the backlog grew by one: `requestId` idempotent replay was scoped out of order acceptance honestly, as a tracked `sdd: true` feature, rather than left silently absent).
+**Position: Phase 9 of 25 complete, Phase 10 underway — 19 of 39 features done** (the backlog grew by one along the way: `requestId` idempotent replay was scoped out of order acceptance honestly, as a tracked `sdd: true` feature, rather than left silently absent).
 
 | Phase | What | State |
 |---|---|---|
@@ -247,7 +249,8 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 8 | Orders service + saga orchestrator — first `sdd: true` features through the full spec loop | next |
 | 8 | Orders service — aggregate, outbox/idempotency, acceptance, and the saga orchestrator (the centrepiece: `@nestjs/cqrs` over durable `saga_commands`, both compensation paths, park-then-recover) | ✅ |
 | 9 | Fulfillment — stock reservations and DESADV creation. The saga now advances across two services unattended | ✅ |
-| 10–15 | Billing, notifications, projector, gateway, reliability, observability | pending |
+| 10 | Billing — `billing_credit` ✅ (the first genuine end-to-end compensation, no simulator needed); simulator, invoicing and remittances next | 🚧 |
+| 11–15 | Notifications, projector, gateway, reliability, observability | pending |
 | 16–19 | Web app + all test layers | pending |
 | 20–25 | n8n workflows, quality gates, dashboards, full compose, documentation, final checkpoint | pending |
 

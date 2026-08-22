@@ -1,0 +1,39 @@
+### Order To Cash — service liveness
+###
+### Every backend service is a HYBRID app: it listens on HTTP *and* on NATS
+### and/or Kafka. Only the HTTP side is reachable from this file — the
+### business operations (orders.create, fulfillment.stock.reserve,
+### billing.credit.hold, ...) are NATS request-reply and cannot be called
+### over HTTP until the Gateway lands in feature 25. See http/README.md.
+###
+### Start a service with, e.g.:  pnpm dev:orders
+### Ports come from .env (defaults below match .env.example).
+
+@gateway       = http://localhost:3001
+@orders        = http://localhost:3002
+@fulfillment   = http://localhost:3003
+@billing       = http://localhost:3004
+@notifications = http://localhost:3005
+@projector     = http://localhost:3006
+
+### Orders — the aggregate, the outbox relay and the saga orchestrator live here
+GET {{orders}}/
+
+### Fulfillment — stock reservations and despatch advice
+GET {{fulfillment}}/
+
+### Billing — buyer credit, and (from feature 21) invoicing
+GET {{billing}}/
+
+### Gateway — REST/OpenAPI + SSE. Not implemented until feature 25; expect a connection error.
+GET {{gateway}}/
+
+### Notifications — Mailtrap/console notification port. Feature 23; expect a connection error.
+GET {{notifications}}/
+
+### Projector — Kafka facts -> MongoDB order_timeline. Feature 24; expect a connection error.
+GET {{projector}}/
+
+### A healthy reply looks like:  { "service": "orders", "status": "ok" }
+### Real readiness probes (DB / Kafka / NATS indicators via @nestjs/terminus)
+### arrive with feature 27; this endpoint proves the process is up, no more.

@@ -26,6 +26,7 @@
 | `CHECKPOINTS.md` | Objective "is this session closeable" criteria | To self-assess before closing |
 | `docs/PROCESS.md` | The full process guide: harness + SDD concepts, the cast, the loop, EARS, the artifact registry, current status | To understand or replicate the process; **updated at the end of every phase** |
 | `.claude/agents/` | Subagent definitions (leader, spec_author, implementer, reviewer, test_maintainer, suite_runner) | When orchestrating work |
+| `http/` | REST Client `.http` files for manual probing of a running stack | When testing by hand |
 | `apps/` | The 6 services + the Nuxt web app | To implement |
 | `packages/` | `shared-kernel` (dependency-free) and `contracts` (generated types) | To implement |
 | `infra/`, `docker-compose*.yml` | Infrastructure | For environment work |

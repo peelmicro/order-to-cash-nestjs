@@ -1,0 +1,31 @@
+### NATS — the RPC bus, via its HTTP monitoring port
+###
+### NATS itself speaks its own protocol, but the server exposes a read-only
+### HTTP monitoring API. That is the closest you can get to "watching the RPC
+### layer" from a .http file, and it is genuinely useful: /subsz shows which
+### subjects each service is currently answering.
+###
+### Requires: pnpm dc:up:infra
+
+@nats = http://localhost:8222
+
+### Server overview — uptime, connection count, slow consumers
+GET {{nats}}/varz
+
+### JetStream status. THIS PROJECT DELIBERATELY DOES NOT USE JETSTREAM —
+### durability is Kafka's job (see the Kafka-vs-NATS decision matrix).
+### Expect: { "disabled": true }
+GET {{nats}}/jsz
+
+### Current connections — one per running service, plus any test client
+GET {{nats}}/connz
+
+### SUBSCRIPTIONS — the interesting one. With orders, fulfillment and billing
+### running you should see the saga's subjects being answered:
+###   orders.create, fulfillment.stock.check, fulfillment.stock.reserve,
+###   fulfillment.stock.release, fulfillment.despatch.create,
+###   billing.credit.hold, billing.credit.list, ...
+GET {{nats}}/subsz?subs=1
+
+### Routing/gateway info (single-node here, so mostly empty)
+GET {{nats}}/routez

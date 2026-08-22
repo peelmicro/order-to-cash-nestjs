@@ -99,6 +99,7 @@ Dependencies point **inwards**: presentation → application → domain. Infrast
 - API tests are black-box through the Gateway (Vitest runner + Supertest as the HTTP client only).
 - Web: Vitest + Vue Testing Library for components, Playwright for end-to-end.
 - **Tests are written inside the feature loop, not at the end of the project.**
+- **Every branch that emits — or deliberately suppresses — a domain fact must be guarded by a test that fails when the emission is deleted.** Before submitting, the implementer arms that deletion itself and records in `progress/impl_<feature>.md` which named test failed and with what message. A fact-emitting branch whose emission survives its own deletion on a green suite is **not done** — with double force where the branch has no live caller yet, because integration harnesses cannot reach it. Learned twice: feature 17 (FS5, re-reserve after compensation) and feature 19 (R39's port-refusal branch), both correct code with no guard.
 - Coverage gates: **≥80% domain layer, ≥60% overall**, enforced in `pnpm quality` regardless of SonarQube.
 - Every EARS requirement `R<n>` maps to at least one named test in `specs/shared/test-matrix.md`.
 

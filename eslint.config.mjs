@@ -84,6 +84,16 @@ export default tseslint.config(
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
+  // Developer scripts run directly under Node (no bundler, no Nest), so they
+  // legitimately use `process` and `console` — globals the app configs do not
+  // declare. Plain ESM JavaScript, so no type-aware linting either.
+  {
+    files: ["scripts/**/*.{mjs,js}"],
+    languageOptions: {
+      sourceType: "module",
+      globals: { process: "readonly", console: "readonly" },
+    },
+  },
   {
     files: ["**/*.{ts,mts,cts}"],
     rules: {

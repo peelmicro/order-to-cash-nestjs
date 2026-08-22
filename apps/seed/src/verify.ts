@@ -31,9 +31,33 @@ import {
 
 export class SeedVerificationError extends Error {}
 
+/**
+ * Reference data — a table live saga traffic never grows (`currencies`,
+ * `products`, `retailers`, `companies`, `stock`, `credits`; design.md
+ * §10.2). The count must match the fixtures EXACTLY: a live order can only
+ * ever mutate an existing row (e.g. `stock.units`), never insert a new one,
+ * and `credits` staying exact is not an accident — `BC3` forbids creating a
+ * credit line on demand, so this is the assertion that will notice if a
+ * later feature changes that.
+ */
 function assertEqual(label: string, actual: number, expected: number): void {
   if (actual !== expected) {
-    throw new SeedVerificationError(`${label}: expected ${expected}, got ${actual}`);
+    throw new SeedVerificationError(`${label}: expected exactly ${expected}, got ${actual}`);
+  }
+}
+
+/**
+ * Saga-derived data — every table live traffic GROWS (`orders`,
+ * `orderItems`, the three outboxes, `reservations`, `despatches`,
+ * `despatchItems`, `creditItems`, `invoices`, `invoiceItems`, `payments`,
+ * `mongo.order_timeline`; design.md §10.2). The seed's own fixtures are the
+ * FLOOR, not the ceiling — a long-lived development database that has
+ * since processed live orders must still verify, so this asserts "at
+ * least", never "exactly" (`N3`, `BC19`).
+ */
+function assertAtLeast(label: string, actual: number, minimum: number): void {
+  if (actual < minimum) {
+    throw new SeedVerificationError(`${label}: expected at least ${minimum}, got ${actual}`);
   }
 }
 
@@ -44,15 +68,16 @@ export interface VerificationSummary {
   mongoOrderTimelines: number;
 }
 
-export async function verifySeed(handles: {
-  ordersDb: OrdersDb;
-  fulfillmentDb: FulfillmentDb;
-  billingDb: BillingDb;
-  mongoDb: Db;
-}): Promise<VerificationSummary> {
-  const { ordersDb, fulfillmentDb, billingDb, mongoDb } = handles;
+/**
+ * Section 1 of `verifySeed`, extracted as a PURE function of already-fetched
+ * counts (`BC19`) — no Drizzle handle, no MongoDB `Db`, no I/O, so
+ * `verify.spec.ts` can drive it against fake count sources without Docker.
+ * Exact assertions for reference data, lower-bound assertions for every
+ * table live saga traffic grows (design.md §10.2, N3).
+ */
+export function verifyCounts(summary: VerificationSummary): void {
+  const { orders, fulfillment, billing, mongoOrderTimelines } = summary;
 
-  // ── 1. row counts, per table and per collection ──────────────────────────
   const orderItemsExpected = SAGAS.reduce((sum, saga) => sum + saga.lines.length, 0);
   const ordersOutboxExpected = SAGAS.reduce((sum, saga) => sum + saga.ordersOutbox.length, 0);
   const reservationsExpected = SAGAS.reduce((sum, saga) => sum + saga.reservations.length, 0);
@@ -71,32 +96,48 @@ export async function verifySeed(handles: {
   );
   const billingOutboxExpected = SAGAS.reduce((sum, saga) => sum + saga.billingOutbox.length, 0);
 
-  const orders = await countOrdersRows(ordersDb);
   assertEqual('orders.currencies', orders.currencies, CURRENCIES.length);
   assertEqual('orders.products', orders.products, PRODUCTS.length);
   assertEqual('orders.retailers', orders.retailers, RETAILERS.length);
   assertEqual('orders.companies', orders.companies, COMPANIES.length);
-  assertEqual('orders.orders', orders.orders, SAGAS.length);
-  assertEqual('orders.orderItems', orders.orderItems, orderItemsExpected);
-  assertEqual('orders.outbox', orders.outbox, ordersOutboxExpected);
+  assertAtLeast('orders.orders', orders.orders, SAGAS.length);
+  assertAtLeast('orders.orderItems', orders.orderItems, orderItemsExpected);
+  assertAtLeast('orders.outbox', orders.outbox, ordersOutboxExpected);
 
-  const fulfillment = await countFulfillmentRows(fulfillmentDb);
   assertEqual('fulfillment.stock', fulfillment.stock, STOCK.length);
-  assertEqual('fulfillment.reservations', fulfillment.reservations, reservationsExpected);
-  assertEqual('fulfillment.despatches', fulfillment.despatches, COMPLETED_SAGAS.length);
-  assertEqual('fulfillment.despatchItems', fulfillment.despatchItems, despatchItemsExpected);
-  assertEqual('fulfillment.outbox', fulfillment.outbox, fulfillmentOutboxExpected);
+  assertAtLeast('fulfillment.reservations', fulfillment.reservations, reservationsExpected);
+  assertAtLeast('fulfillment.despatches', fulfillment.despatches, COMPLETED_SAGAS.length);
+  assertAtLeast('fulfillment.despatchItems', fulfillment.despatchItems, despatchItemsExpected);
+  assertAtLeast('fulfillment.outbox', fulfillment.outbox, fulfillmentOutboxExpected);
 
-  const billing = await countBillingRows(billingDb);
+  // `credits` stays EXACT — B1's ledger arithmetic requires a credit line
+  // to be master data, so BC3 forbids a saga (or anything else) from
+  // creating one on demand. If a later feature ever makes credit lines
+  // creatable, this assertion is the thing that will notice.
   assertEqual('billing.credits', billing.credits, CREDITS.length);
-  assertEqual('billing.creditItems', billing.creditItems, creditItemsExpected);
-  assertEqual('billing.invoices', billing.invoices, COMPLETED_SAGAS.length);
-  assertEqual('billing.invoiceItems', billing.invoiceItems, invoiceItemsExpected);
-  assertEqual('billing.payments', billing.payments, COMPLETED_SAGAS.length);
-  assertEqual('billing.outbox', billing.outbox, billingOutboxExpected);
+  assertAtLeast('billing.creditItems', billing.creditItems, creditItemsExpected);
+  assertAtLeast('billing.invoices', billing.invoices, COMPLETED_SAGAS.length);
+  assertAtLeast('billing.invoiceItems', billing.invoiceItems, invoiceItemsExpected);
+  assertAtLeast('billing.payments', billing.payments, COMPLETED_SAGAS.length);
+  assertAtLeast('billing.outbox', billing.outbox, billingOutboxExpected);
 
+  assertAtLeast('mongo.order_timeline', mongoOrderTimelines, SAGAS.length);
+}
+
+export async function verifySeed(handles: {
+  ordersDb: OrdersDb;
+  fulfillmentDb: FulfillmentDb;
+  billingDb: BillingDb;
+  mongoDb: Db;
+}): Promise<VerificationSummary> {
+  const { ordersDb, fulfillmentDb, billingDb, mongoDb } = handles;
+
+  // ── 1. row counts, per table and per collection ──────────────────────────
+  const orders = await countOrdersRows(ordersDb);
+  const fulfillment = await countFulfillmentRows(fulfillmentDb);
+  const billing = await countBillingRows(billingDb);
   const mongoOrderTimelines = await countMongoTimelines(mongoDb);
-  assertEqual('mongo.order_timeline', mongoOrderTimelines, SAGAS.length);
+  verifyCounts({ orders, fulfillment, billing, mongoOrderTimelines });
 
   // ── 2. every seeded outbox row is already published ──────────────────────
   const unpublishedOrders = await ordersDb

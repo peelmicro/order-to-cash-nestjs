@@ -16,6 +16,9 @@ export interface KafkaConfig {
 }
 
 export const FULFILLMENT_FACTS_TOPIC = 'otc.fulfillment.facts.v1';
+// design.md §9.2 (billing_credit) — the service-neutral alias the canonical
+// kafka-fact-publisher.ts imports instead of `FULFILLMENT_FACTS_TOPIC` directly.
+export const FACTS_TOPIC = FULFILLMENT_FACTS_TOPIC;
 
 export function loadKafkaConfig(env: NodeJS.ProcessEnv = process.env): KafkaConfig {
   const brokers = (env.KAFKA_BROKERS ?? 'localhost:9092')

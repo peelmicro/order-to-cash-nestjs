@@ -11,10 +11,22 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.integration.spec.ts'],
-    // Starting a MySQL container, running migrations and round-tripping
-    // every table comfortably exceeds vitest's default 5s test / 10s hook
-    // timeouts on a cold Docker image pull.
-    testTimeout: 120_000,
+    // Starting a MySQL/NATS/Kafka container, running migrations and
+    // round-tripping every table comfortably exceeds vitest's default 5s
+    // test / 10s hook timeouts on a cold Docker image pull. 180_000/120_000
+    // adopted verbatim from apps/orders'/apps/fulfillment's
+    // vitest.integration.config.mts (design.md §13, task H7) — same class
+    // of Testcontainers trio, same headroom needed.
+    testTimeout: 180_000,
     hookTimeout: 120_000,
+    // Several spec files here each start their OWN MySQL + Kafka + NATS
+    // Testcontainers trio. Left at vitest's default file-level parallelism,
+    // several single-node KRaft Kafka brokers starting concurrently have
+    // been observed (apps/orders, apps/fulfillment) to race against each
+    // other's post-startup metadata/coordinator propagation — a
+    // resource-contention flake, not a functional bug. Integration tests
+    // are already outside `pnpm quality`'s fast gate, so serialising files
+    // here trades wall-clock time for determinism.
+    fileParallelism: false,
   },
 });

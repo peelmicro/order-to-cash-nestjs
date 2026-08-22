@@ -14,6 +14,9 @@ export interface KafkaConfig {
 }
 
 export const ORDERS_FACTS_TOPIC = 'otc.orders.facts.v1';
+// design.md §9.2 (billing_credit) — the service-neutral alias the canonical
+// kafka-fact-publisher.ts imports instead of `ORDERS_FACTS_TOPIC` directly.
+export const FACTS_TOPIC = ORDERS_FACTS_TOPIC;
 
 // The two additional fact topics the saga orchestrator consumes (feature
 // 16, design.md §3.1) — same "never derived at runtime from

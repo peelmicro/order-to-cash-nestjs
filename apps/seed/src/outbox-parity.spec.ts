@@ -36,19 +36,34 @@ function splitStatements(sql: string): string[] {
     .filter((statement) => statement.length > 0);
 }
 
-/** Normalises whitespace (runs collapsed to one space, trimmed) so formatting differences never register as drift. Identifier quoting is already uniform (backticks) across every committed migration, so no further normalisation is needed there. */
-function normalise(statement: string): string {
-  return statement.replace(/\s+/g, ' ').trim();
+/**
+ * Strips SQL comment text — block comments (`/* … *\/`) first, then
+ * line comments (`-- …` to end of line) — so a migration's PROSE can never
+ * be constrained by, nor accidentally satisfy, this guard (`N1`, `BC18`).
+ * Without this, `outboxAndProcessedEventsStatements` matched its
+ * `outbox|processed_events` regex against the RAW statement text, so a
+ * `--` comment merely mentioning either table turned a comment-only chunk
+ * into a compared "statement" — which is why migration `0002`'s header had
+ * to call the outbox "the fact-relay table" to avoid self-triggering.
+ */
+function stripSqlComments(statement: string): string {
+  return statement.replace(/\/\*[\s\S]*?\*\//g, '').replace(/--[^\n]*/g, '');
 }
 
-/** Every normalised statement, across every committed migration of one app, that mentions `outbox` or `processed_events`. */
+/** Normalises whitespace (runs collapsed to one space, trimmed) so formatting differences never register as drift. Identifier quoting is already uniform (backticks) across every committed migration, so no further normalisation is needed there. Comments are stripped FIRST (`stripSqlComments`) so only executable SQL is ever compared. */
+function normalise(statement: string): string {
+  return stripSqlComments(statement).replace(/\s+/g, ' ').trim();
+}
+
+/** Every normalised, EXECUTABLE statement (comments stripped, `N1`/`BC18`), across every committed migration of one app, that mentions `outbox` or `processed_events`. A statement that normalises to empty (comment-only) contributes nothing. */
 function outboxAndProcessedEventsStatements(app: string): string[] {
   const statements: string[] = [];
   for (const file of migrationFiles(app)) {
     const content = readFileSync(file, 'utf8');
     for (const statement of splitStatements(content)) {
-      if (/\boutbox\b|\bprocessed_events\b/.test(statement)) {
-        statements.push(normalise(statement));
+      const executable = normalise(statement);
+      if (executable.length > 0 && /\boutbox\b|\bprocessed_events\b/.test(executable)) {
+        statements.push(executable);
       }
     }
   }
@@ -67,5 +82,23 @@ describe('outbox-parity — OI11: outbox and processed_events definitions stay i
 
     expect(fulfillment).toEqual(orders);
     expect(billing).toEqual(orders);
+  });
+});
+
+describe('outbox-parity — BC18: ignores SQL comment text when comparing the three write models\' outbox and processed_events definitions', () => {
+  it('a fixture statement that is ONLY a comment mentioning "outbox" contributes nothing', () => {
+    const commentOnlyLineComment = '-- this table is the outbox for facts';
+    const commentOnlyBlockComment = '/* processed_events lives here too */';
+    const realStatement = 'CREATE TABLE `outbox` (`id` char(36) NOT NULL);';
+
+    expect(normalise(commentOnlyLineComment)).toBe('');
+    expect(normalise(commentOnlyBlockComment)).toBe('');
+    expect(normalise(realStatement)).not.toBe('');
+  });
+
+  it('strips a trailing line comment from an otherwise-real statement without losing the statement itself', () => {
+    const statementWithTrailingComment = 'CREATE TABLE `outbox` (`id` char(36) NOT NULL); -- the fact-relay table';
+
+    expect(normalise(statementWithTrailingComment)).toBe('CREATE TABLE `outbox` (`id` char(36) NOT NULL);');
   });
 });

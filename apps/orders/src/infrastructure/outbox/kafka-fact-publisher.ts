@@ -8,7 +8,7 @@
 // so `kafka-fact-publisher.spec.ts` (OI7) can assert on the constructed
 // producer config with a plain fake, never a mocked broker.
 import type { FactPublisher, PublishableFact } from '../../application/ports/fact-publisher.port';
-import { ORDERS_FACTS_TOPIC } from './kafka.config';
+import { FACTS_TOPIC } from './kafka.config';
 
 /**
  * Mandatory (OI7): a client-internal retry can neither reorder a
@@ -50,7 +50,7 @@ export class KafkaFactPublisher implements FactPublisher {
   private readonly producer: KafkaProducerLike;
   private connected = false;
 
-  constructor(client: KafkaClientLike, private readonly topic: string = ORDERS_FACTS_TOPIC) {
+  constructor(client: KafkaClientLike, private readonly topic: string = FACTS_TOPIC) {
     this.producer = client.producer(KAFKA_PRODUCER_CONFIG);
   }
 
