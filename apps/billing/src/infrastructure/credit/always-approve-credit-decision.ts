@@ -7,12 +7,16 @@
 // Feature 20 (`simulator-credit-decision.ts`, the `.99` rule and
 // `CREDIT_FAILURE_RATE`) is now the binding in `app.module.ts` — this file
 // stays in the tree, still implementing `CreditDecisionPort` and still
-// covered by its own spec below, as a minimal reference adapter and for
-// any harness that wants approve-everything behaviour without the
-// simulator's rules. No domain file, no application file, no presentation
-// file, no port, no DTO and no fact builder changed when feature 20
-// landed — only `app.module.ts`'s `useFactory` for `CREDIT_DECISION`
-// moved off this class.
+// covered by its own spec below. It is the credit-decision port's
+// reference implementation — the minimal example an adapter author
+// copies — and the provider a future harness MAY bind through
+// `overrideProvider` (`billing_invoicing` design.md §11.2 records that
+// this feature considered being that harness and deliberately declined,
+// so this claim stays honest — N5, `review_billing_credit_simulator.md`).
+// No domain file, no application file, no presentation file, no port, no
+// DTO and no fact builder changed when feature 20 landed — only
+// `app.module.ts`'s `useFactory` for `CREDIT_DECISION` moved off this
+// class.
 import type { CreditDecision, CreditDecisionPort, CreditDecisionRequest } from '../../application/ports/credit-decision.port.js';
 
 export class AlwaysApproveCreditDecision implements CreditDecisionPort {

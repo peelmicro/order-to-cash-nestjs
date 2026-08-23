@@ -63,7 +63,7 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
     await container?.stop();
   });
 
-  it('applies the committed migrations from empty and creates all 7 tables plus drizzle’s own migrations table', async () => {
+  it('applies the committed migrations from empty and creates all 8 tables plus drizzle’s own migrations table', async () => {
     const [rows] = await connection.query<mysql.RowDataPacket[]>(
       `SELECT table_name FROM information_schema.tables WHERE table_schema = ? ORDER BY table_name`,
       [container.getDatabase()],
@@ -76,12 +76,36 @@ describe('otc_billing — migrations + round-trip (Testcontainers, mysql:8.4.11)
         'credit_items',
         'credits',
         'invoice_items',
+        'invoice_number_sequences',
         'invoices',
         'outbox',
         'payments',
         'processed_events',
       ].sort(),
     );
+  });
+
+  it('B7 mechanical — asserts the unique index exists on invoices.order_reference (billing_invoicing design.md §6)', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT non_unique, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'invoices' AND index_name = 'uq_invoices_order_reference'`,
+      [container.getDatabase()],
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(Number(rows[0]?.non_unique ?? rows[0]?.NON_UNIQUE)).toBe(0);
+    expect(String(rows[0]?.column_name ?? rows[0]?.COLUMN_NAME)).toBe('order_reference');
+  });
+
+  it('BI15 — asserts the (status, invoice_date) index exists on invoices — the list filter must be an index scan', async () => {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+      `SELECT seq_in_index, column_name FROM information_schema.statistics
+       WHERE table_schema = ? AND table_name = 'invoices' AND index_name = 'idx_invoices_status_invoice_date'
+       ORDER BY seq_in_index`,
+      [container.getDatabase()],
+    );
+
+    expect(rows.map((row) => String(row.column_name ?? row.COLUMN_NAME))).toEqual(['status', 'invoice_date']);
   });
 
   it('asserts the (published_at, occurred_at) index exists on outbox — the relay poll must be an index scan', async () => {

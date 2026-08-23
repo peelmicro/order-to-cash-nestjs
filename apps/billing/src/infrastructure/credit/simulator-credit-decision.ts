@@ -40,13 +40,29 @@ export interface CreditSimulatorConfig {
  * throws synchronously so `app.module.ts`'s `useFactory` fails Nest's
  * module compilation and the service fails to start, reporting the
  * offending value (R43's last clause).
+ *
+ * N3 (`review_billing_credit_simulator.md`, `billing_invoicing` design.md
+ * §11.3): before `Number()` ever sees the raw value, its `trim()`ed form
+ * must match a plain decimal numeral — digits with an optional single
+ * decimal point, no sign, no hex, no exponent, no whitespace-only. Without
+ * this, `Number('0x1')` is `1`, `Number('  ')` is `0`, and both would be
+ * silently accepted as if they were meaningful, which for a value that
+ * exists solely to make a demo reproducible is worse than refusing to
+ * start (`BI18`). Absent and `''` continue to mean `0` (R43's default) —
+ * this check runs strictly AFTER that short-circuit.
  */
+const NUMERAL_SHAPE = /^(?:\d+|\d*\.\d+)$/;
+
 export function loadCreditSimulatorConfig(env: NodeJS.ProcessEnv = process.env): CreditSimulatorConfig {
   const raw = env.CREDIT_FAILURE_RATE;
   if (raw === undefined || raw === '') {
     return { failureRate: 0 };
   }
-  const failureRate = Number(raw);
+  const trimmed = raw.trim();
+  if (!NUMERAL_SHAPE.test(trimmed)) {
+    throw new Error(`CREDIT_FAILURE_RATE must be a plain decimal numeral in the closed interval [0, 1]; got ${JSON.stringify(raw)}`);
+  }
+  const failureRate = Number(trimmed);
   if (!Number.isFinite(failureRate) || failureRate < 0 || failureRate > 1) {
     throw new Error(`CREDIT_FAILURE_RATE must be a number in the closed interval [0, 1]; got ${JSON.stringify(raw)}`);
   }

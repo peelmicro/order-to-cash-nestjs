@@ -8,6 +8,7 @@
 //   pnpm order:place --qty 1         # 1 × PRD-0001 = 24 999 → ends in .99 → simulated compensation
 //   pnpm order:over-limit            # 21 × PRD-0001 → exceeds the credit limit → real compensation
 //   pnpm order:place --qty 3 --product PRD-0002 --retailer AldiEs --company GERMANFOODS
+//   pnpm order:place --qty 2 --discount 300   # per-line discount → invoice total must equal the NET order total (BI21)
 //
 // Needs: `pnpm dc:up:infra`, plus `pnpm dev:orders`, `dev:fulfillment` and
 // `dev:billing` running (each in its own terminal).
@@ -18,12 +19,13 @@ import { timeout } from 'rxjs/operators';
 const arg = (n, d) => { const i = process.argv.indexOf(n); return i === -1 ? d : process.argv[i + 1]; };
 const overLimit = process.argv.includes('--over-limit');
 const quantity = Number(arg('--qty', overLimit ? 21 : 2));
+const lineDiscount = Number(arg('--discount', 0));
 
 const payload = {
   retailerCode: arg('--retailer', 'CarrefourEs'),
   companyCode: arg('--company', 'IBERFOODS'),
   currency: arg('--currency', 'EUR'),
-  lines: [{ productCode: arg('--product', 'PRD-0001'), quantity }],
+  lines: [{ productCode: arg('--product', 'PRD-0001'), quantity, ...(lineDiscount > 0 ? { lineDiscount } : {}) }],
 };
 
 const client = ClientProxyFactory.create({

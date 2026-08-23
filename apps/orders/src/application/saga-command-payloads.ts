@@ -75,12 +75,21 @@ export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order): Sa
         amount: { amount: order.totalAmount.amount, currency: order.totalAmount.currency },
       } satisfies CreditHoldRequestPayload;
     case 'invoice.issue':
+      // BI21 (billing_invoicing design.md §12, open-point row 5 — approved
+      // at the gate): the credit hold above is on `order.totalAmount` (the
+      // NET total, `initialAmount - initialDiscount`), so `invoice.issue`
+      // must carry the same discount or Billing derives `totalAmount` from
+      // the GROSS `amount` alone and the invoice total silently diverges
+      // from the order total and the consumed hold. `apps/seed`'s own
+      // seeded invoices already write `discount: initialDiscount` — this
+      // restores that shape on the live path.
       return {
         orderReference: order.orderReference.value,
         retailerCode: order.retailerCode,
         companyCode: order.companyCode,
         currency: order.currency,
         lines: nonEmptyInvoiceLines(order),
+        discount: order.initialDiscount.amount,
       } satisfies InvoiceIssueRequestPayload;
     default: {
       const exhaustive: never = kind;

@@ -30,6 +30,8 @@ import { BareJsonNatsSerializer } from '../infrastructure/messaging/bare-json-na
 import { BILLING_FACTS_TOPIC } from '../infrastructure/outbox/kafka.config';
 import { createTopic, startKafkaTestFixture, type KafkaTestFixture } from '../infrastructure/outbox/test-support/kafka-test-fixture';
 import { startNatsTestFixture, type NatsTestFixture } from '../infrastructure/messaging/test-support/nats-test-fixture';
+import { assertNotCentsRuleAmount, CENTS_RULE_OPT_IN } from './cents-rule-fixture-guard';
+import type { CreditHoldRequestPayload, InvoiceIssueRequestPayload, InvoiceLine } from '@otc/contracts';
 
 export const MYSQL_IMAGE = 'mysql:8.4.11';
 
@@ -48,7 +50,40 @@ export interface SeedCreditItemRow {
   readonly type: 'hold' | 'consume' | 'release';
 }
 
-export interface CreditIntegrationHarness {
+export interface SeedInvoiceRow {
+  readonly orderReference: string;
+  readonly invoiceReference: string;
+  readonly retailerCode: string;
+  readonly companyCode: string;
+  readonly currencyCode: string;
+  readonly amount: number;
+  readonly discount: number;
+  readonly totalAmount: number;
+  readonly status: 'issued' | 'paid';
+  readonly paidAt?: Date | null;
+  readonly invoiceDate?: Date;
+}
+
+export interface HoldRequestOverrides {
+  readonly orderReference: string;
+  readonly retailerCode: string;
+  readonly companyCode: string;
+  readonly currency: string;
+  readonly amount: number;
+  readonly centsRuleOptIn?: typeof CENTS_RULE_OPT_IN;
+}
+
+export interface IssueRequestOverrides {
+  readonly orderReference: string;
+  readonly retailerCode: string;
+  readonly companyCode: string;
+  readonly currency: string;
+  readonly lines: readonly InvoiceLine[];
+  readonly discount?: number;
+  readonly centsRuleOptIn?: typeof CENTS_RULE_OPT_IN;
+}
+
+export interface BillingIntegrationHarness {
   readonly app: INestApplication;
   readonly db: BillingDb;
   readonly testNatsConnection: NatsConnection;
@@ -56,10 +91,18 @@ export interface CreditIntegrationHarness {
   requestBare<TReply>(subject: string, payload: unknown, headers?: Record<string, string>, timeoutMs?: number): Promise<TReply | RpcError>;
   seedCreditLine(row: SeedCreditRow): Promise<string>;
   seedCreditItem(row: SeedCreditItemRow): Promise<string>;
+  /** Inserts an `invoices` row directly — used by fixtures that need an already-issued (or already-paid) invoice without driving `billing.invoice.issue` (e.g. `BI9`'s paid variant — feature 22 has no responder yet). */
+  seedInvoice(row: SeedInvoiceRow): Promise<string>;
   outboxRowsFor(correlationId: string): Promise<(typeof schema.outbox.$inferSelect)[]>;
   ledgerOf(orderReference: string): Promise<(typeof schema.creditItems.$inferSelect)[]>;
   creditRowOf(retailerCode: string, companyCode: string): Promise<typeof schema.credits.$inferSelect | undefined>;
   committedExposureOf(creditId: string): Promise<number>;
+  invoicesOf(orderReference: string): Promise<(typeof schema.invoices.$inferSelect)[]>;
+  invoiceItemsOf(invoiceId: string): Promise<(typeof schema.invoiceItems.$inferSelect)[]>;
+  /** Builds a `billing.credit.hold` request payload, guarding the amount with `assertNotCentsRuleAmount` (N2, `billing_invoicing` design.md §11.2). */
+  holdRequest(overrides: HoldRequestOverrides): CreditHoldRequestPayload;
+  /** Builds a `billing.invoice.issue` request payload, guarding the COMPUTED total (Σ unitPrice × units − discount) with `assertNotCentsRuleAmount` — the load-bearing half for invoicing fixtures (N2). */
+  issueRequest(overrides: IssueRequestOverrides): InvoiceIssueRequestPayload;
   teardown(): Promise<void>;
 }
 
@@ -74,7 +117,7 @@ function natsHeadersOf(record?: Record<string, string>) {
   return h;
 }
 
-export async function startCreditIntegrationHarness(): Promise<CreditIntegrationHarness> {
+export async function startBillingIntegrationHarness(): Promise<BillingIntegrationHarness> {
   const [mysqlContainer, kafkaFixture, natsFixture]: [StartedMySqlContainer, KafkaTestFixture, NatsTestFixture] = await Promise.all([
     new MySqlContainer(MYSQL_IMAGE)
       .withDatabase('otc_billing')
@@ -169,6 +212,7 @@ export async function startCreditIntegrationHarness(): Promise<CreditIntegration
   }
 
   async function seedCreditItem(row: SeedCreditItemRow): Promise<string> {
+    assertNotCentsRuleAmount(row.amount, `seedCreditItem(${row.type}, ${row.orderReference})`);
     const id = randomUUID();
     const now = new Date(Math.floor(Date.now() / 1000) * 1000);
     await db.insert(schema.creditItems).values({
@@ -178,6 +222,28 @@ export async function startCreditIntegrationHarness(): Promise<CreditIntegration
       amount: row.amount,
       type: row.type,
       creditDate: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return id;
+  }
+
+  async function seedInvoice(row: SeedInvoiceRow): Promise<string> {
+    const id = randomUUID();
+    const now = row.invoiceDate ?? new Date(Math.floor(Date.now() / 1000) * 1000);
+    await db.insert(schema.invoices).values({
+      id,
+      invoiceReference: row.invoiceReference,
+      invoiceDate: now,
+      companyCode: row.companyCode,
+      retailerCode: row.retailerCode,
+      orderReference: row.orderReference,
+      amount: row.amount,
+      discount: row.discount,
+      totalAmount: row.totalAmount,
+      currencyCode: row.currencyCode,
+      status: row.status,
+      paidAt: row.paidAt ?? null,
       createdAt: now,
       updatedAt: now,
     });
@@ -202,6 +268,41 @@ export async function startCreditIntegrationHarness(): Promise<CreditIntegration
     return rows.reduce((sum, row) => sum + (row.type === 'hold' ? row.amount : row.type === 'release' ? -row.amount : 0), 0);
   }
 
+  async function invoicesOf(orderReference: string) {
+    return db.select().from(schema.invoices).where(eq(schema.invoices.orderReference, orderReference));
+  }
+
+  async function invoiceItemsOf(invoiceId: string) {
+    return db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId));
+  }
+
+  function holdRequest(overrides: HoldRequestOverrides): CreditHoldRequestPayload {
+    assertNotCentsRuleAmount(overrides.amount, `holdRequest(${overrides.orderReference})`, overrides.centsRuleOptIn);
+    return {
+      orderReference: overrides.orderReference,
+      retailerCode: overrides.retailerCode,
+      companyCode: overrides.companyCode,
+      amount: { amount: overrides.amount, currency: overrides.currency },
+    };
+  }
+
+  function issueRequest(overrides: IssueRequestOverrides): InvoiceIssueRequestPayload {
+    const discount = overrides.discount ?? 0;
+    const gross = overrides.lines.reduce((sum, line) => sum + line.unitPrice * line.units, 0);
+    // The COMPUTED total — the load-bearing half of N2's guard (design.md
+    // §11.2): an invoicing fixture's credit-relevant amount is usually
+    // computed from several lines, not written as one literal.
+    assertNotCentsRuleAmount(gross - discount, `issueRequest(${overrides.orderReference})`, overrides.centsRuleOptIn);
+    return {
+      orderReference: overrides.orderReference,
+      retailerCode: overrides.retailerCode,
+      companyCode: overrides.companyCode,
+      currency: overrides.currency,
+      lines: overrides.lines as [InvoiceLine, ...InvoiceLine[]],
+      discount: overrides.discount,
+    };
+  }
+
   return {
     app,
     db,
@@ -209,10 +310,15 @@ export async function startCreditIntegrationHarness(): Promise<CreditIntegration
     requestBare,
     seedCreditLine,
     seedCreditItem,
+    seedInvoice,
     outboxRowsFor,
     ledgerOf,
     creditRowOf,
     committedExposureOf,
+    invoicesOf,
+    invoiceItemsOf,
+    holdRequest,
+    issueRequest,
     async teardown(): Promise<void> {
       await testNatsConnection.close();
       await app.close();

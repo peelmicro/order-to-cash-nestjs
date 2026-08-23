@@ -294,7 +294,7 @@
       "phase": 10,
       "title": "Invoice aggregate (INVOIC) with issued -> paid state machine",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "issued on OrderDespatched",
         "paidAt set exactly when status becomes paid",

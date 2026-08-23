@@ -20,23 +20,35 @@ import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import { AppController } from './presentation/app.controller';
 import { CreditController } from './presentation/credit.controller';
+import { InvoiceController } from './presentation/invoice.controller';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import { BUYER_CREDIT_REPOSITORY } from './application/ports/buyer-credit-repository.port';
 import { CREDIT_DECISION } from './application/ports/credit-decision.port';
 import { CREDIT_READ } from './application/ports/credit-read.port';
 import { FACT_PUBLISHER } from './application/ports/fact-publisher.port';
+import { INVOICE_NUMBER_ALLOCATOR } from './application/ports/invoice-number-allocator.port';
+import { INVOICE_READ } from './application/ports/invoice-read.port';
+import { INVOICE_REPOSITORY } from './application/ports/invoice-repository.port';
 import { UNIT_OF_WORK, type UnitOfWork } from './application/ports/unit-of-work.port';
 import { CREDIT_COMMAND_HANDLERS } from './application/commands/credit.command-handlers';
 import { CREDIT_QUERY_HANDLERS } from './application/queries/credit.query-handlers';
+import { INVOICE_COMMAND_HANDLERS } from './application/commands/invoice.command-handlers';
+import { INVOICE_QUERY_HANDLERS } from './application/queries/invoice.query-handlers';
 import { CreditHoldHandler } from './application/credit-hold.handler';
+import { InvoiceIssueHandler } from './application/invoice-issue.handler';
 import type { CreditDecisionPort } from './application/ports/credit-decision.port';
 import type { BuyerCreditRepository } from './application/ports/buyer-credit-repository.port';
+import type { InvoiceNumberAllocator } from './application/ports/invoice-number-allocator.port';
+import type { InvoiceRepository } from './application/ports/invoice-repository.port';
 import { loadCreditSimulatorConfig, SimulatorCreditDecision } from './infrastructure/credit/simulator-credit-decision';
 import { createBillingDb, createBillingPool, type BillingDb } from './infrastructure/persistence/client';
 import { loadBillingDbConfig } from './infrastructure/persistence/db-config';
 import { DrizzleUnitOfWork } from './infrastructure/persistence/drizzle-unit-of-work';
 import { DrizzleBuyerCreditRepository } from './infrastructure/persistence/buyer-credit.repository';
 import { DrizzleCreditReadRepository } from './infrastructure/persistence/credit-read.repository';
+import { DrizzleInvoiceNumberAllocator } from './infrastructure/persistence/invoice-number-allocator';
+import { DrizzleInvoiceReadRepository } from './infrastructure/persistence/invoice-read.repository';
+import { DrizzleInvoiceRepository } from './infrastructure/persistence/invoice.repository';
 import { SystemClock } from './infrastructure/system-clock';
 import { createKafkaClient } from './infrastructure/outbox/create-kafka-client';
 import { KafkaFactPublisher } from './infrastructure/outbox/kafka-fact-publisher';
@@ -50,7 +62,7 @@ const BILLING_DB = Symbol('BillingDb');
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, CreditController],
+  controllers: [AppController, CreditController, InvoiceController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
@@ -91,6 +103,31 @@ const BILLING_DB = Symbol('BillingDb');
       inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, CREDIT_DECISION, CLOCK],
     },
     {
+      provide: INVOICE_REPOSITORY,
+      useFactory: (db: BillingDb, clock: Clock): DrizzleInvoiceRepository => new DrizzleInvoiceRepository(db, clock),
+      inject: [BILLING_DB, CLOCK],
+    },
+    {
+      provide: INVOICE_READ,
+      useFactory: (db: BillingDb): DrizzleInvoiceReadRepository => new DrizzleInvoiceReadRepository(db),
+      inject: [BILLING_DB],
+    },
+    {
+      provide: INVOICE_NUMBER_ALLOCATOR,
+      useFactory: (): DrizzleInvoiceNumberAllocator => new DrizzleInvoiceNumberAllocator(),
+    },
+    {
+      provide: InvoiceIssueHandler,
+      useFactory: (
+        unitOfWork: UnitOfWork,
+        credits: BuyerCreditRepository,
+        invoices: InvoiceRepository,
+        invoiceNumbers: InvoiceNumberAllocator,
+        clock: Clock,
+      ): InvoiceIssueHandler => new InvoiceIssueHandler(unitOfWork, credits, invoices, invoiceNumbers, clock),
+      inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, INVOICE_REPOSITORY, INVOICE_NUMBER_ALLOCATOR, CLOCK],
+    },
+    {
       provide: FACT_PUBLISHER,
       useFactory: (): KafkaFactPublisher => new KafkaFactPublisher(createKafkaClient(loadKafkaConfig())),
     },
@@ -108,6 +145,8 @@ const BILLING_DB = Symbol('BillingDb');
 
     ...CREDIT_QUERY_HANDLERS,
     ...CREDIT_COMMAND_HANDLERS,
+    ...INVOICE_QUERY_HANDLERS,
+    ...INVOICE_COMMAND_HANDLERS,
   ],
 })
 export class AppModule {}

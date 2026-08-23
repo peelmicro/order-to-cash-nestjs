@@ -84,3 +84,17 @@ describe('simulator-credit-decision.spec — R43', () => {
     expect(adapter.decide(request({ amountMinorUnits: 25_000 }))).toEqual({ kind: 'refuse', reason: 'simulated_failure_rate' });
   });
 });
+
+describe('simulator-credit-decision.spec — BI18: fails to start reporting the offending value for a credit failure rate that is not a plain decimal numeral, including 0x1 and whitespace', () => {
+  it('fails to start reporting the offending value for a credit failure rate that is not a plain decimal numeral, including 0x1 and whitespace', () => {
+    for (const offending of ['0x1', '  ', '1e0', '+0.5', 'NaN']) {
+      expect(() => loadCreditSimulatorConfig({ CREDIT_FAILURE_RATE: offending })).toThrow(JSON.stringify(offending));
+    }
+
+    expect(loadCreditSimulatorConfig({ CREDIT_FAILURE_RATE: '0' })).toEqual({ failureRate: 0 });
+    expect(loadCreditSimulatorConfig({ CREDIT_FAILURE_RATE: '1' })).toEqual({ failureRate: 1 });
+    expect(loadCreditSimulatorConfig({ CREDIT_FAILURE_RATE: '0.25' })).toEqual({ failureRate: 0.25 });
+    expect(loadCreditSimulatorConfig({ CREDIT_FAILURE_RATE: '' })).toEqual({ failureRate: 0 });
+    expect(loadCreditSimulatorConfig({})).toEqual({ failureRate: 0 });
+  });
+});

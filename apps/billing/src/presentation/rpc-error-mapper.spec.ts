@@ -13,6 +13,15 @@ import {
   NoActiveHoldError,
 } from '../domain/credit-errors';
 import { CreditCurrencyMismatchError, CreditLineNotFoundError } from '../application/credit-application-errors';
+import {
+  EmptyInvoiceLinesError,
+  InvoiceAlreadyPaidError,
+  InvoiceLineCurrencyMismatchError,
+  InvoicePaymentAmountMismatchError,
+  InvoicePaymentCurrencyMismatchError,
+  NegativeInvoiceTotalError,
+} from '../domain/invoice-errors';
+import { InvoiceCurrencyMismatchError, NoActiveCreditHoldError } from '../application/invoice-application-errors';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
 describe('rpc-error-mapper — validation', () => {
@@ -49,6 +58,40 @@ describe('rpc-error-mapper — toRpcError, every mapped class', () => {
     const error = toRpcError(new NoActiveHoldError('ORD-000001'));
     expect(error.code).toBe('PRECONDITION_FAILED');
     expect(error.details).toEqual({ code: 'NO_ACTIVE_HOLD' });
+  });
+
+  // `billing_invoicing` design.md §4.3 — the four added cases.
+  it('NoActiveCreditHoldError -> PRECONDITION_FAILED naming NO_ACTIVE_HOLD and the orderReference (BI5)', () => {
+    const error = toRpcError(new NoActiveCreditHoldError('ORD-000001'));
+    expect(error.code).toBe('PRECONDITION_FAILED');
+    expect(error.details).toEqual({ code: 'NO_ACTIVE_HOLD', orderReference: 'ORD-000001' });
+  });
+
+  it('InvoiceCurrencyMismatchError -> VALIDATION_FAILED naming expected/received (BI4)', () => {
+    const error = toRpcError(new InvoiceCurrencyMismatchError('EUR', 'GBP'));
+    expect(error.code).toBe('VALIDATION_FAILED');
+    expect(error.details).toEqual({ expected: 'EUR', received: 'GBP' });
+  });
+
+  it('NegativeInvoiceTotalError, EmptyInvoiceLinesError and InvoiceLineCurrencyMismatchError -> VALIDATION_FAILED naming the code', () => {
+    expect(toRpcError(new NegativeInvoiceTotalError(1_000, 2_000))).toMatchObject({ code: 'VALIDATION_FAILED', details: { code: 'NEGATIVE_INVOICE_TOTAL' } });
+    expect(toRpcError(new EmptyInvoiceLinesError('ORD-000001'))).toMatchObject({ code: 'VALIDATION_FAILED', details: { code: 'EMPTY_INVOICE_LINES' } });
+    expect(toRpcError(new InvoiceLineCurrencyMismatchError('EUR', 'GBP'))).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      details: { code: 'INVOICE_LINE_CURRENCY_MISMATCH' },
+    });
+  });
+
+  it('InvoiceAlreadyPaidError and InvoicePayment*MismatchError -> PRECONDITION_FAILED naming the code', () => {
+    expect(toRpcError(new InvoiceAlreadyPaidError('INV-000001'))).toMatchObject({ code: 'PRECONDITION_FAILED', details: { code: 'INVOICE_ALREADY_PAID' } });
+    expect(toRpcError(new InvoicePaymentAmountMismatchError(1_000, 900))).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      details: { code: 'INVOICE_PAYMENT_AMOUNT_MISMATCH' },
+    });
+    expect(toRpcError(new InvoicePaymentCurrencyMismatchError('EUR', 'GBP'))).toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      details: { code: 'INVOICE_PAYMENT_CURRENCY_MISMATCH' },
+    });
   });
 
   it('any other DomainError -> DOMAIN_ERROR naming the code', () => {

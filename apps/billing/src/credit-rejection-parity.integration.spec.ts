@@ -11,7 +11,7 @@ import { UniqueId } from '@otc/shared-kernel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CreditHoldReplyPayload } from '@otc/contracts';
 import { CREDIT_HOLD_SUBJECT } from './presentation/credit.controller';
-import { startCreditIntegrationHarness, type CreditIntegrationHarness } from './test-support/credit-integration-harness';
+import { startBillingIntegrationHarness, type BillingIntegrationHarness } from './test-support/billing-integration-harness';
 
 const CURRENCY = 'EUR';
 
@@ -37,12 +37,18 @@ function headersOf(correlationId: UniqueId, requestId: UniqueId): Record<string,
 }
 
 describe('billing.credit.hold — credit-rejection-parity, R42/R44 (Testcontainers: mysql:8.4.11 + nats:2.14.5-alpine + apache/kafka:4.3.1)', () => {
-  let harness: CreditIntegrationHarness;
+  let harness: BillingIntegrationHarness;
+  // N1 (`review_billing_credit_simulator.md`, `billing_invoicing` design.md
+  // §11.1/BI19): the R44 parity assertion compares against the OBSERVED key
+  // set of the sibling simulated-rejection payload, not a hard-coded
+  // literal array, so a key added on one path only makes this test fail.
+  // Populated by the first `it` below, read by the second.
+  let simulatedRejectionKeys: string[];
 
   beforeAll(async () => {
     // CREDIT_FAILURE_RATE is deliberately left unset — R43's default (0) —
     // so nothing in this file's outcomes depends on randomness.
-    harness = await startCreditIntegrationHarness();
+    harness = await startBillingIntegrationHarness();
   }, 300_000);
 
   afterAll(async () => {
@@ -59,7 +65,7 @@ describe('billing.credit.hold — credit-rejection-parity, R42/R44 (Testcontaine
 
     const reply = await harness.requestBare<CreditHoldReplyPayload>(
       CREDIT_HOLD_SUBJECT,
-      { orderReference, retailerCode, companyCode, amount: { amount: 24_999, currency: CURRENCY } },
+      { orderReference, retailerCode, companyCode, amount: { amount: 24_999, currency: CURRENCY } }, // cents-rule-intentional
       headersOf(correlationId, requestId),
     );
 
@@ -81,10 +87,11 @@ describe('billing.credit.hold — credit-rejection-parity, R42/R44 (Testcontaine
       retailerCode,
       companyCode,
       currency: CURRENCY,
-      requestedAmount: 24_999,
+      requestedAmount: 24_999, // cents-rule-intentional
       availableCredit: 500_000,
       reason: 'simulated_cents_rule',
     });
+    simulatedRejectionKeys = Object.keys(simulatedPayload).sort();
   });
 
   it('R44 — a genuine over-limit rejection is still reachable with the simulator bound and CREDIT_FAILURE_RATE at its default of zero, producing the same fact type and payload shape as the simulated rejection, differing only in reason', async () => {
@@ -126,9 +133,13 @@ describe('billing.credit.hold — credit-rejection-parity, R42/R44 (Testcontaine
       reason: 'over_limit',
     });
 
-    // Same shape as the simulated rejection above — same key set, the
-    // `reason` value is the only thing that differs (R44).
-    const simulatedKeys = ['orderReference', 'retailerCode', 'companyCode', 'creditCode', 'currency', 'requestedAmount', 'availableCredit', 'reason'].sort();
-    expect(Object.keys(overLimitPayload).sort()).toEqual(simulatedKeys);
+    // Same shape as the simulated rejection above — same OBSERVED key set
+    // (N1: not a hard-coded literal array), the `reason` value is the only
+    // thing that differs (R44). Depends on the first `it` in this file
+    // having run and populated `simulatedRejectionKeys` — both `it`s share
+    // this file's one `describe` block and Vitest runs them in declaration
+    // order.
+    expect(simulatedRejectionKeys).toBeDefined();
+    expect(Object.keys(overLimitPayload).sort()).toEqual(simulatedRejectionKeys);
   });
 });

@@ -28,3 +28,22 @@ export {
 } from './credit-errors.js';
 
 export type { BuyerCreditSnapshot } from './buyer-credit-snapshot.js';
+
+export { Invoice, type InvoiceContext, type IssueInvoiceInput, type InvoiceLineInput, type InvoiceState, type MarkPaidInput } from './invoice.js';
+
+export { InvoiceLine } from './invoice-line.js';
+export type { InvoiceLineSnapshot } from './invoice-line.js';
+
+export type { InvoiceSnapshot } from './invoice-snapshot.js';
+
+export { invoiceIssuedEvent, paymentReceivedEvent } from './invoice-events.js';
+
+export {
+  EmptyInvoiceLinesError,
+  InvalidInvoiceSnapshotError,
+  InvoiceAlreadyPaidError,
+  InvoiceLineCurrencyMismatchError,
+  InvoicePaymentAmountMismatchError,
+  InvoicePaymentCurrencyMismatchError,
+  NegativeInvoiceTotalError,
+} from './invoice-errors.js';

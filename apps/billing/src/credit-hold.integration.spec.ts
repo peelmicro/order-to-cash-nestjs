@@ -7,7 +7,7 @@ import { UniqueId } from '@otc/shared-kernel';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CreditHoldReplyPayload } from '@otc/contracts';
 import { CREDIT_HOLD_SUBJECT } from './presentation/credit.controller';
-import { startCreditIntegrationHarness, type CreditIntegrationHarness } from './test-support/credit-integration-harness';
+import { startBillingIntegrationHarness, type BillingIntegrationHarness } from './test-support/billing-integration-harness';
 
 const CURRENCY = 'EUR';
 
@@ -34,10 +34,10 @@ function headersOf(correlationId: UniqueId, requestId: UniqueId): Record<string,
 }
 
 describe('billing.credit.hold — R38/R39, BC1, BC3, BC4, BC7, BC8, BC10 (Testcontainers: mysql:8.4.11 + nats:2.14.5-alpine + apache/kafka:4.3.1)', () => {
-  let harness: CreditIntegrationHarness;
+  let harness: BillingIntegrationHarness;
 
   beforeAll(async () => {
-    harness = await startCreditIntegrationHarness();
+    harness = await startBillingIntegrationHarness();
   }, 300_000);
 
   afterAll(async () => {

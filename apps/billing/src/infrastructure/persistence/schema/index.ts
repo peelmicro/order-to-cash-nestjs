@@ -6,6 +6,7 @@ export * from './credits.schema';
 export * from './credit-items.schema';
 export * from './invoices.schema';
 export * from './invoice-items.schema';
+export * from './invoice-number-sequences.schema';
 export * from './payments.schema';
 export * from './outbox.schema';
 export * from './processed-events.schema';
