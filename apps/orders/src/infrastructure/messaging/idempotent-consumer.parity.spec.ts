@@ -10,12 +10,71 @@
 // other MySQL write model's copy must be byte-identical to the canonical
 // after ONE normalisation: the leading `//` banner (the file's
 // contiguous run of `//` lines from the top) is stripped from both sides
-// first. The discriminator between "copy" (compared) and "variant" (never
-// compared, but must document its divergence) is read from the
-// filesystem: does the app own a MySQL `processed_events` schema.
+// first.
+//
+// --- The discriminator (post-N5 amendment) ---------------------------------
+// design.md §6.4 originally chose to read "copy vs. variant" purely from
+// the filesystem (does the app own a MySQL `processed_events` schema),
+// explicitly REJECTING a hand-maintained registry: "a registry that must be
+// edited when a copy is added is a registry someone forgets to edit, and
+// the drift then hides in the very file that was supposed to reveal it."
+// That objection is correct against an UNVALIDATED registry — but it is not
+// an argument against a SELF-VALIDATING one, and the reviewer of feature 23
+// (N5, progress/review_notifications_service.md) found the concrete cost of
+// the filesystem-only version: the presence of `processed-events.schema.ts`
+// is a file the implementer chooses whether to create, so a service can
+// silently opt itself out of the canonical pattern — and out of case 3's
+// "must own the copy" requirement below — simply by not creating one.
+//
+// `SERVICE_IDEMPOTENCY_MODE` below is a registry, but it is checked, not
+// trusted: `requires every app to be accounted for in the idempotency mode
+// registry` fails LOUDLY the moment `readdirSync('apps')` returns a name
+// this file does not know, and `keeps the idempotency mode registry honest
+// against what is actually on disk` fails LOUDLY the moment a registered
+// mode disagrees with the filesystem truth it claims (a 'mysql-copy' entry
+// with no schema file, a 'no-consumer' entry that grew an `@EventPattern`
+// handler, ...). Forgetting to update the registry when a service changes
+// shape no longer hides the drift — it turns the very next `pnpm quality`
+// red. That is what makes it safe to reintroduce, where design.md's
+// objection was to a registry nobody re-checks.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import {
+  describeIdempotentConsumerConformance,
+  type ConformableIdempotentConsumer,
+} from './test-support/idempotent-consumer-conformance';
+import { FileBackedIdempotentConsumer } from './test-support/file-backed-idempotent-consumer.example';
+
+/**
+ * Every `apps/*` directory MUST have an entry here (enforced below) —
+ * that is the whole point of a self-validating registry.
+ *
+ * - `'mysql-copy'`      — owns (or is) the byte-identical canonical MySQL
+ *                         `idempotent-consumer.ts` + `processed-events.repository.ts`
+ *                         pair. Must own `processed-events.schema.ts`.
+ * - `'documented-variant'` — consumes facts but cannot share the canonical's
+ *                         MySQL transaction (design.md §6.3 — today only the
+ *                         projector's future MongoDB ledger). Must NOT own
+ *                         `processed-events.schema.ts`; if it owns
+ *                         `idempotent-consumer.ts` its banner must document
+ *                         the divergence (case 4).
+ * - `'no-consumer'`      — consumes no fact at all today (a REST façade, a
+ *                         seeding script, the web app). Must have no
+ *                         `@EventPattern` handler.
+ */
+const SERVICE_IDEMPOTENCY_MODE: Record<string, 'mysql-copy' | 'documented-variant' | 'no-consumer'> = {
+  orders: 'mysql-copy',
+  fulfillment: 'mysql-copy',
+  billing: 'mysql-copy',
+  notifications: 'mysql-copy',
+  projector: 'documented-variant',
+  gateway: 'no-consumer',
+  seed: 'no-consumer',
+  web: 'no-consumer',
+};
 
 function findRepoRoot(startDir: string): string {
   let dir = startDir;
@@ -137,21 +196,51 @@ describe('idempotent-consumer.parity — OI12', () => {
   const canonicalConsumerBody = stripBanner(canonicalConsumerText);
   const canonicalRepoBody = stripBanner(canonicalRepoText);
 
+  it('requires every app to be accounted for in the idempotency mode registry (N5 — no silent exemption by omission)', () => {
+    const unregistered = listApps().filter((app) => !(app in SERVICE_IDEMPOTENCY_MODE));
+
+    expect(
+      unregistered,
+      `app(s) present under apps/ but missing from SERVICE_IDEMPOTENCY_MODE in this file: ${unregistered.join(
+        ', ',
+      )} — add an entry (and, if it consumes facts, the canonical pattern copy) before this can pass`,
+    ).toEqual([]);
+  });
+
+  it('keeps the idempotency mode registry honest against what is actually on disk', () => {
+    const violations: string[] = [];
+    for (const [app, mode] of Object.entries(SERVICE_IDEMPOTENCY_MODE)) {
+      if (!listApps().includes(app)) {
+        // A stale entry for an app that no longer exists is a different
+        // failure mode (harmless drift, not a silent exemption) — flagged,
+        // not fatal, so this case still fails loudly rather than passing
+        // silently for the wrong reason.
+        violations.push(`${app}: registered as '${mode}' but apps/${app} does not exist`);
+        continue;
+      }
+      const hasSchema = hasMySqlProcessedEventsSchema(app);
+      const hasHandler = hasEventPatternHandler(app);
+      if (mode === 'mysql-copy' && !hasSchema) {
+        violations.push(`${app}: registered 'mysql-copy' but owns no processed-events.schema.ts`);
+      }
+      if (mode === 'documented-variant' && hasSchema) {
+        violations.push(`${app}: registered 'documented-variant' but owns a MySQL processed-events.schema.ts — this is a copy, not a variant`);
+      }
+      if (mode === 'no-consumer' && hasHandler) {
+        violations.push(`${app}: registered 'no-consumer' but has grown an @EventPattern handler — promote it to 'mysql-copy' or 'documented-variant' and add the pattern`);
+      }
+    }
+
+    expect(violations, violations.join('; ')).toEqual([]);
+  });
+
   it('holds every write model\'s copy of the idempotent-consumer pattern byte-identical to the canonical copy', () => {
     const copies = listApps().filter(
-      (app) => hasMySqlProcessedEventsSchema(app) && existsSync(idempotentConsumerPathOf(app)),
+      (app) => SERVICE_IDEMPOTENCY_MODE[app] === 'mysql-copy' && existsSync(idempotentConsumerPathOf(app)),
     );
 
     // Non-vacuity: the canonical (orders) is always a member of its own set.
     expect(copies).toContain('orders');
-
-    if (copies.length === 1) {
-      // Only the canonical exists yet (features 17-22 add the rest) — the
-      // comparison below is then only "the canonical equals itself", and
-      // this assertion says so rather than passing silently for the wrong
-      // reason.
-      expect(copies, 'only the canonical copy exists today — arms at feature 17').toEqual(['orders']);
-    }
 
     for (const app of copies) {
       const consumerBody = stripBanner(readFileSync(idempotentConsumerPathOf(app), 'utf8'));
@@ -196,34 +285,88 @@ describe('idempotent-consumer.parity — OI12', () => {
     }
   });
 
-  it('requires a copy of the pattern from every write model that consumes facts', () => {
+  it('requires a copy of the pattern from every write model registered mysql-copy that consumes facts', () => {
     const violations = listApps().filter(
       (app) =>
-        hasMySqlProcessedEventsSchema(app) &&
+        SERVICE_IDEMPOTENCY_MODE[app] === 'mysql-copy' &&
         hasEventPatternHandler(app) &&
         !existsSync(idempotentConsumerPathOf(app)),
     );
 
     expect(
       violations,
-      `app(s) with a MySQL processed_events schema and an @EventPattern handler but no idempotent-consumer.ts copy: ${violations.join(', ')}`,
+      `app(s) registered 'mysql-copy' with an @EventPattern handler but no idempotent-consumer.ts copy: ${violations.join(', ')}`,
     ).toEqual([]);
   });
 
-  it('requires a documented divergence banner from a copy that cannot share the canonical\'s transaction', () => {
-    const variantPaths = listApps()
-      .filter((app) => !hasMySqlProcessedEventsSchema(app))
-      .map((app) => idempotentConsumerPathOf(app))
-      .filter((candidate) => existsSync(candidate));
+  it(
+    "requires a documented divergence banner, naming an existing behavioural-conformance spec file, from a copy " +
+      "that cannot share the canonical's transaction",
+    () => {
+      const variantPaths = listApps()
+        .filter((app) => SERVICE_IDEMPOTENCY_MODE[app] === 'documented-variant')
+        .map((app) => idempotentConsumerPathOf(app))
+        .filter((candidate) => existsSync(candidate));
 
-    // Dormant today (no such file exists) — arms at features 23/24 (the
-    // projector's MongoDB ledger, notifications' choice of store).
-    for (const variantPath of variantPaths) {
-      const banner = bannerOf(readFileSync(variantPath, 'utf8'));
-      expect(banner, `${variantPath}: a variant's banner must cite the canonical path`).toContain(
-        CANONICAL_PATH_LITERAL,
-      );
-      expect(banner, `${variantPath}: a variant's banner must carry a "Divergence:" line`).toMatch(/Divergence:/);
-    }
+      // Dormant today (no such file exists) — arms at feature 24 (the
+      // projector's MongoDB ledger). The banner-only checks below are
+      // NECESSARY, never SUFFICIENT: they cannot execute another app's
+      // code from here (apps/orders may only read, not import, another
+      // service's source — see this file's own header note on scope), so
+      // the actual behavioural proof for a variant is required to live in
+      // that service's OWN integration spec, built by copying
+      // `idempotent-consumer-conformance.ts` (see that file's own header)
+      // and running it against the variant's real backing store — exactly
+      // as `idempotent-consumer.parity.integration.spec.ts` does for the
+      // canonical. Requiring the banner to NAME that file, and requiring
+      // the named file to actually EXIST on disk, is the one part of that
+      // requirement this file can enforce without crossing the app
+      // boundary: prose alone ("Divergence: ...") is no longer enough to
+      // pass this case, the way it was when N5 was found.
+      for (const variantPath of variantPaths) {
+        const banner = bannerOf(readFileSync(variantPath, 'utf8'));
+        expect(banner, `${variantPath}: a variant's banner must cite the canonical path`).toContain(
+          CANONICAL_PATH_LITERAL,
+        );
+        expect(banner, `${variantPath}: a variant's banner must carry a "Divergence:" line`).toMatch(/Divergence:/);
+
+        const conformanceMatch = banner.match(/Behavioural conformance:\s*(\S+)/);
+        expect(
+          conformanceMatch,
+          `${variantPath}: a variant's banner must carry a "Behavioural conformance: <repo-root-relative path>" line naming its own integration spec that runs it through idempotent-consumer-conformance.ts's suite`,
+        ).not.toBeNull();
+        const conformancePath = path.join(REPO_ROOT, conformanceMatch![1]!);
+        expect(
+          existsSync(conformancePath),
+          `${variantPath}: banner names "${conformanceMatch![1]}" as its behavioural-conformance spec, but that file does not exist`,
+        ).toBe(true);
+      }
+    },
+  );
+});
+
+// --- Behavioural conformance, run Docker-free against a reference variant --
+//
+// The old case 4 above stopped at reading a comment. Fixing ONLY the
+// discriminator (so a variant can no longer exempt itself by omitting a
+// file) would still leave the guard blind to a `runOnce` that performs no
+// deduplication at all, banner untouched — the exact mutation the reviewer
+// used to defeat OI12 (N5). This block proves the fix is real: it runs the
+// SAME generic suite `idempotent-consumer.parity.integration.spec.ts` runs
+// against the canonical over Testcontainers MySQL, here against
+// `FileBackedIdempotentConsumer` — a real, durable-across-instances (but
+// Docker-free) implementation — so the fast `pnpm quality` gate itself now
+// executes real behaviour, not just text, and the suite's own
+// non-vacuity is proven without a broker or a database.
+describe('idempotent-consumer.parity — OI12 behavioural self-test', () => {
+  const storeFile = path.join(tmpdir(), `oi12-conformance-${randomUUID()}`, 'store.json');
+
+  function toConformable(consumer: FileBackedIdempotentConsumer): ConformableIdempotentConsumer {
+    return consumer;
+  }
+
+  describeIdempotentConsumerConformance('the file-backed reference variant (Docker-free)', {
+    createConsumer: () => toConformable(new FileBackedIdempotentConsumer(storeFile)),
+    newEventId: () => randomUUID(),
   });
 });

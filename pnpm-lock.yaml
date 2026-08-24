@@ -39,6 +39,9 @@ catalogs:
     '@types/node':
       specifier: ^24.13.3
       version: 24.13.3
+    '@types/nodemailer':
+      specifier: ^8.0.1
+      version: 8.0.1
     '@vitest/coverage-v8':
       specifier: ^4.1.11
       version: 4.1.11
@@ -69,6 +72,9 @@ catalogs:
     nats:
       specifier: ^2.29.3
       version: 2.29.3
+    nodemailer:
+      specifier: ^9.0.5
+      version: 9.0.5
     reflect-metadata:
       specifier: ^0.2.2
       version: 0.2.2
@@ -350,9 +356,33 @@ importers:
       '@nestjs/core':
         specifier: 'catalog:'
         version: 11.2.1(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/microservices@11.2.1)(@nestjs/platform-express@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/cqrs':
+        specifier: 'catalog:'
+        version: 11.0.3(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(reflect-metadata@0.2.2)(rxjs@7.8.2)
+      '@nestjs/microservices':
+        specifier: 'catalog:'
+        version: 11.2.1(@grpc/grpc-js@1.14.4)(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(ioredis@5.11.1(supports-color@10.2.2))(kafkajs@2.2.4)(nats@2.29.3)(reflect-metadata@0.2.2)(rxjs@7.8.2)
       '@nestjs/platform-express':
         specifier: 'catalog:'
         version: 11.2.1(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(supports-color@10.2.2)
+      '@otc/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@otc/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.2(mysql2@3.23.3(@types/node@24.13.3))
+      kafkajs:
+        specifier: 'catalog:'
+        version: 2.2.4
+      mysql2:
+        specifier: 'catalog:'
+        version: 3.23.3(@types/node@24.13.3)
+      nodemailer:
+        specifier: 'catalog:'
+        version: 9.0.5
       reflect-metadata:
         specifier: 'catalog:'
         version: 0.2.2
@@ -360,15 +390,33 @@ importers:
         specifier: 'catalog:'
         version: 7.8.2
     devDependencies:
+      '@nestjs/testing':
+        specifier: 'catalog:'
+        version: 11.2.1(@nestjs/common@11.2.1(class-transformer@0.5.1)(class-validator@0.14.4)(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@10.2.2))(@nestjs/core@11.2.1)(@nestjs/microservices@11.2.1)(@nestjs/platform-express@11.2.1)
+      '@testcontainers/kafka':
+        specifier: 'catalog:'
+        version: 12.1.0(supports-color@10.2.2)
+      '@testcontainers/mysql':
+        specifier: 'catalog:'
+        version: 12.1.0(supports-color@10.2.2)
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/nodemailer':
+        specifier: 'catalog:'
+        version: 8.0.1
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
       dotenv-cli:
         specifier: 'catalog:'
         version: 10.0.0
+      drizzle-kit:
+        specifier: 'catalog:'
+        version: 0.31.10
+      testcontainers:
+        specifier: 'catalog:'
+        version: 12.1.0(supports-color@10.2.2)
       tsc-watch:
         specifier: 'catalog:'
         version: 7.2.1(typescript@5.9.3)
@@ -2021,6 +2069,9 @@ packages:
 
   '@types/node@24.13.3':
     resolution: {integrity: sha512-Dh8vAsV36ig5wa9OX4pXvMc9D3Veibfw2wix0CUwYODLD8nkj9UsLjASr49nPg+2eKzxhBV+v7L8pXvT4e639Q==}
+
+  '@types/nodemailer@8.0.1':
+    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
 
   '@types/resolve@1.20.2':
     resolution: {integrity: sha512-60BCwRFOZCQhDncwQdxxeOEEkbc5dIMccYLwbxsS4TUNeVECQ/pBJ0j09mrHOl/JJvpRPGwO9SvE4nR2Nb/a4Q==}
@@ -3986,6 +4037,10 @@ packages:
   node-releases@2.0.53:
     resolution: {integrity: sha512-D9UOmYG3UH1V+ENW56t5QXBwJw1YEY18ruVeus89Rw+SyIgjPkCO84bRzO3uNIYosJbNwiabWVn48o3uJLjxFQ==}
     engines: {node: '>=18'}
+
+  nodemailer@9.0.5:
+    resolution: {integrity: sha512-wvjiKvjczmsN7U/8006JOdXubgBk2XFAbioDMbT+sM7cPs0QrhJTa6KBRX7P5REGGkDcLUz/EarWidb8G8C1jQ==}
+    engines: {node: '>=6.0.0'}
 
   nopt@8.1.0:
     resolution: {integrity: sha512-ieGu42u/Qsa4TFktmaKEwM6MQH0pOWnaB3htzh0JRtx84+Mebc0cbZYN5bC+6WTZ4+77xrL9Pn5m7CV6VIkV7A==}
@@ -6844,6 +6899,10 @@ snapshots:
     dependencies:
       undici-types: 7.18.2
 
+  '@types/nodemailer@8.0.1':
+    dependencies:
+      '@types/node': 24.13.3
+
   '@types/resolve@1.20.2': {}
 
   '@types/ssh2-streams@0.1.13':
@@ -8927,6 +8986,8 @@ snapshots:
   node-mock-http@1.0.5: {}
 
   node-releases@2.0.53: {}
+
+  nodemailer@9.0.5: {}
 
   nopt@8.1.0:
     dependencies:

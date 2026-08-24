@@ -320,7 +320,7 @@
       "phase": 11,
       "title": "Notifications: notification port, Mailtrap adapter, console adapter",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "real email verified in the Mailtrap inbox for each notified fact",
         "console adapter used in tests via the same port",

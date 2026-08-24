@@ -157,7 +157,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 8 | Orders service + saga orchestrator | ✅ |
 | 9 | Fulfillment service | ✅ |
 | 10 | Billing service | ✅ buyer credit, `.99` simulator, invoicing, remittance intake |
-| 11 | Notifications service | ⬜ |
+| 11 | Notifications service | ✅ port + Mailtrap/console adapters, seven facts, durable idempotency |
 | 12 | Projector service + MongoDB read model | ⬜ |
 | 13 | Gateway / BFF | ⬜ |
 | 14 | Health checks, OTel propagation, retry + DLQ | ⬜ |

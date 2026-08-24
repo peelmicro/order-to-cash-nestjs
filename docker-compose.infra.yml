@@ -29,7 +29,12 @@ volumes:
   sonarqube_extensions:
 
 services:
-  # ── MySQL — one instance, four logical databases (database-per-service) ──
+  # ── MySQL — one instance, five logical databases (database-per-service) ──
+  # otc_notifications joined in the notifications_service re-review (N1/N2):
+  # a durable processed_events ledger, the same canonical shape orders/
+  # fulfillment/billing already use, on its own logical database — never a
+  # shared schema, never a cross-database join (CLAUDE.md § Database per
+  # service).
   mysql:
     image: mysql:8.4.11
     container_name: otc-mysql
@@ -46,6 +51,7 @@ services:
       MYSQL_DB_ORDERS: ${MYSQL_DB_ORDERS:-otc_orders}
       MYSQL_DB_FULFILLMENT: ${MYSQL_DB_FULFILLMENT:-otc_fulfillment}
       MYSQL_DB_BILLING: ${MYSQL_DB_BILLING:-otc_billing}
+      MYSQL_DB_NOTIFICATIONS: ${MYSQL_DB_NOTIFICATIONS:-otc_notifications}
       MYSQL_DB_N8N: ${MYSQL_DB_N8N:-n8n}
     ports:
       - "${MYSQL_HOST_PORT:-3306}:3306"
