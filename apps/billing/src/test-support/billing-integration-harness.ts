@@ -31,7 +31,7 @@ import { BILLING_FACTS_TOPIC } from '../infrastructure/outbox/kafka.config';
 import { createTopic, startKafkaTestFixture, type KafkaTestFixture } from '../infrastructure/outbox/test-support/kafka-test-fixture';
 import { startNatsTestFixture, type NatsTestFixture } from '../infrastructure/messaging/test-support/nats-test-fixture';
 import { assertNotCentsRuleAmount, CENTS_RULE_OPT_IN } from './cents-rule-fixture-guard';
-import type { CreditHoldRequestPayload, InvoiceIssueRequestPayload, InvoiceLine } from '@otc/contracts';
+import type { CreditHoldRequestPayload, InvoiceIssueRequestPayload, InvoiceLine, PaymentRegisterRequestPayload, PaymentSource } from '@otc/contracts';
 
 export const MYSQL_IMAGE = 'mysql:8.4.11';
 
@@ -83,6 +83,17 @@ export interface IssueRequestOverrides {
   readonly centsRuleOptIn?: typeof CENTS_RULE_OPT_IN;
 }
 
+export interface PaymentRequestOverrides {
+  readonly invoiceId?: string;
+  readonly invoiceReference?: string;
+  readonly paymentReference: string;
+  readonly amount: number;
+  readonly currency: string;
+  readonly valueDate?: string;
+  readonly source?: PaymentSource;
+  readonly centsRuleOptIn?: typeof CENTS_RULE_OPT_IN;
+}
+
 export interface BillingIntegrationHarness {
   readonly app: INestApplication;
   readonly db: BillingDb;
@@ -99,10 +110,14 @@ export interface BillingIntegrationHarness {
   committedExposureOf(creditId: string): Promise<number>;
   invoicesOf(orderReference: string): Promise<(typeof schema.invoices.$inferSelect)[]>;
   invoiceItemsOf(invoiceId: string): Promise<(typeof schema.invoiceItems.$inferSelect)[]>;
+  /** feature 22 — the `payments` rows for one invoice, for direct row-count assertions (R48). */
+  paymentsOf(invoiceId: string): Promise<(typeof schema.payments.$inferSelect)[]>;
   /** Builds a `billing.credit.hold` request payload, guarding the amount with `assertNotCentsRuleAmount` (N2, `billing_invoicing` design.md §11.2). */
   holdRequest(overrides: HoldRequestOverrides): CreditHoldRequestPayload;
   /** Builds a `billing.invoice.issue` request payload, guarding the COMPUTED total (Σ unitPrice × units − discount) with `assertNotCentsRuleAmount` — the load-bearing half for invoicing fixtures (N2). */
   issueRequest(overrides: IssueRequestOverrides): InvoiceIssueRequestPayload;
+  /** feature 22 — builds a `billing.payment.register` request payload, guarding the amount with `assertNotCentsRuleAmount` (N2, extended to this subject). */
+  paymentRequest(overrides: PaymentRequestOverrides): PaymentRegisterRequestPayload;
   teardown(): Promise<void>;
 }
 
@@ -276,6 +291,10 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
     return db.select().from(schema.invoiceItems).where(eq(schema.invoiceItems.invoiceId, invoiceId));
   }
 
+  async function paymentsOf(invoiceId: string) {
+    return db.select().from(schema.payments).where(eq(schema.payments.invoiceId, invoiceId));
+  }
+
   function holdRequest(overrides: HoldRequestOverrides): CreditHoldRequestPayload {
     assertNotCentsRuleAmount(overrides.amount, `holdRequest(${overrides.orderReference})`, overrides.centsRuleOptIn);
     return {
@@ -303,6 +322,18 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
     };
   }
 
+  function paymentRequest(overrides: PaymentRequestOverrides): PaymentRegisterRequestPayload {
+    assertNotCentsRuleAmount(overrides.amount, `paymentRequest(${overrides.paymentReference})`, overrides.centsRuleOptIn);
+    return {
+      ...(overrides.invoiceId ? { invoiceId: overrides.invoiceId } : {}),
+      ...(overrides.invoiceReference ? { invoiceReference: overrides.invoiceReference } : {}),
+      paymentReference: overrides.paymentReference,
+      amount: { amount: overrides.amount, currency: overrides.currency },
+      valueDate: overrides.valueDate ?? new Date().toISOString(),
+      source: overrides.source ?? 'test',
+    };
+  }
+
   return {
     app,
     db,
@@ -317,8 +348,10 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
     committedExposureOf,
     invoicesOf,
     invoiceItemsOf,
+    paymentsOf,
     holdRequest,
     issueRequest,
+    paymentRequest,
     async teardown(): Promise<void> {
       await testNatsConnection.close();
       await app.close();

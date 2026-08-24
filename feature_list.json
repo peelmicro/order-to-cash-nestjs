@@ -307,7 +307,7 @@
       "phase": 10,
       "title": "Remittance intake: PaymentReceived + credit release + invoice paid",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "idempotent by paymentReference",
         "no internal payment timer anywhere",

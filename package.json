@@ -55,7 +55,9 @@
     "dc:logs:sonarqube": "docker compose -f docker-compose.infra.yml --profile sonar logs -f sonarqube",
     "order:place": "node scripts/place-order.mjs",
     "order:over-limit": "node scripts/place-order.mjs --over-limit",
-    "saga:watch": "docker exec otc-mysql sh -c 'mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" -e \"SELECT order_reference,status,cancellation_reason FROM otc_orders.orders ORDER BY order_reference; SELECT command,status,COUNT(*) n FROM otc_orders.saga_commands GROUP BY command,status\"'"
+    "saga:watch": "docker exec otc-mysql sh -c 'mysql -uroot -p\"$MYSQL_ROOT_PASSWORD\" -e \"SELECT order_reference,status,cancellation_reason FROM otc_orders.orders ORDER BY order_reference; SELECT command,status,COUNT(*) n FROM otc_orders.saga_commands GROUP BY command,status\"'",
+    "invoice:pay": "node scripts/pay-invoice.mjs",
+    "invoice:list": "node scripts/pay-invoice.mjs --list"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

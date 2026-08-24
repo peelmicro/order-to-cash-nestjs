@@ -21,7 +21,12 @@ import {
   InvoicePaymentCurrencyMismatchError,
   NegativeInvoiceTotalError,
 } from '../domain/invoice-errors';
-import { InvoiceCurrencyMismatchError, NoActiveCreditHoldError } from '../application/invoice-application-errors';
+import {
+  InvoiceCurrencyMismatchError,
+  InvoiceNotFoundError,
+  NoActiveCreditHoldError,
+  PaymentReferenceConflictError,
+} from '../application/invoice-application-errors';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
 describe('rpc-error-mapper — validation', () => {
@@ -92,6 +97,19 @@ describe('rpc-error-mapper — toRpcError, every mapped class', () => {
       code: 'PRECONDITION_FAILED',
       details: { code: 'INVOICE_PAYMENT_CURRENCY_MISMATCH' },
     });
+  });
+
+  // feature 22 — the two error classes `billing.payment.register` adds.
+  it('InvoiceNotFoundError -> NOT_FOUND naming the code and the identity', () => {
+    const error = toRpcError(new InvoiceNotFoundError('INV-999999'));
+    expect(error.code).toBe('NOT_FOUND');
+    expect(error.details).toEqual({ code: 'INVOICE_NOT_FOUND', identity: 'INV-999999' });
+  });
+
+  it('PaymentReferenceConflictError -> CONFLICT naming the code and the paymentReference', () => {
+    const error = toRpcError(new PaymentReferenceConflictError('PAY-000001'));
+    expect(error.code).toBe('CONFLICT');
+    expect(error.details).toEqual({ code: 'PAYMENT_REFERENCE_CONFLICT', paymentReference: 'PAY-000001' });
   });
 
   it('any other DomainError -> DOMAIN_ERROR naming the code', () => {

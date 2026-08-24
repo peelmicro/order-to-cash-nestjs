@@ -9,8 +9,8 @@ import path from 'node:path';
 import { NatsContext } from '@nestjs/microservices';
 import { UniqueId } from '@otc/shared-kernel';
 import { describe, expect, it, vi } from 'vitest';
-import { INVOICE_ISSUE_SUBJECT, INVOICE_LIST_SUBJECT, InvoiceController } from './invoice.controller';
-import { NoActiveCreditHoldError } from '../application/invoice-application-errors';
+import { INVOICE_ISSUE_SUBJECT, INVOICE_LIST_SUBJECT, InvoiceController, PAYMENT_REGISTER_SUBJECT } from './invoice.controller';
+import { InvoiceNotFoundError, NoActiveCreditHoldError } from '../application/invoice-application-errors';
 
 const ASYNCAPI_SPEC_PATH = path.resolve(__dirname, '../../../../specs/shared/asyncapi.yaml');
 
@@ -32,6 +32,13 @@ describe('InvoiceController — BI16 half, subject constants match the AsyncAPI 
 
     expect(INVOICE_ISSUE_SUBJECT).toBe(channelAddress(specText, 'invoiceIssue'));
     expect(INVOICE_LIST_SUBJECT).toBe(channelAddress(specText, 'invoiceList'));
+  });
+
+  // feature 22 — the same read-the-spec-as-text assertion, extended.
+  it('uses exactly the documented subject for billing.payment.register, read from asyncapi.yaml as text', () => {
+    const specText = readFileSync(ASYNCAPI_SPEC_PATH, 'utf8');
+
+    expect(PAYMENT_REGISTER_SUBJECT).toBe(channelAddress(specText, 'paymentRegister'));
   });
 });
 
@@ -165,5 +172,107 @@ describe('InvoiceController — validation and error mapping, never throws', () 
     const result = await controller.list({ page: 1, pageSize: 25 });
 
     expect(result).toMatchObject({ code: 'INTERNAL_ERROR' });
+  });
+});
+
+const VALID_PAYMENT_REQUEST = {
+  invoiceReference: 'INV-000001',
+  paymentReference: 'PAY-000001',
+  amount: { amount: 2_000, currency: 'EUR' },
+  valueDate: '2026-08-21T10:00:00.000Z',
+  source: 'robot' as const,
+};
+
+function fakePaymentContext(headers?: Record<string, string>): NatsContext {
+  const headerRecord: Record<string, string> = headers ?? {};
+  const hdrs = headers ? { get: (key: string) => headerRecord[key] ?? '' } : undefined;
+  return new NatsContext([PAYMENT_REGISTER_SUBJECT, hdrs]);
+}
+
+describe('InvoiceController — billing.payment.register (feature 22, R47-R49)', () => {
+  it('refuses a request without a valid correlation and request id before dispatching', async () => {
+    const { queries, commands, commandExecute } = buses();
+    const controller = new InvoiceController(queries, commands);
+
+    const noHeaders = await controller.registerPayment(VALID_PAYMENT_REQUEST, fakePaymentContext());
+    expect(noHeaders).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses a payload naming neither invoiceId nor invoiceReference before dispatching', async () => {
+    const { queries, commands, commandExecute } = buses();
+    const controller = new InvoiceController(queries, commands);
+
+    const result = await controller.registerPayment(
+      { ...VALID_PAYMENT_REQUEST, invoiceReference: undefined },
+      fakePaymentContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+
+    expect(result).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('refuses an out-of-range paymentReference, amount, valueDate or source before dispatching', async () => {
+    const { queries, commands, commandExecute } = buses();
+    const controller = new InvoiceController(queries, commands);
+
+    const badReference = await controller.registerPayment(
+      { ...VALID_PAYMENT_REQUEST, paymentReference: '' },
+      fakePaymentContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+    expect(badReference).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const badSource = await controller.registerPayment(
+      { ...VALID_PAYMENT_REQUEST, source: 'n8n' },
+      fakePaymentContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+    expect(badSource).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const badDate = await controller.registerPayment(
+      { ...VALID_PAYMENT_REQUEST, valueDate: 'not-a-date' },
+      fakePaymentContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+    expect(badDate).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    expect(commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('dispatches with the parsed correlationId/requestId when headers are present and valid', async () => {
+    const { queries, commands, commandExecute } = buses();
+    commandExecute.mockResolvedValue({
+      outcome: 'accepted',
+      paymentReference: 'PAY-000001',
+      invoiceReference: 'INV-000001',
+      orderReference: 'ORD-000001',
+      invoiceStatus: 'paid',
+      paidAt: '2026-08-21T10:00:00.000Z',
+    });
+    const controller = new InvoiceController(queries, commands);
+    const correlationId = UniqueId.generate();
+    const requestId = UniqueId.generate();
+
+    const result = await controller.registerPayment(
+      VALID_PAYMENT_REQUEST,
+      fakePaymentContext({ 'x-correlation-id': correlationId.value, 'x-request-id': requestId.value }),
+    );
+
+    expect(commandExecute).toHaveBeenCalledTimes(1);
+    const dispatchedCommand = commandExecute.mock.calls[0]![0];
+    expect(dispatchedCommand.correlationId.equals(correlationId)).toBe(true);
+    expect(dispatchedCommand.requestId.equals(requestId)).toBe(true);
+    expect(result).toMatchObject({ outcome: 'accepted' });
+  });
+
+  it('a handler error on billing.payment.register is mapped to an RpcError, not thrown', async () => {
+    const { queries, commands, commandExecute } = buses();
+    commandExecute.mockRejectedValue(new InvoiceNotFoundError('INV-999999'));
+    const controller = new InvoiceController(queries, commands);
+
+    const result = await controller.registerPayment(
+      VALID_PAYMENT_REQUEST,
+      fakePaymentContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+
+    expect(result).toMatchObject({ code: 'NOT_FOUND' });
   });
 });

@@ -23,7 +23,12 @@ import {
   InvoicePaymentCurrencyMismatchError,
   NegativeInvoiceTotalError,
 } from '../domain/invoice-errors';
-import { InvoiceCurrencyMismatchError, NoActiveCreditHoldError } from '../application/invoice-application-errors';
+import {
+  InvoiceCurrencyMismatchError,
+  InvoiceNotFoundError,
+  NoActiveCreditHoldError,
+  PaymentReferenceConflictError,
+} from '../application/invoice-application-errors';
 
 function flattenViolations(violations: readonly ValidationError[]): string[] {
   return violations.flatMap((violation) => {
@@ -115,7 +120,32 @@ export function toRpcError(error: unknown): RpcError {
   }
   // `CreditLineNotFoundError` is REUSED UNCHANGED above for BI3 — the same
   // error, the same NOT_FOUND, the same `details`, raised from the same
-  // repository port (design.md §4.3). No separate case needed here.
+  // repository port (design.md §4.3). No separate case needed here. It is
+  // ALSO reused unchanged for `billing.payment.register`'s (unreachable in
+  // this model — an issued invoice implies its credit line already
+  // existed) missing-credit-line branch — feature 22.
+  if (error instanceof InvoiceNotFoundError) {
+    // feature 22, R47-R49's identity resolution step: `invoiceId`/
+    // `invoiceReference` names no invoice. A contract violation, nothing
+    // written.
+    return {
+      code: 'NOT_FOUND',
+      message: error.message,
+      details: { code: error.code, identity: error.identity },
+      occurredAt,
+    };
+  }
+  if (error instanceof PaymentReferenceConflictError) {
+    // feature 22's belt-and-braces backstop — the SAME paymentReference
+    // reused across two DIFFERENT invoices, caught only by
+    // `payments.payment_reference`'s UNIQUE constraint (R48).
+    return {
+      code: 'CONFLICT',
+      message: error.message,
+      details: { code: error.code, paymentReference: error.paymentReference },
+      occurredAt,
+    };
+  }
   if (error instanceof DomainError) {
     // Billing's remaining domain refusals (CreditLimitExceededError,
     // CreditRefusalMismatchError, InvalidBuyerCreditSnapshotError,

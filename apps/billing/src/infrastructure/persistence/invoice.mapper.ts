@@ -7,13 +7,16 @@
 // (`InvoiceLine` the class / `invoice_items` the table) meet (open-point
 // row 8).
 import { InvoiceReference, Money, OrderNumber, Quantity, UniqueId } from '@otc/shared-kernel';
+import type { PaymentSource } from '@otc/contracts';
+import type { PaymentRecordSnapshot } from '../../application/ports/invoice-repository.port.js';
 import type { InvoiceLineSnapshot } from '../../domain/invoice-line.js';
 import type { InvoiceSnapshot } from '../../domain/invoice-snapshot.js';
 import { Invoice } from '../../domain/invoice.js';
-import type { invoiceItems, invoices } from './schema';
+import type { invoiceItems, invoices, payments } from './schema';
 
 export type InvoiceRow = typeof invoices.$inferSelect;
 export type InvoiceItemRow = typeof invoiceItems.$inferSelect;
+export type PaymentRow = typeof payments.$inferSelect;
 
 export function toInvoiceSnapshot(row: InvoiceRow, itemRows: readonly InvoiceItemRow[]): InvoiceSnapshot {
   return {
@@ -102,4 +105,43 @@ export function toInvoiceItemTableRows(invoice: Invoice, timestamps: { readonly 
     createdAt: timestamps.createdAt,
     updatedAt: timestamps.updatedAt,
   }));
+}
+
+// ─────────────────────── feature 22: `payments` <-> PaymentRecordSnapshot ───────────────────────
+
+export function toPaymentRecordSnapshot(row: PaymentRow): PaymentRecordSnapshot {
+  return {
+    id: UniqueId.from(row.id),
+    paymentReference: row.paymentReference,
+    invoiceId: UniqueId.from(row.invoiceId),
+    amount: Money.of(row.amount, row.currencyCode),
+    valueDate: row.valueDate,
+    source: row.source as PaymentSource,
+    createdAt: row.createdAt,
+  };
+}
+
+/** One `payments` row for one `markPaid()` INSERT — never an UPDATE, never a DELETE (B10: recorded at most once per `paymentReference`). */
+export interface PaymentTableRow {
+  id: string;
+  paymentReference: string;
+  invoiceId: string;
+  amount: number;
+  currencyCode: string;
+  valueDate: Date;
+  source: PaymentSource;
+  createdAt: Date;
+}
+
+export function toPaymentTableRow(invoiceId: string, payment: { readonly id: UniqueId; readonly paymentReference: string; readonly amount: Money; readonly valueDate: Date; readonly source: PaymentSource; readonly createdAt: Date }): PaymentTableRow {
+  return {
+    id: payment.id.value,
+    paymentReference: payment.paymentReference,
+    invoiceId,
+    amount: payment.amount.amount,
+    currencyCode: payment.amount.currency,
+    valueDate: payment.valueDate,
+    source: payment.source,
+    createdAt: payment.createdAt,
+  };
 }

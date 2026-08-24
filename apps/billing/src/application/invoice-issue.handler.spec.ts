@@ -90,6 +90,26 @@ function invoiceRepositoryOf(existing: InvoiceSnapshot | null, callLog: string[]
       callLog.push('save');
       saveCalls.push(invoice);
     },
+    // feature 22's payment-register additions — unused by `invoice.issue`,
+    // present only so this fake satisfies the (extended) port shape.
+    async findById() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
+    async findByInvoiceReference() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
+    async lockById() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
+    async findPaymentByReference() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
+    async findPaymentByInvoiceId() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
+    async markPaid() {
+      throw new Error('not used by invoice-issue.handler.spec.ts');
+    },
   };
   return { repo, saveCalls, callLog };
 }

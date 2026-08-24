@@ -34,8 +34,10 @@ import { CREDIT_COMMAND_HANDLERS } from './application/commands/credit.command-h
 import { CREDIT_QUERY_HANDLERS } from './application/queries/credit.query-handlers';
 import { INVOICE_COMMAND_HANDLERS } from './application/commands/invoice.command-handlers';
 import { INVOICE_QUERY_HANDLERS } from './application/queries/invoice.query-handlers';
+import { PAYMENT_COMMAND_HANDLERS } from './application/commands/payment.command-handlers';
 import { CreditHoldHandler } from './application/credit-hold.handler';
 import { InvoiceIssueHandler } from './application/invoice-issue.handler';
+import { PaymentRegisterHandler } from './application/payment-register.handler';
 import type { CreditDecisionPort } from './application/ports/credit-decision.port';
 import type { BuyerCreditRepository } from './application/ports/buyer-credit-repository.port';
 import type { InvoiceNumberAllocator } from './application/ports/invoice-number-allocator.port';
@@ -128,6 +130,12 @@ const BILLING_DB = Symbol('BillingDb');
       inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, INVOICE_REPOSITORY, INVOICE_NUMBER_ALLOCATOR, CLOCK],
     },
     {
+      provide: PaymentRegisterHandler,
+      useFactory: (unitOfWork: UnitOfWork, credits: BuyerCreditRepository, invoices: InvoiceRepository, clock: Clock): PaymentRegisterHandler =>
+        new PaymentRegisterHandler(unitOfWork, credits, invoices, clock),
+      inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, INVOICE_REPOSITORY, CLOCK],
+    },
+    {
       provide: FACT_PUBLISHER,
       useFactory: (): KafkaFactPublisher => new KafkaFactPublisher(createKafkaClient(loadKafkaConfig())),
     },
@@ -147,6 +155,7 @@ const BILLING_DB = Symbol('BillingDb');
     ...CREDIT_COMMAND_HANDLERS,
     ...INVOICE_QUERY_HANDLERS,
     ...INVOICE_COMMAND_HANDLERS,
+    ...PAYMENT_COMMAND_HANDLERS,
   ],
 })
 export class AppModule {}

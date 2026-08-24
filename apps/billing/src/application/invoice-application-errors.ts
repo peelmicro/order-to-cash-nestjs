@@ -36,3 +36,36 @@ export class InvoiceCurrencyMismatchError extends InvoiceApplicationError {
     super(`invoice.issue: requested currency "${received}" does not match the credit line's currency "${expected}"`);
   }
 }
+
+/**
+ * `billing.payment.register` names an `invoiceId`/`invoiceReference` that
+ * resolves to no invoice — a contract violation, not a business refusal;
+ * nothing is written, no fact is emitted (feature 22, R47-R49's identity
+ * resolution step).
+ */
+export class InvoiceNotFoundError extends InvoiceApplicationError {
+  readonly code = 'INVOICE_NOT_FOUND';
+
+  constructor(readonly identity: string) {
+    super(`payment.register: no invoice for "${identity}"`);
+  }
+}
+
+/**
+ * `billing.payment.register`'s belt-and-braces backstop (feature 22): the
+ * SAME `paymentReference` was reused against two DIFFERENT invoices closely
+ * enough in time that the in-transaction read-then-write straddled the
+ * race — the ONLY case `payments.payment_reference`'s UNIQUE constraint,
+ * not the invoice row's own lock, is what actually catches (the invoice
+ * lock alone serialises two attempts on the SAME invoice; it cannot
+ * serialise two DIFFERENT invoices' independent transactions). Nothing
+ * from this call was left committed; the transaction that hit the
+ * constraint rolled back in full.
+ */
+export class PaymentReferenceConflictError extends InvoiceApplicationError {
+  readonly code = 'PAYMENT_REFERENCE_CONFLICT';
+
+  constructor(readonly paymentReference: string) {
+    super(`payment.register: paymentReference "${paymentReference}" was recorded by a concurrent request against a different invoice`);
+  }
+}
