@@ -333,7 +333,7 @@
       "phase": 12,
       "title": "Projector: Kafka facts -> MongoDB order_timeline, idempotent by eventId",
       "sdd": true,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "out-of-order delivery still yields the correct final status",
         "replaying a topic reproduces an identical document",

@@ -10,19 +10,32 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.mts"
   },
   "dependencies": {
     "@nestjs/common": "catalog:",
     "@nestjs/core": "catalog:",
+    "@nestjs/cqrs": "catalog:",
+    "@nestjs/microservices": "catalog:",
     "@nestjs/platform-express": "catalog:",
+    "@otc/contracts": "workspace:*",
+    "@otc/shared-kernel": "workspace:*",
+    "kafkajs": "catalog:",
+    "mongodb": "catalog:",
+    "nats": "catalog:",
     "reflect-metadata": "catalog:",
     "rxjs": "catalog:"
   },
   "devDependencies": {
+    "@nestjs/testing": "catalog:",
+    "@testcontainers/kafka": "catalog:",
+    "@testcontainers/mongodb": "catalog:",
+    "@testcontainers/nats": "catalog:",
     "@types/node": "catalog:",
     "@vitest/coverage-v8": "catalog:",
     "dotenv-cli": "catalog:",
+    "testcontainers": "catalog:",
     "tsc-watch": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
