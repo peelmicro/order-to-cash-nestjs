@@ -10,6 +10,9 @@ packages:
 # respectively. None run anything project-specific; approved so
 # Testcontainers works the same as it would outside this sandboxed install.
 allowBuilds:
+  # Anonymous install-telemetry postinstall script (transitive dep pulled in
+  # by gateway_rest_auth's new packages) — not project-relevant, denied.
+  '@scarf/scarf': false
   cpu-features: true
   esbuild: true
   protobufjs: true
@@ -101,3 +104,29 @@ catalog:
   # is the current types major for the installed 9.x runtime package.
   nodemailer: ^9.0.5
   "@types/nodemailer": ^8.0.1
+  # gateway_rest_auth (feature 25) — the REST/BFF surface. `jsonwebtoken`
+  # issues/verifies the single operator's bearer token directly (same
+  # "plain client, explicit control" ethos as `nats-client.ts`/
+  # `mongo-client.ts` elsewhere in this repo — no `@nestjs/passport`
+  # strategy indirection for a single, statically-configured identity).
+  # `swagger-ui-express` renders `specs/shared/openapi.yaml` verbatim at
+  # `GET /docs` — the contract IS the documentation, so nothing is
+  # regenerated from decorators. `js-yaml` parses that same file, both to
+  # serve it and for the contract-drift test (group E) that walks it
+  # against the running app's actual routes. `supertest` is the HTTP
+  # client the black-box API tests use against the Gateway (CLAUDE.md
+  # Testing conventions).
+  jsonwebtoken: ^9.0.2
+  "@types/jsonwebtoken": ^9.0.7
+  swagger-ui-express: ^5.0.1
+  "@types/swagger-ui-express": ^4.1.7
+  js-yaml: ^4.1.0
+  "@types/js-yaml": ^4.0.9
+  supertest: ^7.1.1
+  "@types/supertest": ^6.0.2
+  # `@types/express` — the gateway's own exception filter
+  # (presentation/problem-json.filter.ts) types the raw `Response` it
+  # writes the RFC 9457 problem+json body onto. `@nestjs/platform-express`
+  # depends on `express` itself already; only the TYPES package needs an
+  # explicit workspace declaration under pnpm's strict `node_modules`.
+  "@types/express": ^5.0.6

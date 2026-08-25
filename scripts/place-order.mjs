@@ -1,8 +1,15 @@
-// Place an order the way the future Gateway will: over NATS, using the same
-// `@nestjs/microservices` client the Orders service's `@MessagePattern`
-// expects. (A hand-rolled bare-JSON request does NOT work here — Nest treats
-// an id-less packet as a fire-and-forget event and never replies, which is
-// exactly the wire finding recorded in specs/fulfillment_stock/.)
+// Place an order over NATS with `@nestjs/microservices`' own client.
+//
+// The header used to say a hand-rolled bare-JSON request "does NOT work here".
+// That was true when written and is false now. Feature 25 found that
+// `apps/orders/src/main.ts` was the ONLY service missing the
+// `BareJsonNatsDeserializer`/`BareJsonNatsSerializer` pair that fulfillment and
+// billing installed in phase 9 — so a bare-JSON caller (the Gateway, and the
+// saga for the other two services) made `orders.create` run to completion and
+// then time out with no reply, placing a real order and telling the caller it
+// had failed. Orders now installs the pair, so BOTH wires work: bare JSON (see
+// scripts/pay-invoice.mjs) and the Nest envelope this script uses. Verified by
+// running both against the fixed responder with the pair installed and removed.
 //
 //   pnpm order:place                 # 2 × PRD-0001 — normal order, runs the happy path
 //   pnpm order:place --qty 1         # 1 × PRD-0001 = 24 999 → ends in .99 → simulated compensation

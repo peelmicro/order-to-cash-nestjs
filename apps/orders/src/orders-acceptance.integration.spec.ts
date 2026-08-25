@@ -9,9 +9,11 @@
 // (grep it: nothing outside `test-support/` and `*.spec.ts` references it).
 //
 // The caller is `@nestjs/microservices`'s own `ClientProxyFactory`
-// (Transport.NATS) — the same client a future Gateway feature would use —
-// so this test exercises the REAL wire protocol `orders-create.controller.ts`
-// (`@MessagePattern`) speaks, not a hand-rolled substitute.
+// (Transport.NATS) — an envelope wire the responder accepts. This spec covers
+// one of two wires: `ClientProxy` here; the other (raw `nats` bare JSON, used
+// by `apps/gateway` and the saga) is proven in `orders-create-wire.integration.spec.ts`.
+// Both wires work because `apps/orders/src/main.ts` installs the bare-JSON
+// `BareJsonNatsDeserializer`/`BareJsonNatsSerializer` pair (F1 fix).
 import { firstValueFrom } from 'rxjs';
 import { timeout } from 'rxjs/operators';
 import { ClientProxyFactory, Transport, type ClientProxy } from '@nestjs/microservices';
@@ -78,6 +80,20 @@ describe('orders.create — end to end (Testcontainers: mysql:8.4.11 + nats:2.14
 
     app = moduleRef.createNestApplication();
     const connectionOptions = natsFixture.container.getConnectionOptions();
+    // G7 (progress/review_gateway_rest_auth.md Round 2): deliberately left
+    // WITHOUT the bare-JSON (de)serializer pair `apps/orders/src/main.ts`
+    // installs post-F1 — this harness's only caller is `ClientProxy`
+    // (below), and `ClientProxy`'s own deserializer treats a bare-JSON
+    // reply and a Nest-enveloped reply identically (`IncomingResponse
+    // Deserializer.isExternal`, verified by execution in both
+    // `orders-create-wire.integration.spec.ts` and by
+    // progress/review_gateway_rest_auth.md's own re-run). Adding the pair
+    // here would duplicate, not extend, that coverage — `ClientProxy` is
+    // wire-agnostic and this spec's purpose is to verify that wire works.
+    // The other wire — raw `nats` bare JSON, which the Gateway and saga
+    // actually use in production — is proven separately in
+    // `orders-create-wire.integration.spec.ts`, which installs the
+    // bare-JSON pair and mirrors `main.ts`'s real configuration byte-for-byte.
     app.connectMicroservice({
       transport: Transport.NATS,
       options: { servers: connectionOptions.servers, user: connectionOptions.user, pass: connectionOptions.pass },

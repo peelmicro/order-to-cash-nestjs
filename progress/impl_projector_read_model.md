@@ -268,3 +268,95 @@ Scope of this follow-up pass: `specs/projector_read_model/tasks.md` and this fil
 **`progress/impl_projector_read_model.md`** — this file.
 
 `apps/orders` is byte-unmodified (`git diff --stat apps/orders` is empty throughout this session). No file under `packages/`, `apps/fulfillment`, `apps/billing`, `apps/notifications` or `apps/gateway` was touched. `feature_list.json` was not touched by this session (its one line, `pending → spec_ready`, predates this implementation pass).
+
+---
+
+## Addendum — `PR20` guard fixed: tests WHO WRITES, not who imports (R54's two halves)
+
+Feature 25 (`gateway_rest_auth`) landed with a legitimate `mongodb` import in `apps/gateway` — R54 has two halves, "the projector is the only *writer*" and "list/detail queries are served from the read model", and the gateway reading Mongo directly is the second half being obeyed, not a violation. The old `read-model-sole-writer.spec.ts` flagged **any** importer, so it started reporting `apps/gateway` as an offender for doing exactly what the requirement demands. Fixed by changing what the guard tests, not by allow-listing a fourth name.
+
+### What the guard now checks, and why
+
+**Old check:** "does this app's production source contain `from 'mongodb'`?" — conflates readers and writers; R54 forbids only the latter.
+
+**New check:** "does this app's production source invoke a MongoDB **write**-shaped method?" — `.insertOne(`, `.updateOne(`, `.updateMany(`, `.replaceOne(`, `.deleteOne(`, `.deleteMany(`, `.findOneAndUpdate(`, `.findOneAndReplace(`, `.findOneAndDelete(`, `.findAndModify(`, `.bulkWrite(`, `.initializeOrderedBulkOp(`, `.initializeUnorderedBulkOp(`, `.createIndex(`, `.createIndexes(`, `.dropIndex(`, `.dropIndexes(`, `.createCollection(`, `.dropCollection(`, `.dropDatabase(`, `.renameCollection(`, `.drop(` — the full mutating surface of the driver's `Collection`/`Db` API, not a curated subset chosen to make one imagined mutation pass. `apps/projector` is permitted unconditionally (it is the writer this feature builds); `apps/seed` stays allow-listed **by name**, for the reason already in the guard's header (an offline fixture loader, never deployed, run before the system runs). Any other app found calling a write-shaped method in its **production** source is the violation R54 actually names.
+
+**Why this is the right property:** it is exactly R54's own wording — "only writer" is a claim about mutation, not about which package.json/import graph an app happens to have. A reader (`find`/`findOne`/`countDocuments`/`aggregate` without `$merge`/`$out`) is permitted anywhere R54 allows it; nothing here restricts who may *read* the read model.
+
+**Scope correction found while fixing this:** the scan now excludes `test-support/` and `*.spec.ts`, the same "test fixture code is a different category" rule `notifications-consumes-only.spec.ts`'s `collectSourceFiles` already applies. Without this, `apps/gateway`'s own `orders.integration.spec.ts`/`billing-fulfillment.integration.spec.ts` — which legitimately `insertOne` a fixture document directly into MongoDB to test gateway's **own read path**, the same way every other service's integration specs seed their own database directly — would have been misreported as production writes. This is not scope-narrowing to dodge the guard: it is the same category distinction the repo already draws everywhere else between "what ships" and "what a test does to set its own fixture up."
+
+**Stated limitation (no false confidence, per the F2 standard):** this is a text scan, not a type-level or driver-level check. Two honest gaps, both recorded in the guard file's own header comment:
+- **False positive risk:** a file that imports `mongodb` and separately calls an unrelated method of the same name (e.g. `.drop(` on some other library's builder object) in the same file would be flagged. Same residual risk every other invocation-shape guard in this repo already accepts (`.request(`, `.producer(`, `.consumer(`, `@EventPattern(`) — not a new category of imprecision.
+- **False negative risk:** a `$merge`/`$out` stage inside an `.aggregate(` pipeline technically writes and this guard cannot see it (it would need to parse pipeline stage contents, not just the call site). No service in this repo uses that shape today; flagged in the guard's own comment for whoever revisits it if that changes.
+- **What a stronger check would look like, named rather than built:** (a) a TypeScript-compiler-API pass that resolves each `.methodName(` call's receiver type and only counts it when the receiver is statically `Collection<T>`/`Db` — binds the call to the actual import, closing the false-positive gap; (b) a runtime assertion, e.g. opening the driver connection with a read-only role/credential per app and asserting a write attempt throws at the database layer — closes both gaps but requires a live database and moves the guard out of the fast, Docker-free `pnpm quality` gate. Neither was built: the existing convention in this repo (every structural guard here is a fast, Docker-free source scan) was matched instead, with its limitation stated rather than hidden.
+
+### Evidence — reader passes, five writer forms fail, `apps/gateway` passes
+
+All probes below used a temporary, non-spec, non-test-support fixture file (`apps/notifications/src/__pr20-*.ts`), written, run, then removed — `git status apps/notifications` clean afterward. Two layers of evidence:
+
+**1. The permanent suite** (`apps/projector/src/read-model-sole-writer.spec.ts`, 8 cases, all pass — the properly-designed regression form, matching this repo's existing "assert the detector fires" convention):
+```
+✓ permits a MongoDB WRITE operation in apps/projector (the writer this feature builds) and the allow-listed apps/seed only
+✓ permits a mongodb IMPORT anywhere R54 allows a reader — a read-only importer is not flagged
+✓ non-vacuity > a READER (find/findOne only) in a third app PASSES — it is not reported as a writer
+✓ non-vacuity > a WRITER (insertOne) in a third app FAILS — it is reported as an unexpected writer
+✓ non-vacuity > a WRITER (updateOne) in a third app FAILS — it is reported as an unexpected writer
+✓ non-vacuity > a WRITER (findOneAndUpdate) in a third app FAILS — it is reported as an unexpected writer
+✓ non-vacuity > a WRITER (bulkWrite) in a third app FAILS — it is reported as an unexpected writer
+✓ non-vacuity > a WRITER (deleteMany) in a third app FAILS — it is reported as an unexpected writer
+
+Test Files  1 passed (1)
+     Tests  8 passed (8)
+```
+
+**2. A genuine red/green probe against the guard's own primary assertion** (a one-off, temporary spec, deleted immediately after — this is what produces real verbatim pass/fail text rather than a wrapped `toContain`):
+
+- **READER** (`collection.findOne({ _id: 'x' } as never)`) — genuinely **PASSES**:
+  ```
+  ✓ READER passes
+  ```
+- **WRITER `insertOne`** (`collection.insertOne({ _id: 'x' } as never)`) — genuinely **FAILS**:
+  ```
+  × WRITER insertOne fails
+  AssertionError: unexpected MongoDB writer(s): notifications — R54 makes the projector the sole runtime writer: expected [ 'notifications' ] to deeply equal []
+  ```
+- **WRITER `updateOne`** (`collection.updateOne({ _id: 'x' } as never, { $set: { a: 1 } } as never)`) — genuinely **FAILS**:
+  ```
+  × WRITER updateOne fails
+  AssertionError: unexpected MongoDB writer(s): notifications — R54 makes the projector the sole runtime writer: expected [ 'notifications' ] to deeply equal []
+  ```
+- **WRITER `findOneAndUpdate`** (`collection.findOneAndUpdate({ _id: 'x' } as never, { $set: { a: 1 } } as never)`) — genuinely **FAILS**:
+  ```
+  × WRITER findOneAndUpdate fails
+  AssertionError: unexpected MongoDB writer(s): notifications — R54 makes the projector the sole runtime writer: expected [ 'notifications' ] to deeply equal []
+  ```
+- **WRITER `bulkWrite`** (`collection.bulkWrite([] as never)`) — genuinely **FAILS**:
+  ```
+  × WRITER bulkWrite fails
+  AssertionError: unexpected MongoDB writer(s): notifications — R54 makes the projector the sole runtime writer: expected [ 'notifications' ] to deeply equal []
+  ```
+- **WRITER `deleteMany`** (`collection.deleteMany({} as never)`) — genuinely **FAILS**:
+  ```
+  × WRITER deleteMany fails
+  AssertionError: unexpected MongoDB writer(s): notifications — R54 makes the projector the sole runtime writer: expected [ 'notifications' ] to deeply equal []
+  ```
+  (Probe run: `Test Files 1 failed (1)`, `Tests 5 failed | 1 passed (6)` — exactly reader-passes, five-writer-forms-fail. Probe file deleted immediately after; `apps/notifications` confirmed clean via `git status` afterward.)
+
+**3. `apps/gateway` passes as it now stands** — confirmed two ways, without touching the app (out of this pass's scope):
+- Read its actual Mongo usage directly: `mongo-order-read-model.adapter.ts` calls only `findOne`/`find`/`countDocuments` (all reads, none in the write-method list); `mongo-client.ts`/`app.module.ts`/`mongo-health-check.ts` import `mongodb` only for connection/typing (`db.command({ping:1})` for health, not a write); no `createIndex` or any index/DDL call anywhere in gateway's production source.
+- Ran the fixed guard with `apps/gateway` present on disk (unmodified, as landed by the parallel session): `appsWritingToMongodb()` returns exactly `['projector', 'seed']` — the permanent suite's own non-vacuity assertion (`expect(appsWritingToMongodb().sort()).toEqual(['projector', 'seed'])`) is this confirmation, and it is green.
+
+### Suites re-run, exit status
+
+- `pnpm --filter @otc/projector typecheck` — exit 0.
+- `pnpm eslint apps/projector/src --max-warnings=0` — exit 0, clean.
+- `pnpm --filter @otc/projector test` (unit) — **117/117 passed** (111 before this fix + 6 new cases in the rewritten guard file, net of the 2 old cases it replaced).
+- `pnpm --filter @otc/projector exec vitest run read-model-sole-writer.spec` — **8/8 passed** in isolation.
+
+### `PR20`'s requirement wording — needs the coordinator's attention
+
+`specs/projector_read_model/requirements.md`'s `PR20` currently reads (not edited by this pass, per instruction): *"THE SYSTEM SHALL make `apps/projector` the only **runtime** writer of `order_timeline`: within `apps/`, only `apps/projector` and `apps/seed` may **import** `mongodb` at all..."* — the **import**-based phrasing is now narrower than what R54 actually requires and narrower than what this guard now enforces. It should read "only `apps/projector` (and the allow-listed `apps/seed`) may **write** to `order_timeline`" (or equivalent), with the sentence about `apps/seed`'s allow-listing kept as-is. Left unedited per this pass's explicit scope (`specs/` is out of bounds); flagging for the coordinator to route.
+
+### Scope confirmation
+
+Only `apps/projector/src/read-model-sole-writer.spec.ts` was modified. `apps/gateway`, `apps/orders`, `apps/seed`, `packages/`, `specs/`, and `feature_list.json` were not touched by this pass (`git status` confirms; the other in-flight diffs visible in this workspace — `apps/gateway/**`, `apps/orders/**`, `feature_list.json`, `specs/shared/test-matrix.md`, `progress/impl_gateway_rest_auth.md`, `progress/review_gateway_rest_auth.md`, `progress/impl_orders_bare_json_wire.md` — belong to the parallel session landing feature 25 and were left exactly as found). No commit made.

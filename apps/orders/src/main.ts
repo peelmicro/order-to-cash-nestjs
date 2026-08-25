@@ -4,6 +4,43 @@ import { Transport, type MicroserviceOptions } from '@nestjs/microservices';
 import { AppModule } from './app.module';
 import { loadKafkaConfig } from './infrastructure/outbox/kafka.config';
 import { loadNatsConfig } from './infrastructure/messaging/nats.config';
+import { BareJsonNatsDeserializer } from './infrastructure/messaging/bare-json-nats.deserializer';
+import { BareJsonNatsSerializer } from './infrastructure/messaging/bare-json-nats.serializer';
+
+/**
+ * G6 (progress/review_gateway_rest_auth.md, Round 3, H2's cheap half) — the
+ * NATS `connectMicroservice` options for the `orders.create` responder,
+ * EXPORTED rather than left as an inline literal, so that
+ * `orders-create-wire.integration.spec.ts` can IMPORT this function instead
+ * of hand-mirroring the pair it installs. Before this export existed, the
+ * spec restated `deserializer: new BareJsonNatsDeserializer()` /
+ * `serializer: new BareJsonNatsSerializer()` itself — a second, independent
+ * copy that could silently drift from what `bootstrap()` actually installs
+ * (exactly the shape of trap F1 was: a hand-mirrored spec agreeing with
+ * itself, not with production). Only `servers`/`user`/`pass` remain
+ * parameterised, because those genuinely differ between a Testcontainers
+ * NATS instance and `loadNatsConfig()`'s runtime servers; the
+ * (de)serializer pair — the part F1 was actually about — is fixed inside
+ * this function and therefore identical in both callers by construction.
+ */
+export interface OrdersNatsConnectionOptions {
+  servers?: string | string[];
+  user?: string;
+  pass?: string;
+}
+
+export function createOrdersNatsMicroserviceOptions(
+  connection: OrdersNatsConnectionOptions,
+): MicroserviceOptions {
+  return {
+    transport: Transport.NATS,
+    options: {
+      ...connection,
+      deserializer: new BareJsonNatsDeserializer(),
+      serializer: new BareJsonNatsSerializer(),
+    },
+  };
+}
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
@@ -20,11 +57,24 @@ async function bootstrap(): Promise<void> {
   // health/metrics; NATS core (no JetStream) is added as a second,
   // in-process transport for the `orders.create` RPC responder
   // (@MessagePattern, orders-create.controller.ts).
+  //
+  // F1 (progress/review_gateway_rest_auth.md): the bare-JSON (de)serializer
+  // pair — same as apps/fulfillment/src/main.ts and apps/billing/src/main.ts
+  // already install — is what lets a Nest-served NATS handler answer a raw
+  // `nats` bare-JSON caller (the Gateway's `NatsRpcClientAdapter`, and the
+  // saga's own `NatsSagaCommandsAdapter` shape) at all. Without it, Nest's
+  // default `NatsRequestJSONDeserializer` sees an id-less request and routes
+  // it through `ServerNats.handleEvent` — the handler runs (the order is
+  // placed and its outbox row written) but the reply subject is never
+  // answered, so the caller times out and retries, placing a SECOND real
+  // order. Verified against a disposable NATS container by the reviewer of
+  // gateway_rest_auth; reproduced here in
+  // orders-create-wire.integration.spec.ts (armed: removing this pair makes
+  // that spec's bare-JSON case fail with a timeout, never a reply).
   const natsConfig = loadNatsConfig();
-  app.connectMicroservice<MicroserviceOptions>({
-    transport: Transport.NATS,
-    options: { servers: [...natsConfig.servers] },
-  });
+  app.connectMicroservice<MicroserviceOptions>(
+    createOrdersNatsMicroserviceOptions({ servers: [...natsConfig.servers] }),
+  );
 
   // The saga orchestrator's Kafka consumer (order_saga_orchestrator design.md
   // §3.1) — a SECOND, independent microservice transport, client id
@@ -68,4 +118,16 @@ async function bootstrap(): Promise<void> {
   );
 }
 
-void bootstrap();
+// G6's export means this module can now be `import`ed (not just executed)
+// by orders-create-wire.integration.spec.ts for
+// createOrdersNatsMicroserviceOptions alone — guarded so that import does
+// NOT also boot the whole app (AppModule's providers open a real MySQL
+// connection at construction time, which the spec's own Testcontainers
+// MySQL is not standing in for). `require.main === module` is true only
+// when this file is executed directly (`node dist/main.js`), never on
+// import from another module — verified in this repo's `type: "commonjs"`
+// package (apps/orders/package.json), which is why this guard, not an
+// import.meta.url ESM equivalent, is correct here.
+if (require.main === module) {
+  void bootstrap();
+}

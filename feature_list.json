@@ -346,7 +346,7 @@
       "phase": 13,
       "title": "Gateway REST implementing openapi.yaml + JWT + NATS RPC client",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "contract test asserts no drift from openapi.yaml",
         "RPC timeouts mapped to HTTP status codes",
