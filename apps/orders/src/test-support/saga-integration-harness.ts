@@ -45,6 +45,13 @@ import { IdempotentConsumer } from '../infrastructure/messaging/idempotent-consu
 import { createKafkaClient } from '../infrastructure/outbox/create-kafka-client';
 import { KafkaFactPublisher } from '../infrastructure/outbox/kafka-fact-publisher';
 import { BILLING_FACTS_TOPIC, FULFILLMENT_FACTS_TOPIC, ORDERS_FACTS_TOPIC } from '../infrastructure/outbox/kafka.config';
+import {
+  FACT_RETRY_DISPATCHER,
+  FactRetryDispatcher,
+  REAL_DELAY,
+  type FactRetryPolicy,
+} from '../infrastructure/messaging/fact-retry-dispatcher';
+import { KafkaDlqPublisher } from '../infrastructure/messaging/kafka-dlq-publisher';
 import { OutboxRelay } from '../infrastructure/outbox/outbox-relay';
 import {
   createTopic,
@@ -62,6 +69,7 @@ import {
   SagaCommandDispatcher,
   type SagaCommandDispatcherConfig,
 } from '../infrastructure/saga/saga-command-dispatcher';
+import { SagaFirstParkDeadLetterHandler } from '../infrastructure/saga/saga-first-park-dead-letter-handler';
 import {
   SAGA_COMMAND_SWEEPER_CONFIG,
   SagaCommandSweeperService,
@@ -74,9 +82,16 @@ export const SAGA_CONSUMER_GROUP = 'orders.saga';
 export interface SagaIntegrationHarnessOptions {
   readonly dispatcherConfig?: Partial<SagaCommandDispatcherConfig>;
   readonly sweeperConfig?: Partial<SagaCommandSweeperConfig>;
+  /** Fast defaults for the retry-then-DLQ wrapper (OR1) — `{ maxAttempts: 3, backoffBaseMs: 50 }`, so "exhausted attempts ⇒ dead-lettered" resolves in well under a second. */
+  readonly factRetryConfig?: Partial<FactRetryPolicy>;
   /** Wraps the real `OrderRepository` before it is wired into the app — the SO1/E3 specs use this to inject a controllable, transient failure without touching the shared fixture plumbing. */
   readonly wrapOrderRepository?: (real: OrderRepository) => OrderRepository;
 }
+
+/** `<topic>.dlq` — same convention `FactRetryDispatcher`/`KafkaDlqPublisher` construct at runtime (OR1). */
+export const ORDERS_FACTS_DLQ_TOPIC = `${ORDERS_FACTS_TOPIC}.dlq`;
+export const FULFILLMENT_FACTS_DLQ_TOPIC = `${FULFILLMENT_FACTS_TOPIC}.dlq`;
+export const BILLING_FACTS_DLQ_TOPIC = `${BILLING_FACTS_TOPIC}.dlq`;
 
 export interface PreparedSagaFixtures {
   readonly mysqlFixture: OrdersTestFixture;
@@ -93,6 +108,8 @@ export interface PreparedSagaFixtures {
   readonly testNatsConnection: NatsConnection;
   readonly dispatcherConfig: SagaCommandDispatcherConfig;
   readonly sweeperConfig: SagaCommandSweeperConfig;
+  readonly factRetryDispatcher: FactRetryDispatcher;
+  readonly dlqPublisher: KafkaDlqPublisher;
   readonly resolveOrderId: ResolveOrderId;
   placeOrder(overrides?: Partial<PlaceOrderInput>): Promise<Order>;
   placeOrderAndRelay(overrides?: Partial<PlaceOrderInput>): Promise<Order>;
@@ -112,6 +129,10 @@ export interface SagaIntegrationHarness {
   readonly billingFactPublisher: KafkaFactPublisher;
   /** A NATS connection the test itself owns — for stub responders or direct probes. */
   readonly testNatsConnection: NatsConnection;
+  /** The SAME instance wired into `SagaFactsController` (OR1) — exposed so a spec can assert on its policy/config without re-deriving it. */
+  readonly factRetryDispatcher: FactRetryDispatcher;
+  /** The SAME `DlqPublisher` instance the app's own `SagaCommandDispatcher`/`FactRetryDispatcher` publish through (OR1/OR3) — exposed so a spec can build a second, real collaborator set (e.g. a manual "resume" `SagaCommandDispatcher`) without opening a second Kafka client. */
+  readonly dlqPublisher: KafkaDlqPublisher;
   readonly resolveOrderId: ResolveOrderId;
   placeOrder(overrides?: Partial<PlaceOrderInput>): Promise<Order>;
   /** Places an order AND relays its `order.placed.v1` fact over real Kafka via the real `OutboxRelay` — the harness's "an order already exists and the saga's first fact has arrived" fixture. */
@@ -164,6 +185,12 @@ export async function prepareSagaFixtures(options: SagaIntegrationHarnessOptions
   await createTopic(kafkaFixture.brokers, ORDERS_FACTS_TOPIC);
   await createTopic(kafkaFixture.brokers, FULFILLMENT_FACTS_TOPIC);
   await createTopic(kafkaFixture.brokers, BILLING_FACTS_TOPIC);
+  // OR1's `.dlq` companions — created up front (auto-creation is disabled
+  // on this fixture, kafka-test-fixture.ts's own comment) so ANY saga spec
+  // that ever exhausts a fact's retries has somewhere to publish to.
+  await createTopic(kafkaFixture.brokers, ORDERS_FACTS_DLQ_TOPIC);
+  await createTopic(kafkaFixture.brokers, FULFILLMENT_FACTS_DLQ_TOPIC);
+  await createTopic(kafkaFixture.brokers, BILLING_FACTS_DLQ_TOPIC);
 
   const clock = new FakeClock(new Date('2026-08-21T09:00:00.000Z'));
   const unitOfWork: UnitOfWork = new DrizzleUnitOfWork(mysqlFixture.db);
@@ -183,6 +210,12 @@ export async function prepareSagaFixtures(options: SagaIntegrationHarnessOptions
     createKafkaClient({ brokers: kafkaFixture.brokers, clientId: 'otc-billing-test-stub' }),
     BILLING_FACTS_TOPIC,
   );
+
+  const dlqPublisher = new KafkaDlqPublisher(
+    createKafkaClient({ brokers: kafkaFixture.brokers, clientId: 'otc-orders-test-dlq' }),
+  );
+  const factRetryConfig: FactRetryPolicy = { maxAttempts: 3, backoffBaseMs: 50, ...options.factRetryConfig };
+  const factRetryDispatcher = new FactRetryDispatcher(clock, REAL_DELAY, dlqPublisher, factRetryConfig);
 
   const [appNatsConnection, testNatsConnection] = await Promise.all([natsFixture.connect(), natsFixture.connect()]);
 
@@ -246,6 +279,8 @@ export async function prepareSagaFixtures(options: SagaIntegrationHarnessOptions
     testNatsConnection,
     dispatcherConfig,
     sweeperConfig,
+    factRetryDispatcher,
+    dlqPublisher,
     resolveOrderId,
     placeOrder,
     placeOrderAndRelay,
@@ -253,6 +288,7 @@ export async function prepareSagaFixtures(options: SagaIntegrationHarnessOptions
       await ordersFactPublisher.disconnect();
       await fulfillmentFactPublisher.disconnect();
       await billingFactPublisher.disconnect();
+      await dlqPublisher.disconnect();
       await appNatsConnection.close();
       await testNatsConnection.close();
       await mysqlFixture.teardown();
@@ -279,10 +315,14 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
     testNatsConnection,
     dispatcherConfig,
     sweeperConfig,
+    factRetryDispatcher,
+    dlqPublisher,
     resolveOrderId,
     placeOrder,
     placeOrderAndRelay,
   } = prepared;
+
+  const firstParkHandler = new SagaFirstParkDeadLetterHandler(dlqPublisher, unitOfWork, orders, clock);
 
   const moduleRef = await Test.createTestingModule({
     imports: [CqrsModule.forRoot()],
@@ -293,6 +333,7 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
       { provide: ORDER_REPOSITORY, useValue: orders },
       { provide: SAGA_COMMAND_STORE, useValue: commandStore },
       { provide: SAGA_COMMANDS, useValue: new NatsSagaCommandsAdapter(appNatsConnection, dispatcherConfig.timeoutMs) },
+      { provide: FACT_RETRY_DISPATCHER, useValue: factRetryDispatcher },
       {
         provide: SagaFactHandler,
         useFactory: () =>
@@ -310,6 +351,9 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
             new NatsSagaCommandsAdapter(appNatsConnection, dispatcherConfig.timeoutMs),
             commandStore,
             dispatcherConfig,
+            undefined,
+            undefined,
+            firstParkHandler,
           ),
       },
       { provide: SAGA_COMMAND_SWEEPER_CONFIG, useValue: sweeperConfig },
@@ -364,6 +408,8 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
     fulfillmentFactPublisher,
     billingFactPublisher,
     testNatsConnection,
+    factRetryDispatcher,
+    dlqPublisher,
     resolveOrderId,
     placeOrder,
     placeOrderAndRelay,

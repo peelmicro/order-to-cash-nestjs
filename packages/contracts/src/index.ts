@@ -56,7 +56,8 @@ export type { Envelope, FactHeaders, DeadLetterHeaders } from './generated/async
 
 // The thirteen domain facts — payload alone (for constructing one inside a
 // domain aggregate) and the full envelope+payload event shape (for what
-// travels on the wire and what a consumer receives).
+// travels on the wire and what a consumer receives). Fourteen facts
+// (feature 27 minted `order.saga_failed.v1`, R29's dead-letter clause).
 export type {
   OrderPlacedPayload,
   OrderPlacedEvent,
@@ -84,6 +85,8 @@ export type {
   OrderCompletedEvent,
   OrderCancelledPayload,
   OrderCancelledEvent,
+  OrderSagaFailedPayload,
+  OrderSagaFailedEvent,
 } from './generated/asyncapi.types.js';
 
 // RPC common structures (R29, R57, R58) and the request/reply payload pair

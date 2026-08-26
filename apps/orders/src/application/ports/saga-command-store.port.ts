@@ -6,6 +6,7 @@
 // transaction, dispatch"); `markSent`/`park` run outside any transaction,
 // after a dispatch attempt has settled.
 import type { OrderNumber, UniqueId } from '@otc/shared-kernel';
+import type { Envelope } from '@otc/contracts';
 import type { TransactionContext } from './unit-of-work.port.js';
 import type { SagaCommandPayload } from '../saga-command-payloads.js';
 import type { SagaCommandKind } from '../saga-steps.js';
@@ -21,6 +22,15 @@ export interface EnqueueSagaCommandInput {
   readonly command: SagaCommandKind;
   readonly payload: SagaCommandPayload;
   readonly triggeringEventId: UniqueId;
+  /**
+   * The full, unmodified `Envelope` `SagaFactHandler.handle` already holds
+   * at `enqueue` time, and the Kafka topic it arrived on — captured
+   * verbatim so `SagaCommandDispatcher.park(...)` can dead-letter the
+   * triggering fact without a cross-service read (R29's dead-letter
+   * clause / OR3, `observability_reliability` design.md §4.2).
+   */
+  readonly triggeringEventEnvelope: Envelope;
+  readonly triggeringEventTopic: string;
 }
 
 export interface SagaCommandRecord {
@@ -30,8 +40,12 @@ export interface SagaCommandRecord {
   readonly command: SagaCommandKind;
   readonly payload: SagaCommandPayload;
   readonly triggeringEventId: UniqueId;
+  readonly triggeringEventEnvelope: Envelope;
+  readonly triggeringEventTopic: string;
   readonly status: SagaCommandStatus;
   readonly attempts: number;
+  /** OR3's "at most once per row" marker — `null` until the row's first park. */
+  readonly deadLetteredAt: Date | null;
 }
 
 /** `enqueued` — a new row was inserted; `already_owed` — a row for `(order_id, command)` already existed and was left untouched (D1: a distinct-eventId duplicate of a fact whose precondition still holds must not crash the consumer). Either outcome means the same thing to the caller: the command is owed and the existing row is the one to (re-)dispatch. */
@@ -57,4 +71,15 @@ export interface SagaCommandStore {
 
   /** `pending -> parked` on exhausted in-line attempts (SO5) — same conditional-update safety as `markSent`. */
   park(id: UniqueId, attempts: number, lastError: string, nextAttemptAt: Date): Promise<boolean>;
+
+  /**
+   * OR3's "at most once" claim — `UPDATE ... SET dead_lettered_at = NOW()
+   * WHERE id = ? AND dead_lettered_at IS NULL`, a conditional update with
+   * the same race-safety shape as `markSent`/`park`. Returns `true` only
+   * for the ONE caller whose call actually set the column (this row's
+   * first park); every later re-park of the same row — another exhausted
+   * sweep cycle — returns `false`, so the caller knows not to repeat the
+   * DLQ publish or the `order.saga_failed.v1` emission.
+   */
+  claimDeadLetter(id: UniqueId): Promise<boolean>;
 }

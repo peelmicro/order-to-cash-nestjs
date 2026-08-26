@@ -25,7 +25,13 @@ import {
   OrderTransitionNotAllowedError,
   UnknownOrderLineError,
 } from './order-errors.js';
-import { orderCancelledEvent, orderCompletedEvent, orderConfirmedEvent, orderPlacedEvent } from './order-events.js';
+import {
+  orderCancelledEvent,
+  orderCompletedEvent,
+  orderConfirmedEvent,
+  orderPlacedEvent,
+  orderSagaFailedEvent,
+} from './order-events.js';
 import { OrderLine } from './order-line.js';
 import type { OrderSnapshot } from './order-snapshot.js';
 import { isOrderStatus, ORDER_STATUSES, type OrderStatus } from './order-status.js';
@@ -46,6 +52,13 @@ export interface PlaceOrderLineInput {
   readonly quantity: Quantity;
   readonly unitPrice: Money;
   readonly lineDiscount: Money;
+}
+
+/** `Order.recordSagaFailure`'s input — R29's dead-letter clause / OR3 (`observability_reliability` design.md §4.2). */
+export interface SagaFailureInput {
+  readonly command: string;
+  readonly attempts: number;
+  readonly lastError: string;
 }
 
 export interface PlaceOrderInput {
@@ -409,6 +422,21 @@ export class Order extends AggregateRoot<Order> {
       propsPatch: { cancellationReason: reason },
       buildEvent: (order, transitionCtx) => orderCancelledEvent(order, reason, compensationSteps, transitionCtx),
     });
+  }
+
+  /**
+   * R29's dead-letter clause / OR3 — appends exactly one
+   * `order.saga_failed.v1` domain event and mutates NO other field
+   * (status, lines, totals all unchanged). Symmetric to how `cancel(...)`
+   * appends `OrderCancelled` — but this is not a status transition at
+   * all: the order stays in its last legal status, `SO5`'s indefinite
+   * capped-backoff retry of the underlying command is unaffected, and a
+   * later re-park of the same row calls this method NOT AGAIN (the
+   * caller's own "at most once per row" guard, `dead_lettered_at IS
+   * NULL`, decides whether this method is called at all).
+   */
+  recordSagaFailure(input: SagaFailureInput, ctx: TransitionContext): void {
+    this.addDomainEvent(orderSagaFailedEvent(this, input, ctx));
   }
 
   // ── The transition funnel every command method above uses ───────────────

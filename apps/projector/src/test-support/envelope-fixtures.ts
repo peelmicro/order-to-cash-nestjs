@@ -14,6 +14,7 @@ import type {
   OrderConfirmedPayload,
   OrderDespatchedPayload,
   OrderPlacedPayload,
+  OrderSagaFailedPayload,
   PaymentReceivedPayload,
   StockRejectedPayload,
   StockReleasedPayload,
@@ -205,7 +206,18 @@ export function orderCancelledEnvelope(overrides: Partial<Envelope> = {}): Envel
   return makeEnvelope('order.cancelled.v1', payload, overrides);
 }
 
-/** All thirteen builders, keyed by `eventType` — the closed set PR2's structural spec cross-checks against `domain-model.md` §7.2. */
+export function orderSagaFailedEnvelope(overrides: Partial<Envelope> = {}): Envelope {
+  const payload: OrderSagaFailedPayload = {
+    orderReference: 'ORD-000001',
+    command: 'stock.reserve',
+    attempts: 3,
+    lastError: 'SagaCommandTransportError: no responders',
+    failedAt: '2026-08-24T16:00:00.000Z',
+  };
+  return makeEnvelope('order.saga_failed.v1', payload, overrides);
+}
+
+/** All fourteen builders, keyed by `eventType` — the closed set PR2's structural spec cross-checks against `domain-model.md` §7.2. */
 export const ALL_FACT_ENVELOPE_BUILDERS: Readonly<Record<string, (overrides?: Partial<Envelope>) => Envelope>> = {
   'order.placed.v1': orderPlacedEnvelope,
   'stock.reserved.v1': stockReservedEnvelope,
@@ -220,4 +232,5 @@ export const ALL_FACT_ENVELOPE_BUILDERS: Readonly<Record<string, (overrides?: Pa
   'payment.received.v1': paymentReceivedEnvelope,
   'order.completed.v1': orderCompletedEnvelope,
   'order.cancelled.v1': orderCancelledEnvelope,
+  'order.saga_failed.v1': orderSagaFailedEnvelope,
 };

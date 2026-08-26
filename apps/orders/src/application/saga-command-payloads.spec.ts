@@ -75,6 +75,7 @@ async function placeRealOrder(command: Partial<PlaceOrderCommand>): Promise<Orde
     },
     findById: async () => null,
     findByReference: async () => null,
+    findByRequestId: async () => null,
   };
   const orderNumbers: OrderNumberAllocator = { next: async () => OrderNumber.fromSequence(1) };
   const referenceData: OrderReferenceDataPort = { resolve: async () => fakeReferenceData() };

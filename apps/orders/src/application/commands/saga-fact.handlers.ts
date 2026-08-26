@@ -34,7 +34,7 @@ export class HandleOrderPlacedFactHandler implements ICommandHandler<HandleOrder
   ) {}
 
   async execute(command: HandleOrderPlacedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope);
+    const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
       this.eventBus.publish(new OrderPlacedFactRecorded(orderId, command.envelope.correlationId));
@@ -53,7 +53,7 @@ export class HandleStockReservedFactHandler
   ) {}
 
   async execute(command: HandleStockReservedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope);
+    const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
       this.eventBus.publish(new OrderMarkedStockReserved(orderId, command.envelope.correlationId));
@@ -70,7 +70,7 @@ export class HandleStockRejectedFactHandler
 
   // Cancel path A (R26) — no command is ever owed, so no event to publish.
   async execute(command: HandleStockRejectedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope);
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 
@@ -84,7 +84,7 @@ export class HandleCreditApprovedFactHandler
   ) {}
 
   async execute(command: HandleCreditApprovedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope);
+    const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
       this.eventBus.publish(new OrderConfirmed(orderId, command.envelope.correlationId));
@@ -103,7 +103,7 @@ export class HandleCreditRejectedFactHandler
   ) {}
 
   async execute(command: HandleCreditRejectedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope);
+    const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
       this.eventBus.publish(new CreditRejectionRecorded(orderId, command.envelope.correlationId));
@@ -120,7 +120,7 @@ export class HandleStockReleasedFactHandler
 
   // Cancel path B's terminal fact (R27/R28) — no command is ever owed.
   async execute(command: HandleStockReleasedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope);
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 
@@ -134,7 +134,7 @@ export class HandleOrderDespatchedFactHandler
   ) {}
 
   async execute(command: HandleOrderDespatchedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope);
+    const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
       this.eventBus.publish(new OrderMarkedDespatched(orderId, command.envelope.correlationId));
@@ -151,7 +151,7 @@ export class HandleInvoiceIssuedFactHandler
 
   // R23 — the saga now waits for the outside world; no command is owed.
   async execute(command: HandleInvoiceIssuedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope);
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 
@@ -162,7 +162,7 @@ export class HandlePaymentReceivedFactHandler
   constructor(@Inject(SagaFactHandler) private readonly handler: SagaFactHandler) {}
 
   async execute(command: HandlePaymentReceivedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope);
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 
@@ -174,7 +174,7 @@ export class HandleCreditReleasedFactHandler
 
   // R24 — closes the saga (order.completed.v1); no further command is owed.
   async execute(command: HandleCreditReleasedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope);
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 

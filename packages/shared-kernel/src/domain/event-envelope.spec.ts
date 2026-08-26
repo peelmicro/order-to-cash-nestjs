@@ -43,11 +43,16 @@ describe('DomainEventEnvelope — R11: complete envelope, eventType pattern', ()
       'payment.received.v1',
       'order.completed.v1',
       'order.cancelled.v1',
+      'order.saga_failed.v1',
     ];
 
     for (const eventType of eventTypes) {
       expect(() => createDomainEvent({ ...validParams(), eventType })).not.toThrow();
     }
+  });
+
+  it('accepts an underscore in the <fact> segment after its first letter (order.saga_failed.v1, R29\'s dead-letter clause)', () => {
+    expect(() => createDomainEvent({ ...validParams(), eventType: 'order.saga_failed.v1' })).not.toThrow();
   });
 
   it('accepts a version suffix beyond v1 (e.g. v2, v10) as a genuinely new type', () => {

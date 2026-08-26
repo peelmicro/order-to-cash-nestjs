@@ -97,6 +97,10 @@ class FakeOrderRepository implements OrderRepository {
     throw new Error('not used by this test');
   }
 
+  async findByRequestId(): Promise<Order | null> {
+    throw new Error('not used by this test');
+  }
+
   async save(order: Order): Promise<void> {
     this.savedOrders.push(order);
     this.byId.set(order.id.value, order);
@@ -125,6 +129,10 @@ class FakeSagaCommandStore implements SagaCommandStore {
   }
 
   async park(): Promise<boolean> {
+    throw new Error('not used by this test');
+  }
+
+  async claimDeadLetter(): Promise<boolean> {
     throw new Error('not used by this test');
   }
 }
@@ -156,7 +164,7 @@ describe('SagaFactHandler', () => {
     idempotency.duplicateEventIds.add('dup-event-id');
     const envelope = fact({ eventId: 'dup-event-id' });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'duplicate' });
     expect(orders.savedOrders).toHaveLength(0);
@@ -168,7 +176,7 @@ describe('SagaFactHandler', () => {
     const orderId = UniqueId.generate();
     const envelope = fact({ eventType: 'stock.reserved.v1', correlationId: orderId.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'ignored' });
     expect(ignoredFacts.recorded).toHaveLength(1);
@@ -191,7 +199,7 @@ describe('SagaFactHandler', () => {
     // The order is `placed`; `credit.approved.v1` expects `stock_reserved`.
     const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'ignored' });
     expect(ignoredFacts.recorded).toHaveLength(1);
@@ -214,7 +222,7 @@ describe('SagaFactHandler', () => {
     orders.seed(order);
     const envelope = fact({ eventType: 'order.placed.v1', correlationId: order.id.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed', enqueued: 'stock.reserve' });
     expect(orders.savedOrders).toHaveLength(1);
@@ -234,7 +242,7 @@ describe('SagaFactHandler', () => {
     commandStore.nextEnqueueOutcome = 'already_owed';
     const envelope = fact({ eventType: 'order.placed.v1', correlationId: order.id.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed', enqueued: 'stock.reserve' });
     expect(commandStore.enqueued).toHaveLength(1);
@@ -250,7 +258,7 @@ describe('SagaFactHandler', () => {
     orders.seed(order);
     const envelope = fact({ eventType: 'invoice.issued.v1', correlationId: order.id.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(orders.savedOrders).toHaveLength(1);
@@ -263,7 +271,7 @@ describe('SagaFactHandler', () => {
     orders.seed(order);
     const envelope = fact({ eventType: 'stock.rejected.v1', correlationId: order.id.value });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(orders.savedOrders).toHaveLength(1);
@@ -275,7 +283,7 @@ describe('SagaFactHandler', () => {
   it('SO2 — a skip-mapped event type (self-produced fact) returns processed with no I/O at all, not even dedup', async () => {
     const envelope = fact({ eventType: 'order.confirmed.v1' });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(idempotency.seen).toHaveLength(0);
@@ -286,7 +294,7 @@ describe('SagaFactHandler', () => {
   it('an unmapped event type also short-circuits with no I/O', async () => {
     const envelope = fact({ eventType: 'something.unmapped.v1' });
 
-    const result = await handler.handle(envelope);
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(idempotency.seen).toHaveLength(0);

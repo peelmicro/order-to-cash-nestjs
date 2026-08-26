@@ -1,3 +1,6 @@
+// A5 (observability_reliability design.md §4.3/§6): OTel bootstrap FIRST,
+// before every other import — see apps/orders/src/infrastructure/observability/tracing.ts's header comment for why.
+import './infrastructure/observability/tracing';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Transport, type MicroserviceOptions } from '@nestjs/microservices';

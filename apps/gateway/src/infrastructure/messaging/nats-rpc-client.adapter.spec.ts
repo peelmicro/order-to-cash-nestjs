@@ -4,11 +4,26 @@
 // to prove over the orders-side one it is copied from — that a business
 // `RpcError` reply is thrown as `RpcBusinessError` carrying the ORIGINAL
 // `code`/`details`, never collapsed to a generic transport error.
-import { ErrorCode, JSONCodec, NatsError } from 'nats';
+import { ErrorCode, JSONCodec, NatsError, type MsgHdrs } from 'nats';
 import type { RpcError } from '@otc/contracts';
-import { describe, expect, it } from 'vitest';
+import { context, propagation, trace, type TextMapGetter } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RpcBusinessError, RpcTimeoutError, RpcTransportError, type RpcCallMeta } from '../../application/ports/rpc-client.port';
 import { NatsRpcClientAdapter, type NatsRequestClient } from './nats-rpc-client.adapter';
+
+// Test-only extraction helper — the Gateway's own `trace-context.ts`
+// exports injection only (it has no NATS RESPONDER of its own; extraction
+// is Orders' `orders-create.controller.ts`'s job, proven there). Same
+// getter shape as `apps/orders/src/infrastructure/observability/trace-context.ts`'s
+// `NATS_GETTER`.
+const NATS_GETTER: TextMapGetter<MsgHdrs> = {
+  keys: (carrier) => carrier.keys(),
+  get: (carrier, key) => (carrier.has(key) ? carrier.get(key) : undefined),
+};
 
 function fakeClient(handler: NatsRequestClient['request']): NatsRequestClient {
   return { request: handler };
@@ -88,5 +103,45 @@ describe('NatsRpcClientAdapter', () => {
     await adapter.call('some.subject', {}, META, 250);
 
     expect(seenTimeout).toBe(250);
+  });
+});
+
+describe('NatsRpcClientAdapter — trace propagation (OR4, R57, design.md §4.3)', () => {
+  let provider: NodeTracerProvider;
+  let contextManager: AsyncLocalStorageContextManager;
+
+  beforeAll(() => {
+    const exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+    contextManager = new AsyncLocalStorageContextManager();
+    provider.register({ contextManager, propagator: new W3CTraceContextPropagator() });
+  });
+
+  afterAll(async () => {
+    contextManager.disable();
+    await provider.shutdown();
+  });
+
+  it('injects the active span\'s REAL traceId — a span extracted from the sent headers has the SAME traceId, not merely "a header is present" — the trace that would come from HttpInstrumentation\'s own inbound span in production', async () => {
+    const replyCodec = JSONCodec<{ ok: true }>();
+    let capturedHeaders: MsgHdrs | undefined;
+    const client = fakeClient(async (_subject, _data, opts) => {
+      capturedHeaders = opts.headers;
+      return { data: replyCodec.encode({ ok: true }) };
+    });
+    const adapter = new NatsRpcClientAdapter(client, 5000);
+
+    const span = provider.getTracer('test').startSpan('test-inbound-http-span');
+    const { traceId } = span.spanContext();
+
+    await context.with(trace.setSpan(context.active(), span), () => adapter.call('some.subject', {}, META));
+    span.end();
+
+    expect(capturedHeaders).toBeDefined();
+    const extracted = propagation.extract(context.active(), capturedHeaders!, NATS_GETTER);
+    const extractedSpanContext = trace.getSpanContext(extracted);
+    expect(extractedSpanContext).toBeDefined();
+    expect(extractedSpanContext!.traceId).toBe(traceId);
+    expect(extractedSpanContext!.traceId).toMatch(/^[0-9a-f]{32}$/);
   });
 });

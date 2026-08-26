@@ -4,13 +4,26 @@
 // marks sent, never retried), and the stale-hop no-op (design.md §5.5).
 import { UniqueId, OrderNumber } from '@otc/shared-kernel';
 import { describe, expect, it, vi } from 'vitest';
+import type { Envelope } from '@otc/contracts';
 import type { SagaCommandStore, SagaCommandRecord } from '../../application/ports/saga-command-store.port';
 import {
   SagaCommandTimeoutError,
   SagaCommandTransportError,
   type SagaCommandsPort,
 } from '../../application/ports/saga-commands.port';
-import { DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, SagaCommandDispatcher } from './saga-command-dispatcher';
+import { DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, SagaCommandDispatcher, type HandlesFirstPark } from './saga-command-dispatcher';
+
+function triggeringEnvelope(): Envelope {
+  return {
+    eventId: UniqueId.generate().value,
+    eventType: 'order.placed.v1',
+    aggregateId: UniqueId.generate().value,
+    correlationId: UniqueId.generate().value,
+    causationId: UniqueId.generate().value,
+    occurredAt: '2026-08-26T09:00:00.000Z',
+    payload: {},
+  } as unknown as Envelope;
+}
 
 function pendingRow(overrides: Partial<SagaCommandRecord> = {}): SagaCommandRecord {
   return {
@@ -25,21 +38,30 @@ function pendingRow(overrides: Partial<SagaCommandRecord> = {}): SagaCommandReco
       lines: [{ productCode: 'PRD-0001', units: 1 }],
     },
     triggeringEventId: UniqueId.generate(),
+    triggeringEventEnvelope: triggeringEnvelope(),
+    triggeringEventTopic: 'otc.orders.facts.v1',
     status: 'pending',
     attempts: 0,
+    deadLetteredAt: null,
     ...overrides,
   };
 }
 
-function fakeStore(row: SagaCommandRecord | null): SagaCommandStore & {
+function fakeStore(
+  row: SagaCommandRecord | null,
+  options: { parkReturns?: boolean; claimDeadLetterReturns?: boolean } = {},
+): SagaCommandStore & {
   markSentCalls: UniqueId[];
   parkCalls: Array<{ id: UniqueId; attempts: number; lastError: string; nextAttemptAt: Date }>;
+  claimDeadLetterCalls: UniqueId[];
 } {
   const markSentCalls: UniqueId[] = [];
   const parkCalls: Array<{ id: UniqueId; attempts: number; lastError: string; nextAttemptAt: Date }> = [];
+  const claimDeadLetterCalls: UniqueId[] = [];
   return {
     markSentCalls,
     parkCalls,
+    claimDeadLetterCalls,
     async enqueue() {
       throw new Error('not used by this test');
     },
@@ -55,7 +77,21 @@ function fakeStore(row: SagaCommandRecord | null): SagaCommandStore & {
     },
     async park(id, attempts, lastError, nextAttemptAt) {
       parkCalls.push({ id, attempts, lastError, nextAttemptAt });
-      return true;
+      return options.parkReturns ?? true;
+    },
+    async claimDeadLetter(id) {
+      claimDeadLetterCalls.push(id);
+      return options.claimDeadLetterReturns ?? true;
+    },
+  };
+}
+
+function fakeFirstParkHandler(): HandlesFirstPark & { calls: Array<{ row: SagaCommandRecord; attempts: number; lastError: string }> } {
+  const calls: Array<{ row: SagaCommandRecord; attempts: number; lastError: string }> = [];
+  return {
+    calls,
+    async onFirstPark(row, context) {
+      calls.push({ row, attempts: context.attempts, lastError: context.lastError });
     },
   };
 }
@@ -205,5 +241,74 @@ describe('SagaCommandDispatcher — SO4 retry policy', () => {
 
     expect(outcome).toBe('sent');
     expect(store.markSentCalls).toEqual([row.id]);
+  });
+});
+
+// R29's dead-letter clause / OR3 (observability_reliability design.md §4.2)
+describe('SagaCommandDispatcher — OR3 (the onFirstPark hook)', () => {
+  it('calls onFirstPark exactly once, with the row and the accumulated attempts/lastError, when the row parks for the first time', async () => {
+    const row = pendingRow();
+    const store = fakeStore(row);
+    const reserveStock = vi.fn().mockRejectedValue(new SagaCommandTransportError('fulfillment.stock.reserve', 'no responders'));
+    const firstPark = fakeFirstParkHandler();
+    const dispatcher = new SagaCommandDispatcher(
+      fakePort({ reserveStock }),
+      store,
+      DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG,
+      noDelay,
+      undefined,
+      firstPark,
+    );
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.reserve');
+
+    expect(outcome).toBe('parked');
+    expect(store.claimDeadLetterCalls).toEqual([row.id]);
+    expect(firstPark.calls).toHaveLength(1);
+    expect(firstPark.calls[0]?.row.id).toEqual(row.id);
+    expect(firstPark.calls[0]?.attempts).toBe(3);
+    expect(firstPark.calls[0]?.lastError).toContain('no responders');
+  });
+
+  it('does NOT call onFirstPark when claimDeadLetter reports the row already dead-lettered (a later re-park of the same row)', async () => {
+    const row = pendingRow();
+    const store = fakeStore(row, { claimDeadLetterReturns: false });
+    const reserveStock = vi.fn().mockRejectedValue(new SagaCommandTransportError('fulfillment.stock.reserve', 'still down'));
+    const firstPark = fakeFirstParkHandler();
+    const dispatcher = new SagaCommandDispatcher(
+      fakePort({ reserveStock }),
+      store,
+      DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG,
+      noDelay,
+      undefined,
+      firstPark,
+    );
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.reserve');
+
+    expect(outcome).toBe('parked');
+    expect(store.claimDeadLetterCalls).toEqual([row.id]); // still claimed-attempted...
+    expect(firstPark.calls).toHaveLength(0); // ...but never called, because the claim failed
+  });
+
+  it('does NOT call claimDeadLetter or onFirstPark when park() itself reports no transition (the row was already sent by a racing dispatcher)', async () => {
+    const row = pendingRow();
+    const store = fakeStore(row, { parkReturns: false });
+    const reserveStock = vi.fn().mockRejectedValue(new SagaCommandTransportError('fulfillment.stock.reserve', 'no responders'));
+    const firstPark = fakeFirstParkHandler();
+    const dispatcher = new SagaCommandDispatcher(
+      fakePort({ reserveStock }),
+      store,
+      DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG,
+      noDelay,
+      undefined,
+      firstPark,
+    );
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.reserve');
+
+    expect(outcome).toBe('parked');
+    expect(store.claimDeadLetterCalls).toHaveLength(0);
+    expect(firstPark.calls).toHaveLength(0);
   });
 });

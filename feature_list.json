@@ -369,15 +369,19 @@
       "id": 27,
       "name": "observability_reliability",
       "phase": 14,
-      "title": "Terminus health checks, OTel propagation through NATS and Kafka, structured logging, retry + DLQ",
+      "title": "Terminus health checks, OTel propagation through NATS and Kafka, structured logging, retry + DLQ, and orders.create requestId idempotent replay",
       "sdd": true,
-      "status": "pending",
+      "status": "spec_ready",
       "acceptance": [
         "one trace spans HTTP -> NATS -> MySQL -> Kafka -> consumers",
         "correlationId in every log line",
         "failed processing lands on <topic>.dlq after N attempts",
-        "readiness includes DB, Kafka and NATS indicators"
-      ]
+        "readiness includes DB, Kafka and NATS indicators",
+        "a repeated orders.create request carrying the same requestId returns the ORIGINAL order (same orderId/orderReference/money fields), not a second placement",
+        "concurrent duplicate requests for the same requestId never place two orders",
+        "requestId remains optional: omitting it places a normal, non-deduplicated order"
+      ],
+      "notes": "Folded feature 39 (orders_idempotent_replay) into this feature's spec pass, 2026-08-26, leader decision on human request \u2014 retry-and-recover-from-a-bad-fact (this feature's original scope) and retry-and-not-duplicate-an-order (39's scope) are adjacent enough to spec together rather than in two passes, and feature 25's F1 (a retry after an ambiguous gateway response placing a second real order) is the same failure shape this closes for orders.create directly. 39's own provenance, preserved: opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) did not implement it \u2014 requestId was accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass at the time because it was schema-affecting, not a local bug fix."
     },
     {
       "id": 28,
@@ -522,20 +526,6 @@
       ]
     },
     {
-      "id": 39,
-      "name": "orders_idempotent_replay",
-      "phase": 8,
-      "title": "orders.create requestId idempotent replay (asyncapi.yaml OrdersCreateRequestPayload.requestId)",
-      "sdd": true,
-      "status": "pending",
-      "acceptance": [
-        "a repeated orders.create request carrying the same requestId returns the ORIGINAL order (same orderId/orderReference/money fields), not a second placement",
-        "concurrent duplicate requests for the same requestId never place two orders",
-        "requestId remains optional: omitting it places a normal, non-deduplicated order"
-      ],
-      "notes": "Opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) does not implement it — requestId is accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass because it is schema-affecting, not a local bug fix."
-    },
-    {
       "id": 40,
       "name": "orders_catalog_responder",
       "phase": 13,
@@ -544,7 +534,7 @@
       "status": "pending",
       "acceptance": [
         "GET /catalog/products, /catalog/retailers, /catalog/companies return real data through the Gateway",
-        "no new bounded context — domain-model.md already assigns the reference catalogue to Orders",
+        "no new bounded context \u2014 domain-model.md already assigns the reference catalogue to Orders",
         "reuses the same reference-data lookup PlaceOrderHandler already calls, exposed as a query rather than duplicated"
       ]
     },
@@ -557,7 +547,7 @@
       "status": "pending",
       "acceptance": [
         "POST /orders/{id}/cancel succeeds through the Gateway for a cancellable order",
-        "reuses the Order aggregate's existing cancelled state and cancellationReason invariant — no new domain modeling",
+        "reuses the Order aggregate's existing cancelled state and cancellationReason invariant \u2014 no new domain modeling",
         "an order in a terminal state (invoiced, completed, already cancelled) is rejected with a domain error, not a 503",
         "the operator note from CancelOrderRequest lands on the read-model timeline"
       ]

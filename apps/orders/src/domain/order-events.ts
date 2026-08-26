@@ -14,9 +14,10 @@ import type {
   OrderConfirmedPayload,
   OrderLine as OrderLinePayload,
   OrderPlacedPayload,
+  OrderSagaFailedPayload,
 } from '@otc/contracts';
 import type { CancellationReason } from './order-cancellation-reason.js';
-import type { Order, TransitionContext } from './order.js';
+import type { Order, SagaFailureInput, TransitionContext } from './order.js';
 
 /**
  * `createDomainEvent`'s generic parameter (and `DomainEventEnvelope`'s own)
@@ -126,6 +127,36 @@ export function orderCancelledEvent(
     causationId: ctx.causationId,
     occurredAt: ctx.occurredAt,
     payload: payload as Indexed<OrderCancelledPayload>,
+  });
+}
+
+/**
+ * R29's dead-letter clause / OR3 (`observability_reliability` design.md
+ * §4.2) — the 14th fact. Purely diagnostic (no invariant depends on it).
+ * The caller is expected to pass the parked `saga_commands` row's own
+ * `triggering_event_id` as `ctx.causationId` — THIS fact's cause is the
+ * fact that originally owed the command that just exhausted, not the
+ * park transition itself.
+ */
+export function orderSagaFailedEvent(
+  order: Order,
+  input: SagaFailureInput,
+  ctx: TransitionContext,
+): DomainEventEnvelope<Indexed<OrderSagaFailedPayload>> {
+  const payload: OrderSagaFailedPayload = {
+    orderReference: order.orderReference.value,
+    command: input.command,
+    attempts: input.attempts,
+    lastError: input.lastError,
+    failedAt: ctx.occurredAt.toISOString(),
+  };
+  return createDomainEvent<Indexed<OrderSagaFailedPayload>>({
+    eventType: 'order.saga_failed.v1',
+    aggregateId: order.id,
+    correlationId: order.id,
+    causationId: ctx.causationId,
+    occurredAt: ctx.occurredAt,
+    payload: payload as Indexed<OrderSagaFailedPayload>,
   });
 }
 

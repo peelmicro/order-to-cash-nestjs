@@ -43,8 +43,11 @@ export const outbox = mysqlTable(
     // by the domain — not an identity (domain-model.md §8 rule 3): it
     // never leaves infrastructure, never appears in an envelope.
     seq: bigint('seq', { mode: 'number', unsigned: true }).autoincrement().unique(),
-    // W3C trace context, nullable, reserved for feature 27 (design.md
-    // §3.3). Written NULL by this feature; unused until the OTel SDK lands.
+    // W3C trace context, nullable (design.md §3.3). Populated by
+    // observability_reliability's A5 pass (`outbox-recorder.ts`'s
+    // `activeTraceParent()`) from the active OTel trace context at write
+    // time; still `NULL` for any row written by a caller with no active
+    // trace (a caller that never extracted/continued one).
     traceParent: varchar('trace_parent', { length: 64 }),
   },
   (table) => [

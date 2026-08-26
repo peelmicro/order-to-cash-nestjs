@@ -8,12 +8,30 @@
 //
 // Each `@EventPattern` is bound to `Transport.KAFKA` EXPLICITLY (CLAUDE.md §
 // Non-negotiables — a bare pattern binds to EVERY connected transport).
+//
+// OR1/A4b (observability_reliability design.md §4.1) — `route`'s dispatch
+// point is now wrapped by `FactRetryDispatcher`: the SAME
+// `commandBus.execute(...)` call as before, retried in-line with backoff,
+// dead-lettered to `<topic>.dlq` (and the offset still committed) only on
+// exhaustion. `UnknownFactTypeError`'s PR4 log-and-ack branch is caught
+// and swallowed INSIDE the wrapped `process` callback, before it ever
+// reaches the retry dispatcher — an unrecognised eventType is a producer-
+// bug shape exactly like a malformed envelope, not repairable by retry,
+// so it stays a plain ack (unchanged from before this feature). Only a
+// genuine processing failure (a Mongo write failure, or — as this
+// service's own poison-message incident would have been — a required
+// payload field missing deep inside a summary builder, past the
+// envelope-shape guard) is retried and, on exhaustion, dead-lettered; see
+// projector-dead-letter.integration.spec.ts's own incident reproduction.
 import { Controller, Inject, Optional } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
-import { EventPattern, Payload, Transport } from '@nestjs/microservices';
+import { Ctx, EventPattern, KafkaContext, Payload, Transport } from '@nestjs/microservices';
+import { context as otelContext, SpanKind } from '@opentelemetry/api';
 import type { Envelope } from '@otc/contracts';
 import { UnknownFactTypeError } from '../domain/fact-projection';
 import { ProjectFactCommand } from '../application/commands/project-fact.command';
+import { FACT_RETRY_DISPATCHER, type DispatchesFactRetries } from '../infrastructure/messaging/fact-retry-dispatcher';
+import { extractKafkaTraceContext, startChildSpan, type KafkaHeaderCarrier } from '../infrastructure/observability/trace-context';
 import {
   BILLING_FACTS_TOPIC,
   FULFILLMENT_FACTS_TOPIC,
@@ -79,6 +97,7 @@ export class ProjectorFactsController {
 
   constructor(
     @Inject(CommandBus) private readonly commandBus: CommandBus,
+    @Inject(FACT_RETRY_DISPATCHER) private readonly retryDispatcher: DispatchesFactRetries,
     // @Optional() — without it, Nest's container tries (and fails) to
     // resolve an interface-typed parameter with no registered provider
     // (same reasoning as notification-facts.controller.ts's constructor).
@@ -88,21 +107,21 @@ export class ProjectorFactsController {
   }
 
   @EventPattern(ORDERS_FACTS_TOPIC, Transport.KAFKA)
-  async onOrdersFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(ORDERS_FACTS_TOPIC, payload);
+  async onOrdersFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(ORDERS_FACTS_TOPIC, payload, kafkaContext);
   }
 
   @EventPattern(FULFILLMENT_FACTS_TOPIC, Transport.KAFKA)
-  async onFulfillmentFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(FULFILLMENT_FACTS_TOPIC, payload);
+  async onFulfillmentFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(FULFILLMENT_FACTS_TOPIC, payload, kafkaContext);
   }
 
   @EventPattern(BILLING_FACTS_TOPIC, Transport.KAFKA)
-  async onBillingFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(BILLING_FACTS_TOPIC, payload);
+  async onBillingFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(BILLING_FACTS_TOPIC, payload, kafkaContext);
   }
 
-  private async route(topic: string, payload: unknown): Promise<void> {
+  private async route(topic: string, payload: unknown, kafkaContext: KafkaContext): Promise<void> {
     let envelope: Envelope;
     try {
       envelope = parseFactEnvelope(payload);
@@ -116,22 +135,46 @@ export class ProjectorFactsController {
       return;
     }
 
+    // OR4/R57 (design.md §4.3) — the fact-consume entry point is one of
+    // the two points this feature creates a manual span at. Extracts the
+    // `traceparent` the outbox relay of the PRODUCING service injected and
+    // wraps the whole retry-then-DLQ dispatch below in it, so every retry
+    // attempt AND any eventual DLQ publish (`kafka-dlq-publisher.ts`)
+    // share the same trace id as the fact that triggered them.
+    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
+    const extracted = extractKafkaTraceContext(headers);
+    const { span, spanContext } = startChildSpan(`fact.consume ${envelope.eventType}`, extracted, SpanKind.CONSUMER);
+
+    // OR1/A4b — retried in-line with backoff, dead-lettered (offset still
+    // committed) only on exhaustion. `UnknownFactTypeError` is caught and
+    // swallowed HERE, inside `process`, so it never reaches the retry
+    // dispatcher at all (PR4's log-and-ack, unchanged).
     try {
-      await this.commandBus.execute(new ProjectFactCommand(envelope));
-    } catch (error) {
-      if (error instanceof UnknownFactTypeError) {
-        // PR4 — log-and-ack, NOT a silent discard: an unknown eventType is
-        // visible in the logs, but is never repairable by redelivery.
-        this.logger.error(
-          'projector-facts.controller: unknown eventType, acknowledged without processing',
-          { topic, eventType: envelope.eventType, eventId: envelope.eventId },
-        );
-        return;
-      }
-      // Every other failure (a Mongo write failure, for instance) rethrows
-      // so Kafka redelivers the fact (PR6's own note: idempotency is a
-      // property of the query, so redelivery is always safe to retry).
-      throw error;
+      await otelContext.with(spanContext, () =>
+        this.retryDispatcher.dispatch(topic, envelope, 'projector', async (env) => {
+          try {
+            await this.commandBus.execute(new ProjectFactCommand(env));
+          } catch (error) {
+            if (error instanceof UnknownFactTypeError) {
+              // PR4 — log-and-ack, NOT a silent discard: an unknown eventType is
+              // visible in the logs, but is never repairable by redelivery.
+              this.logger.error(
+                'projector-facts.controller: unknown eventType, acknowledged without processing',
+                { topic, eventType: env.eventType, eventId: env.eventId },
+              );
+              return;
+            }
+            // Every other failure (a Mongo write failure, or a payload
+            // malformed past the envelope-shape guard) propagates out of
+            // `process` so `FactRetryDispatcher` retries it, then dead-letters
+            // on exhaustion (PR6's own note: idempotency is a property of the
+            // query, so redelivery/retry is always safe).
+            throw error;
+          }
+        }),
+      );
+    } finally {
+      span.end();
     }
   }
 }

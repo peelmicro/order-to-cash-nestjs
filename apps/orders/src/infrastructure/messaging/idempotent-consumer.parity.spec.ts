@@ -98,6 +98,27 @@ const CANONICAL_REPO_PATH = path.join(
   'apps/orders/src/infrastructure/messaging/processed-events.repository.ts',
 );
 
+// --- The SECOND OI12-guarded canonical pair (A4f, observability_reliability
+// design.md §4.1/§4.1's "OI12 widened, not duplicated") -------------------
+// `fact-retry-dispatcher.ts` has NO `.repository.ts` sibling (it has no
+// store of its own) and, unlike the idempotent-consumer pair above, its
+// "does this app need a copy" discriminator is DELIBERATELY NOT
+// `SERVICE_IDEMPOTENCY_MODE`: that registry answers "how does this app
+// keep ITS idempotency ledger" (MySQL vs. MongoDB vs. none), a question
+// `FactRetryDispatcher` has no stake in at all — it sits ONE LAYER ABOVE
+// `IdempotentConsumer`, at the `@EventPattern` controller's own dispatch
+// point, and needs copying into EVERY service that owns one, regardless
+// of storage. Concretely: the projector is registered `'documented-variant'`
+// above (its idempotency ledger is a MongoDB field, not a MySQL table) but
+// DOES need this second file — a poison message can wedge its Kafka
+// partition exactly as it can any other consumer's. The correct
+// discriminator, therefore, is the SAME one case 3 above already computes
+// for the idempotent-consumer pair's own "must own a copy" check —
+// `hasEventPatternHandler(app)` — used here on its own, not filtered by
+// `SERVICE_IDEMPOTENCY_MODE`.
+const CANONICAL_RETRY_DISPATCHER_PATH_LITERAL = 'apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts';
+const CANONICAL_RETRY_DISPATCHER_PATH = path.join(REPO_ROOT, CANONICAL_RETRY_DISPATCHER_PATH_LITERAL);
+
 /** The whitelist design.md §6.4 fixes — satisfiable today because all three MySQL write models already export `processedEvents` from an identically-named, identically-pathed file, and the ports of group C are per-service files at identical paths. */
 const PORTABLE_IMPORT_WHITELIST = [
   '../../application/ports/unit-of-work.port',
@@ -114,6 +135,15 @@ const PORTABLE_IMPORT_WHITELIST = [
   // reference between them exists at the same relative path in every copy
   // by construction.
   './processed-events.repository',
+  // fact-retry-dispatcher.ts's own imports (A4f) — written with explicit
+  // `.js` specifiers (this repo's ESM-output convention for THIS file,
+  // unlike the idempotent-consumer pair above), and one genuinely new
+  // portable dependency: `@otc/contracts`, a workspace package every
+  // service already depends on for `Envelope`, exactly like
+  // `@otc/shared-kernel` above.
+  '@otc/contracts',
+  '../../application/ports/clock.port.js',
+  '../../application/ports/consumer-name.js',
 ];
 
 function stripBanner(text: string): string {
@@ -164,6 +194,30 @@ function processedEventsRepositoryPathOf(app: string): string {
   return path.join(REPO_ROOT, 'apps', app, 'src/infrastructure/messaging/processed-events.repository.ts');
 }
 
+/** A4f — the second canonical pair's per-app path; same relative location as `idempotentConsumerPathOf`, deliberately gated by `hasEventPatternHandler` alone (see this file's header comment above `CANONICAL_RETRY_DISPATCHER_PATH_LITERAL`), not by `SERVICE_IDEMPOTENCY_MODE`. */
+function factRetryDispatcherPathOf(app: string): string {
+  return path.join(REPO_ROOT, 'apps', app, 'src/infrastructure/messaging/fact-retry-dispatcher.ts');
+}
+
+// PRODUCTION-only (`.spec.ts` excluded) — found live while widening this
+// file for A4f: `apps/billing/src/billing-consumes-no-facts.spec.ts` (BI1)
+// carries its OWN non-vacuity fixture string, `"@EventPattern('order.
+// despatched.v1', Transport.KAFKA)\n  handle() {}"`, to prove ITS OWN
+// `@EventPattern(...)` matcher fires — a perfectly legitimate test fixture
+// in that file, but if `walkTsFiles` includes `.spec.ts` files this
+// census reads that fixture STRING as a real registered handler and
+// reports billing as a fact consumer, which it is not (`ConsumerName` is
+// `never` there — design.md §4.1). A4f's new "requires a copy ... from
+// every service that owns an @EventPattern handler" case below asserts
+// the exact expected consumer SET (not just "no violations"), which is
+// what surfaced this: the pre-existing case 3 above only ever checked
+// mysql-copy `AND` no-existing-copy, and billing satisfies neither branch
+// (already 'mysql-copy', already owns idempotent-consumer.ts), so the
+// same false positive was silently inert there. Every OTHER
+// `collectSourceFiles`-shaped guard in this repo
+// (notifications-consumes-only.spec.ts, projector-consumes-only.spec.ts)
+// already excludes `.spec.ts` from its production scan for the same
+// reason; this function now matches that convention.
 function walkTsFiles(dir: string): string[] {
   if (!existsSync(dir)) {
     return [];
@@ -177,14 +231,14 @@ function walkTsFiles(dir: string): string[] {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       files.push(...walkTsFiles(full));
-    } else if (entry.name.endsWith('.ts')) {
+    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.spec.ts')) {
       files.push(full);
     }
   }
   return files;
 }
 
-/** A real `@EventPattern(...)` decorator use, never a comment mentioning the word (the census must not self-trigger on this very file's banner, which names it in prose). */
+/** A real `@EventPattern(...)` decorator use, never a comment mentioning the word (the census must not self-trigger on this very file's banner, which names it in prose) and never a fixture string in another guard's own `.spec.ts` (see `walkTsFiles`'s header above). */
 function hasEventPatternHandler(app: string): boolean {
   const srcDir = path.join(REPO_ROOT, 'apps', app, 'src');
   return walkTsFiles(srcDir).some((file) => /@EventPattern\s*\(/.test(readFileSync(file, 'utf8')));
@@ -195,6 +249,8 @@ describe('idempotent-consumer.parity — OI12', () => {
   const canonicalRepoText = readFileSync(CANONICAL_REPO_PATH, 'utf8');
   const canonicalConsumerBody = stripBanner(canonicalConsumerText);
   const canonicalRepoBody = stripBanner(canonicalRepoText);
+  const canonicalRetryDispatcherText = readFileSync(CANONICAL_RETRY_DISPATCHER_PATH, 'utf8');
+  const canonicalRetryDispatcherBody = stripBanner(canonicalRetryDispatcherText);
 
   it('requires every app to be accounted for in the idempotency mode registry (N5 — no silent exemption by omission)', () => {
     const unregistered = listApps().filter((app) => !(app in SERVICE_IDEMPOTENCY_MODE));
@@ -275,8 +331,17 @@ describe('idempotent-consumer.parity — OI12', () => {
     expect(canonicalRepoBody, 'processed-events.repository.ts names a service outside its banner').not.toMatch(
       forbiddenServiceName,
     );
+    // A4f — the second canonical pair, same non-vacuity and portability
+    // discipline.
+    expect(canonicalRetryDispatcherBody, 'fact-retry-dispatcher.ts names a service outside its banner').not.toMatch(
+      forbiddenServiceName,
+    );
 
-    const specifiers = [...importSpecifiersOf(canonicalConsumerBody), ...importSpecifiersOf(canonicalRepoBody)];
+    const specifiers = [
+      ...importSpecifiersOf(canonicalConsumerBody),
+      ...importSpecifiersOf(canonicalRepoBody),
+      ...importSpecifiersOf(canonicalRetryDispatcherBody),
+    ];
     expect(specifiers.length).toBeGreaterThan(0);
     for (const specifier of specifiers) {
       expect(PORTABLE_IMPORT_WHITELIST, `import "${specifier}" is not in the portable whitelist`).toContain(
@@ -297,6 +362,47 @@ describe('idempotent-consumer.parity — OI12', () => {
       violations,
       `app(s) registered 'mysql-copy' with an @EventPattern handler but no idempotent-consumer.ts copy: ${violations.join(', ')}`,
     ).toEqual([]);
+  });
+
+  // --- A4f — the second canonical pair: fact-retry-dispatcher.ts ----------
+  // Gated by `hasEventPatternHandler` ALONE (see this file's header
+  // comment above `CANONICAL_RETRY_DISPATCHER_PATH_LITERAL` for why this
+  // deliberately does NOT filter by `SERVICE_IDEMPOTENCY_MODE` the way the
+  // idempotent-consumer pair's own equivalent case does) — every one of
+  // orders/notifications/projector qualifies today; gateway/seed/web
+  // (no `@EventPattern` at all) and fulfillment/billing (`ConsumerName` is
+  // `never`, no handler yet, design.md §4.1's own stated exclusion) do not.
+
+  it('requires a copy of the fact-retry-dispatcher pattern (OR1/OR2, A4f) from every service that owns an @EventPattern handler', () => {
+    const violations = listApps().filter(
+      (app) => hasEventPatternHandler(app) && !existsSync(factRetryDispatcherPathOf(app)),
+    );
+
+    // Non-vacuity: today's real set is exactly these three, not vacuously
+    // just 'orders' (the canonical is always a member of its own set).
+    const consumers = listApps().filter((app) => hasEventPatternHandler(app));
+    expect(consumers.sort()).toEqual(['notifications', 'orders', 'projector']);
+
+    expect(
+      violations,
+      `app(s) with an @EventPattern handler but no fact-retry-dispatcher.ts copy: ${violations.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('holds every fact-consuming service\'s copy of the fact-retry-dispatcher pattern byte-identical to the canonical copy', () => {
+    const copies = listApps().filter(
+      (app) => hasEventPatternHandler(app) && existsSync(factRetryDispatcherPathOf(app)),
+    );
+
+    expect(copies).toContain('orders');
+
+    for (const app of copies) {
+      const body = stripBanner(readFileSync(factRetryDispatcherPathOf(app), 'utf8'));
+      expect(
+        body,
+        `apps/${app}'s fact-retry-dispatcher.ts diverges from the canonical copy (banner-stripped)`,
+      ).toBe(canonicalRetryDispatcherBody);
+    }
   });
 
   it(

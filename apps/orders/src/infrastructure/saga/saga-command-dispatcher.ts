@@ -14,7 +14,7 @@
 // design.md §6.4), so raising these numbers lengthens the sweep cycle,
 // not the partition.
 import type { UniqueId } from '@otc/shared-kernel';
-import type { SagaCommandStore } from '../../application/ports/saga-command-store.port';
+import type { SagaCommandRecord, SagaCommandStore } from '../../application/ports/saga-command-store.port';
 import {
   SagaCommandTimeoutError,
   SagaCommandTransportError,
@@ -39,6 +39,33 @@ export const DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG: SagaCommandDispatcherConfig
 };
 
 export type SagaCommandDispatchOutcome = 'sent' | 'parked' | 'noop';
+
+export interface SagaCommandParkContext {
+  readonly attempts: number;
+  readonly lastError: string;
+}
+
+/**
+ * OR3's "at most once per row" hook (`observability_reliability`
+ * design.md §4.2) — called ONLY when `store.park(...)` performed the
+ * transition AND `store.claimDeadLetter(...)` claimed the row (this
+ * call's the row's FIRST park; a later re-park of an already-dead-
+ * lettered row never reaches this hook). Kept as a narrow, separately
+ * injected collaborator — not four new constructor parameters on
+ * `SagaCommandDispatcher` itself — so `SagaCommandDispatcher`'s own
+ * retry/park mechanism (SO4/SO5, unmodified by this feature) and its
+ * existing tests/call sites are untouched by a feature this dispatcher
+ * does not otherwise need to know the shape of.
+ */
+export interface HandlesFirstPark {
+  onFirstPark(row: SagaCommandRecord, context: SagaCommandParkContext): Promise<void>;
+}
+
+const NOOP_FIRST_PARK_HANDLER: HandlesFirstPark = {
+  async onFirstPark(): Promise<void> {
+    /* no-op default — OR3 is opt-in via the constructor's last parameter */
+  },
+};
 
 export const SAGA_COMMAND_DISPATCHER = Symbol('SagaCommandDispatcher');
 
@@ -92,6 +119,7 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
     private readonly config: SagaCommandDispatcherConfig = DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG,
     private readonly delay: Delay = realDelay,
     private readonly logger: SagaCommandDispatcherLogger = CONSOLE_LOGGER,
+    private readonly firstParkHandler: HandlesFirstPark = NOOP_FIRST_PARK_HANDLER,
   ) {}
 
   /**
@@ -147,7 +175,7 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
     const backoffMs = Math.min(30_000 * 2 ** Math.max(0, parkCycles - 1), this.config.parkRetryCapMs);
     const nextAttemptAt = new Date(Date.now() + backoffMs);
 
-    await this.store.park(row.id, totalAttempts, lastError, nextAttemptAt);
+    const wasParked = await this.store.park(row.id, totalAttempts, lastError, nextAttemptAt);
     this.logger.error('saga-command-dispatcher: exhausted attempts, command parked', {
       orderId: orderId.value,
       command,
@@ -155,6 +183,21 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
       error: lastError,
       nextAttemptAt: nextAttemptAt.toISOString(),
     });
+
+    // OR3 — "at most once per row": `claimDeadLetter` is itself the
+    // guard (`WHERE dead_lettered_at IS NULL`), so a racing/later sweep
+    // cycle that re-parks an already-dead-lettered row never reaches
+    // `onFirstPark` a second time. `wasParked === false` means a
+    // concurrent dispatcher already reported this row `sent` — SO5's own
+    // race-safety, unrelated to dead-lettering, but dead-lettering a row
+    // that just turned out to have succeeded would be wrong regardless.
+    if (wasParked) {
+      const claimed = await this.store.claimDeadLetter(row.id);
+      if (claimed) {
+        await this.firstParkHandler.onFirstPark(row, { attempts: totalAttempts, lastError });
+      }
+    }
+
     return 'parked';
   }
 }

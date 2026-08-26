@@ -17,14 +17,14 @@ const DOMAIN_MODEL_PATH = path.resolve(__dirname, '../../../../specs/shared/doma
 /** Reads the thirteen `eventType`s out of domain-model.md §7.2's table, as TEXT — no Markdown parser, same discipline as kafka.config.spec.ts. */
 function eventTypesFromDomainModel(): string[] {
   const text = readFileSync(DOMAIN_MODEL_PATH, 'utf8');
-  const section = text.match(/### 7\.2 The thirteen facts\n([\s\S]*?)\n> \*\*Fact, not command/);
+  const section = text.match(/### 7\.2 The fourteen facts\n([\s\S]*?)\n> \*\*Fact, not command/);
   if (!section) {
     throw new Error('fact-projection.spec: could not locate domain-model.md §7.2\'s table');
   }
   const rows = section[1]!.split('\n').filter((line) => /^\| \d+ \|/.test(line));
   const types = rows.map((row) => {
     const cell = row.split('|')[2]!.trim();
-    const match = cell.match(/`([a-z.]+\.v\d+)`/);
+    const match = cell.match(/`([a-z._]+\.v\d+)`/);
     if (!match) {
       throw new Error(`fact-projection.spec: could not parse eventType out of row: ${row}`);
     }
@@ -33,15 +33,15 @@ function eventTypesFromDomainModel(): string[] {
   return types;
 }
 
-describe('fact-projection — PR2 › structural coverage of the thirteen facts', () => {
+describe('fact-projection — PR2 › structural coverage of the fourteen facts', () => {
   const catalogueTypes = eventTypesFromDomainModel();
   const handledTypes: string[] = [...HANDLED_EVENT_TYPES];
 
-  it('domain-model.md §7.2 genuinely lists thirteen facts (non-vacuity of the text-scan itself)', () => {
-    expect(catalogueTypes).toHaveLength(13);
+  it('domain-model.md §7.2 genuinely lists fourteen facts (non-vacuity of the text-scan itself)', () => {
+    expect(catalogueTypes).toHaveLength(14);
   });
 
-  it('the handler table covers exactly the thirteen eventTypes the shared catalogue declares', () => {
+  it('the handler table covers exactly the fourteen eventTypes the shared catalogue declares', () => {
     expect([...handledTypes].sort()).toEqual([...catalogueTypes].sort());
   });
 
@@ -60,7 +60,7 @@ describe('fact-projection — PR2 › structural coverage of the thirteen facts'
     expect(() => projectFact(envelope)).not.toThrow();
   });
 
-  it('throws UnknownFactTypeError for an eventType outside the thirteen', () => {
+  it('throws UnknownFactTypeError for an eventType outside the fourteen', () => {
     const envelope = ALL_FACT_ENVELOPE_BUILDERS['order.placed.v1']!({ eventType: 'stock.teleported.v1' });
     expect(() => projectFact(envelope)).toThrow(UnknownFactTypeError);
   });

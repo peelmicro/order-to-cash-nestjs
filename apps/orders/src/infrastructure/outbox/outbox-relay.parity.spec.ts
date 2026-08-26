@@ -45,6 +45,35 @@ const FAMILY_FILES = [
 
 const CANONICAL_APP = 'orders';
 
+/**
+ * `outbox-relay.ts`/`outbox-recorder.ts` (A5, observability_reliability
+ * feature 27, R57/OR4, design.md §4.3) — the two points this feature adds
+ * MANUAL OTel spans/trace-context capture at: the outbox relay's publish
+ * call, and the moment a domain event is pulled into an outbox row. This
+ * pass's own bounded scope is `apps/gateway`/`apps/orders`/
+ * `apps/projector`/`apps/notifications` ONLY — `apps/billing` and
+ * `apps/fulfillment` (this family's other two owners) are explicitly out
+ * of scope and gained no OTel bootstrap of their own this pass. Rather
+ * than silently let this guard's byte-identity check rot (billing/
+ * fulfillment would either have to gain a copy of tracing code with
+ * nothing behind it, or this check would go vacuous/skip these two files
+ * with no record of why), `orders` is registered here as a DOCUMENTED,
+ * narrowly-scoped exception, for these two files only: billing and
+ * fulfillment must still be byte-identical to EACH OTHER (proving neither
+ * has drifted on its own), and `orders`'s own copy must provably contain
+ * the OTel tracing addition (a positive marker), not merely "be allowed to
+ * differ arbitrarily." A future pass that gives billing/fulfillment their
+ * own OTel bootstrap should backport this wiring and retire this
+ * exception.
+ */
+const TRACE_DIVERGENT_FILES: ReadonlySet<(typeof FAMILY_FILES)[number]> = new Set(['outbox-relay.ts', 'outbox-recorder.ts']);
+// Present in BOTH trace-divergent files' import lines (`outbox-relay.ts`
+// imports `@opentelemetry/api` directly for its manual span; both it and
+// `outbox-recorder.ts` import the local `../observability/trace-context`
+// helper module) — `../observability/trace-context` is the marker common
+// to both, so one constant proves the exception for either file.
+const OTEL_TRACING_MARKER = '../observability/trace-context';
+
 /** The whitelist design.md §9.4 fixes. */
 const PORTABLE_IMPORT_WHITELIST = [
   'drizzle-orm',
@@ -64,6 +93,12 @@ const PORTABLE_IMPORT_WHITELIST = [
   './kafka.config',
   './create-kafka-client',
   './kafka-fact-publisher',
+  // A5 (observability_reliability, R57/OR4) — genuinely portable: a plain
+  // npm package name, and a RELATIVE sibling module every service that
+  // adopts this family would own its own copy of (the same convention
+  // `../../application/ports/clock.port` etc. already establish above).
+  '@opentelemetry/api',
+  '../observability/trace-context',
 ];
 
 function stripBanner(text: string): string {
@@ -108,7 +143,7 @@ describe('outbox-relay.parity — OB1', () => {
     FAMILY_FILES.map((file) => [file, stripBanner(readFileSync(familyPathOf(CANONICAL_APP, file), 'utf8'))] as const),
   );
 
-  it('holds every write model\'s copy of the outbox-relay family byte-identical to the canonical copy', () => {
+  it('holds every write model\'s copy of the outbox-relay family byte-identical to the canonical copy — except the two OTel-tracing files (A5), where non-canonical copies must still match EACH OTHER', () => {
     const copies = listApps().filter((app) => hasMySqlOutboxSchema(app) && ownsFullFamily(app));
 
     // Non-vacuity: the canonical (orders) is always a member of its own
@@ -117,13 +152,41 @@ describe('outbox-relay.parity — OB1', () => {
     expect(copies).toContain(CANONICAL_APP);
     expect(copies.length, `expected at least 3 copies of the outbox-relay family, found: ${copies.join(', ')}`).toBeGreaterThanOrEqual(3);
 
+    const nonCanonicalCopies = copies.filter((app) => app !== CANONICAL_APP).sort();
+    // Non-vacuity for the peer check below: there must be at least two
+    // non-canonical owners to compare against each other at all.
+    expect(nonCanonicalCopies.length).toBeGreaterThanOrEqual(2);
+
     for (const app of copies) {
       for (const file of FAMILY_FILES) {
         const body = stripBanner(readFileSync(familyPathOf(app, file), 'utf8'));
+
+        if (TRACE_DIVERGENT_FILES.has(file) && app !== CANONICAL_APP) {
+          // `orders` is a documented exception for these two files (see
+          // TRACE_DIVERGENT_FILES's own comment) — every OTHER copy must
+          // still match its peers, proving billing/fulfillment have not
+          // independently drifted just because this check skips them
+          // relative to `orders`.
+          const peerBody = stripBanner(readFileSync(familyPathOf(nonCanonicalCopies[0]!, file), 'utf8'));
+          expect(body, `apps/${app}/src/infrastructure/outbox/${file} diverges from its peer copy (banner-stripped) — expected only \`orders\` to differ here (A5's documented tracing exception)`).toBe(
+            peerBody,
+          );
+          continue;
+        }
+
         expect(body, `apps/${app}/src/infrastructure/outbox/${file} diverges from the canonical copy (banner-stripped)`).toBe(
           canonicalBodies.get(file),
         );
       }
+    }
+
+    // The exception is provably ABOUT tracing, not silent unrelated drift:
+    // `orders`'s own copy of both trace-divergent files must contain the
+    // OTel marker every other copy (necessarily) lacks.
+    for (const file of TRACE_DIVERGENT_FILES) {
+      expect(canonicalBodies.get(file), `apps/orders/src/infrastructure/outbox/${file} was expected to contain the OTel tracing marker "${OTEL_TRACING_MARKER}" (A5) — if it no longer does, this documented exception should be retired`).toContain(
+        OTEL_TRACING_MARKER,
+      );
     }
   });
 

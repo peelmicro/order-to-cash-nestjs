@@ -203,6 +203,14 @@ export type OrderPlacedEvent = Envelope & {
   payload?: OrderPlacedPayload;
 };
 /**
+ * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
+ * via the `definition` "OrderSagaFailedEvent".
+ */
+export type OrderSagaFailedEvent = Envelope & {
+  eventType?: 'order.saga_failed.v1';
+  payload?: OrderSagaFailedPayload;
+};
+/**
  * The `Order` state machine of `domain-model.md` §3.3, which is also the saga state. `completed` and `cancelled` are terminal.
  *
  * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
@@ -374,7 +382,7 @@ export interface CompensationStep {
 /**
  * The payload-independent contract carried by **every** fact, identical
  * across the trilogy (R11, R12). No field may be absent, null or empty.
- * Each of the thirteen fact schemas composes this with a `const`
+ * Each of the fourteen fact schemas composes this with a `const`
  * `eventType` and its own `payload`.
  *
  *
@@ -821,6 +829,28 @@ export interface OrderPlacedPayload {
   initialDiscount: MinorUnits;
   totalAmount: MinorUnits;
   notes?: string;
+}
+/**
+ * A saga command was retried to exhaustion (SO4) and parked (SO5) without ever completing; the order stays in its last legal status. Emitted at most once per parked `saga_commands` row (OR3), on the first park transition only — a later re-park after a further exhausted retry emits nothing further.
+ *
+ * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
+ * via the `definition` "OrderSagaFailedPayload".
+ */
+export interface OrderSagaFailedPayload {
+  orderReference: OrderReference;
+  /**
+   * The saga command that could not be delivered — one of `stock.reserve`, `stock.release`, `despatch.create`, `credit.hold`, `invoice.issue`.
+   */
+  command: string;
+  /**
+   * In-line attempts made before parking (SO4's configured maximum).
+   */
+  attempts: number;
+  /**
+   * The error of the final in-line attempt.
+   */
+  lastError: string;
+  failedAt: Instant;
 }
 /**
  * This interface was referenced by `AsyncApiComponents`'s JSON-Schema

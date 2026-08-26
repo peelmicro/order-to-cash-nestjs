@@ -33,12 +33,15 @@ import { loadOutboxRelayConfig, type OutboxRelayConfig } from './infrastructure/
 import { OUTBOX_RELAY, OUTBOX_RELAY_CONFIG, OutboxRelayService } from './infrastructure/outbox/outbox-relay.service';
 import { createNatsConnection } from './infrastructure/messaging/nats-client';
 import { IdempotentConsumer } from './infrastructure/messaging/idempotent-consumer';
+import { FACT_RETRY_DISPATCHER, FactRetryDispatcher, REAL_DELAY, loadFactRetryPolicy } from './infrastructure/messaging/fact-retry-dispatcher';
+import { KafkaDlqPublisher } from './infrastructure/messaging/kafka-dlq-publisher';
 import { loadNatsConfig, loadStockCheckTimeoutMs } from './infrastructure/messaging/nats.config';
 import { NatsStockAvailabilityAdapter } from './infrastructure/messaging/nats-stock-availability.adapter';
 import { NatsSagaCommandsAdapter } from './infrastructure/messaging/nats-saga-commands.adapter';
 import { DrizzleSagaCommandStore } from './infrastructure/saga/drizzle-saga-command-store';
 import { SagaIgnoredFactsRepository } from './infrastructure/saga/saga-ignored-facts.repository';
 import { SAGA_COMMAND_DISPATCHER, SagaCommandDispatcher } from './infrastructure/saga/saga-command-dispatcher';
+import { SagaFirstParkDeadLetterHandler } from './infrastructure/saga/saga-first-park-dead-letter-handler';
 import {
   SAGA_COMMAND_SWEEPER_CONFIG,
   SagaCommandSweeperService,
@@ -50,6 +53,8 @@ import { loadSagaCommandDispatcherConfig, loadSagaCommandSweeperConfig } from '.
 const ORDERS_DB = Symbol('OrdersDb');
 /** Module-local token — the ONE outbound `NatsConnection` this service opens for its own RPC calls (`fulfillment.stock.check` AND, since feature 16, the five saga commands — reused, no second connection). Distinct from the INBOUND `orders.create`/Kafka transports, which `@nestjs/microservices` opens and owns itself (main.ts). */
 const NATS_CONNECTION = Symbol('NatsConnection');
+/** Module-local token — the ONE `DlqPublisher` instance, shared by `FactRetryDispatcher` (OR1) and `SagaCommandDispatcher`'s park hook (OR3) — design.md §4.2 point 2: "via the same DlqPublisher §4.1 defines — reused, not a third variant." */
+const DLQ_PUBLISHER = Symbol('DlqPublisher');
 /** Module-local token — the concrete `SagaCommandDispatcher` used both by `dispatch: SAGA_COMMAND_DISPATCHER` port consumers (dispatch handlers, the sweeper) and — via this token — by the sweeper's constructor. */
 
 /** Closes the outbound NATS connection on shutdown — the same lifecycle discipline `KafkaFactPublisher.disconnect()` gives the outbox relay's producer. */
@@ -122,6 +127,16 @@ class NatsConnectionCloser implements OnApplicationShutdown {
       useFactory: (): KafkaFactPublisher => new KafkaFactPublisher(createKafkaClient(loadKafkaConfig())),
     },
     {
+      provide: DLQ_PUBLISHER,
+      useFactory: (): KafkaDlqPublisher => new KafkaDlqPublisher(createKafkaClient(loadKafkaConfig())),
+    },
+    {
+      provide: FACT_RETRY_DISPATCHER,
+      useFactory: (clock: Clock, dlq: KafkaDlqPublisher): FactRetryDispatcher =>
+        new FactRetryDispatcher(clock, REAL_DELAY, dlq, loadFactRetryPolicy()),
+      inject: [CLOCK, DLQ_PUBLISHER],
+    },
+    {
       provide: OUTBOX_RELAY_CONFIG,
       useFactory: (): OutboxRelayConfig => loadOutboxRelayConfig(),
     },
@@ -175,8 +190,20 @@ class NatsConnectionCloser implements OnApplicationShutdown {
       useFactory: (
         commands: NatsSagaCommandsAdapter,
         store: SagaCommandStore,
-      ): SagaCommandDispatcher => new SagaCommandDispatcher(commands, store, loadSagaCommandDispatcherConfig()),
-      inject: [SAGA_COMMANDS, SAGA_COMMAND_STORE],
+        dlq: KafkaDlqPublisher,
+        unitOfWork: DrizzleUnitOfWork,
+        orders: DrizzleOrderRepository,
+        clock: Clock,
+      ): SagaCommandDispatcher =>
+        new SagaCommandDispatcher(
+          commands,
+          store,
+          loadSagaCommandDispatcherConfig(),
+          undefined,
+          undefined,
+          new SagaFirstParkDeadLetterHandler(dlq, unitOfWork, orders, clock),
+        ),
+      inject: [SAGA_COMMANDS, SAGA_COMMAND_STORE, DLQ_PUBLISHER, UNIT_OF_WORK, ORDER_REPOSITORY, CLOCK],
     },
     {
       provide: SAGA_COMMAND_SWEEPER_CONFIG,

@@ -2,9 +2,11 @@
 // decorator: `runOnce()` is directly callable from a test without a Nest
 // application context, and `apps/seed`'s integration spec imports it to
 // prove the seeded databases have nothing to publish (H1).
+import { propagation, SpanKind, SpanStatusCode, type Span } from '@opentelemetry/api';
 import { asc, inArray, isNull } from 'drizzle-orm';
 import type { Clock } from '../../application/ports/clock.port';
 import type { FactPublisher, PublishableFact } from '../../application/ports/fact-publisher.port';
+import { contextFromTraceParent, startChildSpan } from '../observability/trace-context';
 import type { WriteModelDb } from '../persistence/client';
 import { outbox } from '../persistence/schema';
 import type { OutboxRelayConfig } from './outbox-relay.config';
@@ -92,18 +94,31 @@ export class OutboxRelay {
         return { claimed: 0, published: 0 };
       }
 
+      // OR4/R57 (design.md §4.3) — the outbox relay's publish call is one
+      // of the two points this feature creates a MANUAL span at (kafkajs
+      // has no OTel auto-instrumentation). A span is created only for a
+      // row that stored a `traceParent` at write time (`outbox-recorder.ts`
+      // — a caller that never extracted/continued a trace has none to
+      // continue here either, so the header is omitted, exactly the prior
+      // behaviour for an untraced row). The span's OWN (fresh) span id —
+      // not the raw stored value — is what gets injected into the outgoing
+      // Kafka header, so a consumer's extracted "parent" is this publish
+      // span, not the row's original writer.
+      const spans: Array<Span | undefined> = [];
       const facts: PublishableFact[] = claimed.map((row) => {
         const envelope = outboxRowToEnvelope(row);
         const headers: Record<string, string> = {
           'x-event-type': envelope.eventType,
           'content-type': 'application/json',
         };
-        // traceparent only if the stored/ambient context supplies one
-        // (design.md §3.3) — this feature writes trace_parent NULL, so the
-        // header is omitted until feature 27 populates the column.
+        let span: Span | undefined;
         if (row.traceParent) {
-          headers.traceparent = row.traceParent;
+          const parentContext = contextFromTraceParent(row.traceParent);
+          const started = startChildSpan(`outbox.publish ${envelope.eventType}`, parentContext, SpanKind.PRODUCER);
+          span = started.span;
+          propagation.inject(started.spanContext, headers);
         }
+        spans.push(span);
         return { key: envelope.correlationId, envelope, headers };
       });
 
@@ -122,12 +137,20 @@ export class OutboxRelay {
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        for (const span of spans) {
+          span?.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+          span?.end();
+        }
         // Nothing was written before this point (the SELECT ... FOR UPDATE
         // above takes no rows out of the unpublished set), so letting the
         // transaction complete without the stamp below is equivalent to a
         // rollback for every column that matters (OI8): the same records
         // are found, in the same order, on the very next poll.
         return { claimed: claimed.length, published: 0 };
+      }
+
+      for (const span of spans) {
+        span?.end();
       }
 
       await tx

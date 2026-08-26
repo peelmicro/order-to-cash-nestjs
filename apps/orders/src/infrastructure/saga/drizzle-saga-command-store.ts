@@ -7,6 +7,7 @@
 // harmlessly (design.md §5.5, §6.4).
 import { and, eq, lt, lte, or, sql } from 'drizzle-orm';
 import { OrderNumber, UniqueId } from '@otc/shared-kernel';
+import type { Envelope } from '@otc/contracts';
 import type { Clock } from '../../application/ports/clock.port.js';
 import type {
   EnqueueOutcome,
@@ -31,8 +32,11 @@ function toRecord(row: typeof sagaCommands.$inferSelect): SagaCommandRecord {
     command: row.command as SagaCommandKind,
     payload: row.payload as SagaCommandPayload,
     triggeringEventId: UniqueId.from(row.triggeringEventId),
+    triggeringEventEnvelope: row.triggeringEventEnvelope as Envelope,
+    triggeringEventTopic: row.triggeringEventTopic ?? '',
     status: row.status,
     attempts: row.attempts,
+    deadLetteredAt: row.deadLetteredAt ?? null,
   };
 }
 
@@ -55,10 +59,13 @@ export class DrizzleSagaCommandStore implements SagaCommandStore {
         command: input.command,
         payload: input.payload,
         triggeringEventId: input.triggeringEventId.value,
+        triggeringEventEnvelope: input.triggeringEventEnvelope,
+        triggeringEventTopic: input.triggeringEventTopic,
         status: 'pending',
         attempts: 0,
         lastError: null,
         nextAttemptAt: null,
+        deadLetteredAt: null,
         createdAt: now,
         updatedAt: now,
         sentAt: null,
@@ -117,6 +124,15 @@ export class DrizzleSagaCommandStore implements SagaCommandStore {
         updatedAt: this.clock.now(),
       })
       .where(and(eq(sagaCommands.id, id.value), notAlreadySent()));
+    return affectedRows(result) > 0;
+  }
+
+  /** OR3's "at most once" claim (design.md §4.2 point 1) — a conditional update, same race-safety shape as `markSent`/`park`. */
+  async claimDeadLetter(id: UniqueId): Promise<boolean> {
+    const result = await this.db
+      .update(sagaCommands)
+      .set({ deadLetteredAt: this.clock.now() })
+      .where(and(eq(sagaCommands.id, id.value), sql`${sagaCommands.deadLetteredAt} IS NULL`));
     return affectedRows(result) > 0;
   }
 

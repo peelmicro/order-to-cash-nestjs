@@ -148,6 +148,16 @@ describe('saga-command-retry — R29 (retry), SO3, SO4, SO5 (Testcontainers)', (
           lines: [{ productCode: 'PRD-0001', units: 2 }],
         },
         triggeringEventId: UniqueId.generate(),
+        triggeringEventEnvelope: {
+          eventId: UniqueId.generate().value,
+          eventType: 'order.placed.v1',
+          aggregateId: order.id.value,
+          correlationId: order.id.value,
+          causationId: UniqueId.generate().value,
+          occurredAt: harness.clock.now().toISOString(),
+          payload: {},
+        } as never,
+        triggeringEventTopic: 'otc.orders.facts.v1',
       });
     });
 

@@ -79,6 +79,8 @@ export interface OrderRowIds {
 export interface OrdersTableRow {
   id: string;
   orderReference: string;
+  /** RI1 — set only on the genuine-INSERT path (order.mapper's caller decides; `null` on every UPDATE). */
+  requestId: string | null;
   orderDate: Date;
   companyId: string;
   retailerId: string;
@@ -93,10 +95,16 @@ export interface OrdersTableRow {
   updatedAt: Date;
 }
 
-export function toOrdersTableRow(order: Order, ids: OrderRowIds, timestamps: { createdAt: Date; updatedAt: Date }): OrdersTableRow {
+export function toOrdersTableRow(
+  order: Order,
+  ids: OrderRowIds,
+  timestamps: { createdAt: Date; updatedAt: Date },
+  requestId?: string,
+): OrdersTableRow {
   return {
     id: order.id.value,
     orderReference: order.orderReference.value,
+    requestId: requestId ?? null,
     orderDate: order.orderDate,
     companyId: ids.companyId,
     retailerId: ids.retailerId,

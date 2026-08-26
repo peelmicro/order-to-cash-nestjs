@@ -13,6 +13,7 @@ import type {
   OrderConfirmedPayload,
   OrderDespatchedPayload,
   OrderPlacedPayload,
+  OrderSagaFailedPayload,
   PaymentReceivedPayload,
   StockRejectedPayload,
   StockReleasedPayload,
@@ -91,5 +92,14 @@ export function orderCancelledSummary(payload: OrderCancelledPayload): SummaryRe
   return {
     summary: `Order ${payload.orderReference} cancelled (${payload.cancellationReason})`,
     detail: { cancellationReason: payload.cancellationReason, compensationSteps: payload.compensationSteps },
+  };
+}
+
+// The 14th fact — R29's dead-letter clause / OR3 (feature 27). Purely
+// diagnostic (order-status-rank.ts's own entry: status null, rank 0).
+export function orderSagaFailedSummary(payload: OrderSagaFailedPayload): SummaryResult {
+  return {
+    summary: `Saga command "${payload.command}" dead-lettered after ${payload.attempts} attempt(s)`,
+    detail: { command: payload.command, attempts: payload.attempts, lastError: payload.lastError },
   };
 }

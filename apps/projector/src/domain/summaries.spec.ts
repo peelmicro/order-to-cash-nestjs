@@ -1,4 +1,4 @@
-// PR16 › renders a human-readable summary for each of the thirteen facts
+// PR16 › renders a human-readable summary for each of the fourteen facts
 // from the envelope alone, with every amount in integer minor units and its
 // own currency.
 import { describe, expect, it } from 'vitest';
@@ -13,6 +13,7 @@ import {
   orderConfirmedSummary,
   orderDespatchedSummary,
   orderPlacedSummary,
+  orderSagaFailedSummary,
   paymentReceivedSummary,
   stockRejectedSummary,
   stockReleasedSummary,
@@ -33,12 +34,13 @@ const BUILDERS: Readonly<Record<string, (payload: never) => { summary: string }>
   'payment.received.v1': paymentReceivedSummary,
   'order.completed.v1': orderCompletedSummary,
   'order.cancelled.v1': orderCancelledSummary,
+  'order.saga_failed.v1': orderSagaFailedSummary,
 };
 
-describe('summaries — PR16 › renders a human-readable summary for each of the thirteen facts from the envelope alone, with every amount in integer minor units and its own currency', () => {
-  it('covers exactly the thirteen fact types', () => {
+describe('summaries — PR16 › renders a human-readable summary for each of the fourteen facts from the envelope alone, with every amount in integer minor units and its own currency', () => {
+  it('covers exactly the fourteen fact types', () => {
     expect(Object.keys(BUILDERS).sort()).toEqual(Object.keys(ALL_FACT_ENVELOPE_BUILDERS).sort());
-    expect(Object.keys(BUILDERS)).toHaveLength(13);
+    expect(Object.keys(BUILDERS)).toHaveLength(14);
   });
 
   it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: renders a summary carrying the identifying reference, no float artefact', (eventType, build) => {
@@ -67,6 +69,7 @@ describe('summaries — PR16 › renders a human-readable summary for each of th
     'payment.received.v1': 'PAY-000001',
     'order.completed.v1': 'ORD-000001',
     'order.cancelled.v1': 'ORD-000001',
+    'order.saga_failed.v1': 'stock.reserve',
   };
 
   it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: the summary carries its own identifying reference', (eventType, build) => {

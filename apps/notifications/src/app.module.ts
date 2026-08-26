@@ -17,6 +17,15 @@ import { CLOCK, type Clock } from './application/ports/clock.port';
 import { NOTIFICATION_SENDER, type NotificationSender } from './application/ports/notification-sender.port';
 import { UNIT_OF_WORK, type UnitOfWork } from './application/ports/unit-of-work.port';
 import { IdempotentConsumer } from './infrastructure/messaging/idempotent-consumer';
+import { createKafkaClient } from './infrastructure/messaging/create-kafka-client';
+import {
+  FACT_RETRY_DISPATCHER,
+  FactRetryDispatcher,
+  REAL_DELAY,
+  loadFactRetryPolicy,
+} from './infrastructure/messaging/fact-retry-dispatcher';
+import { KafkaDlqPublisher } from './infrastructure/messaging/kafka-dlq-publisher';
+import { loadKafkaConfig } from './infrastructure/messaging/kafka.config';
 import { DrizzleProcessedEventCompensation } from './infrastructure/messaging/processed-events-compensation';
 import { ConsoleNotificationSender } from './infrastructure/notification/console-notification-sender';
 import { MailtrapNotificationSender } from './infrastructure/notification/mailtrap-notification-sender';
@@ -28,6 +37,8 @@ import { SystemClock } from './infrastructure/system-clock';
 
 /** Module-local token — the shared `NotificationsDb` connection `UNIT_OF_WORK` is built from. Not exported: nothing outside this module needs the raw Drizzle handle (same "module-local, not exported" shape apps/fulfillment/apps/orders use for their own DB token). */
 const NOTIFICATIONS_DB = Symbol('NotificationsDb');
+/** Module-local token — the ONE `DlqPublisher` instance `FACT_RETRY_DISPATCHER` is built from (OR1/A4b) — same "module-local, not exported" shape apps/orders/src/app.module.ts uses for its own `DLQ_PUBLISHER`. */
+const DLQ_PUBLISHER = Symbol('DlqPublisher');
 
 @Module({
   imports: [CqrsModule.forRoot()],
@@ -37,6 +48,16 @@ const NOTIFICATIONS_DB = Symbol('NotificationsDb');
     {
       provide: NOTIFICATIONS_DB,
       useFactory: (): NotificationsDb => createNotificationsDb(createNotificationsPool(loadNotificationsDbConfig())),
+    },
+    {
+      provide: DLQ_PUBLISHER,
+      useFactory: (): KafkaDlqPublisher => new KafkaDlqPublisher(createKafkaClient(loadKafkaConfig())),
+    },
+    {
+      provide: FACT_RETRY_DISPATCHER,
+      useFactory: (clock: Clock, dlq: KafkaDlqPublisher): FactRetryDispatcher =>
+        new FactRetryDispatcher(clock, REAL_DELAY, dlq, loadFactRetryPolicy()),
+      inject: [CLOCK, DLQ_PUBLISHER],
     },
     {
       provide: UNIT_OF_WORK,

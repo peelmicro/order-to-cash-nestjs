@@ -11,6 +11,7 @@
 import { ErrorCode, headers as natsHeaders, JSONCodec, type MsgHdrs, type NatsConnection } from 'nats';
 import type { RpcError } from '@otc/contracts';
 import { RpcBusinessError, RpcTimeoutError, RpcTransportError, type RpcCallMeta, type RpcClient } from '../../application/ports/rpc-client.port';
+import { injectNatsTraceContext } from '../observability/trace-context';
 
 export interface NatsRequestMessage {
   readonly data: Uint8Array;
@@ -20,10 +21,21 @@ export interface NatsRequestClient {
   request(subject: string, data: Uint8Array, opts: { timeout: number; headers?: MsgHdrs }): Promise<NatsRequestMessage>;
 }
 
+/**
+ * `x-correlation-id`/`x-request-id`, plus `traceparent`/`tracestate` (OR4,
+ * R57, design.md §4.3) injected from the active OTel trace context — since
+ * `@opentelemetry/instrumentation-http` auto-instruments this service's
+ * Express layer, THIS is the active context of the inbound HTTP request
+ * that triggered the call, so an `orders.create` request placed via the
+ * Gateway now carries the SAME trace from the HTTP request through to
+ * Orders' NATS responder (`orders-create.controller.ts`, in scope this
+ * pass) and onward into its outbox row.
+ */
 function requestHeaders(meta: RpcCallMeta): MsgHdrs {
   const h = natsHeaders();
   h.set('x-correlation-id', meta.correlationId);
   h.set('x-request-id', meta.requestId);
+  injectNatsTraceContext(h);
   return h;
 }
 

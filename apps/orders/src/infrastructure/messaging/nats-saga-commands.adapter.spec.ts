@@ -7,7 +7,13 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { ErrorCode, JSONCodec, NatsError, type MsgHdrs } from 'nats';
 import { UniqueId } from '@otc/shared-kernel';
-import { describe, expect, it } from 'vitest';
+import { context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { extractNatsTraceContext, tracer } from '../observability/trace-context';
 import type {
   CreditHoldReplyPayload,
   RpcError,
@@ -278,5 +284,55 @@ describe('NatsSagaCommandsAdapter — releaseStock, createDespatch, issueInvoice
     );
 
     expect(calledSubject).toBe(INVOICE_ISSUE_SUBJECT);
+  });
+});
+
+describe('NatsSagaCommandsAdapter — trace propagation (OR4, R57, design.md §4.3)', () => {
+  let provider: NodeTracerProvider;
+  let contextManager: AsyncLocalStorageContextManager;
+
+  beforeAll(() => {
+    const exporter = new InMemorySpanExporter();
+    provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+    contextManager = new AsyncLocalStorageContextManager();
+    provider.register({ contextManager, propagator: new W3CTraceContextPropagator() });
+  });
+
+  afterAll(async () => {
+    contextManager.disable();
+    await provider.shutdown();
+  });
+
+  it('every outbound call injects the active span\'s REAL traceId — extractable back to the SAME traceId, not merely "a header is present"', async () => {
+    const replyCodec = JSONCodec<StockReserveReplyPayload>();
+    const body: StockReserveReplyPayload = { outcome: 'accepted', orderReference: 'ORD-000001', reservations: [] };
+    let capturedHeaders: MsgHdrs | undefined;
+    const client = fakeClient(async (_subject, _data, opts) => {
+      capturedHeaders = opts.headers;
+      return { data: replyCodec.encode(body) };
+    });
+    const adapter = new NatsSagaCommandsAdapter(client, 5000);
+
+    const span = tracer().startSpan('test-saga-command-span');
+    const { traceId } = span.spanContext();
+
+    await context.with(trace.setSpan(context.active(), span), () =>
+      adapter.reserveStock(
+        {
+          orderReference: 'ORD-000001',
+          retailerCode: 'RET-0001',
+          companyCode: 'COM-0001',
+          lines: [{ productCode: 'PRD-0001', units: 1 }],
+        },
+        META,
+      ),
+    );
+    span.end();
+
+    expect(capturedHeaders).toBeDefined();
+    const extracted = extractNatsTraceContext(capturedHeaders);
+    const extractedSpanContext = trace.getSpanContext(extracted);
+    expect(extractedSpanContext).toBeDefined();
+    expect(extractedSpanContext!.traceId).toBe(traceId);
   });
 });

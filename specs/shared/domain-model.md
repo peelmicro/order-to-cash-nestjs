@@ -455,7 +455,7 @@ Envelope rules: no field may be absent, empty or null (R11); `correlationId` and
 `causationId` semantics are normative (R12); `occurredAt` is the only ordering
 key the read model trusts (R50, R52).
 
-### 7.2 The thirteen facts
+### 7.2 The fourteen facts
 
 | # | `eventType` | Producing context | Aggregate | Meaning | Payload essentials |
 |---|-------------|-------------------|-----------|---------|--------------------|
@@ -472,6 +472,7 @@ key the read model trusts (R50, R52).
 | 11 | `payment.received.v1` | Billing | `Invoice` | A remittance was accepted and the invoice moved to `paid` | `orderReference`, `invoiceReference`, `paymentReference`, `amount`, `currency`, `valueDate`, `source` |
 | 12 | `order.completed.v1` | Orders | `Order` | The saga closed successfully | `orderReference`, `retailerCode`, `companyCode`, `totalAmount`, `currency`, `completedAt` |
 | 13 | `order.cancelled.v1` | Orders | `Order` | The saga closed by cancellation; compensation (if any) already ran | `orderReference`, `retailerCode`, `companyCode`, `cancellationReason` (`stock_rejected` \| `credit_rejected` \| `operator_cancelled`), `cancelledAt`, `compensationSteps[]` |
+| 14 | `order.saga_failed.v1` | Orders | `Order` | A saga command exhausted its in-line retries and parked; the order stays in its last legal status (R29's dead-letter clause, OR3). Purely diagnostic — no invariant depends on it, and `SO5`'s indefinite capped-backoff retry of the underlying command is unaffected | `orderReference`, `command`, `attempts`, `lastError`, `failedAt` |
 
 > **Fact, not command.** Every name above is in the **past tense** and describes
 > something that already happened and cannot be refused. Nothing on this list is
@@ -483,7 +484,7 @@ key the read model trusts (R50, R52).
 | Consumer | Consumes | Purpose |
 |---|---|---|
 | **Saga orchestrator** (Orders) | `order.placed.v1`, `stock.reserved.v1`, `stock.rejected.v1`, `stock.released.v1`, `credit.approved.v1`, `credit.rejected.v1`, `credit.released.v1`, `order.despatched.v1`, `invoice.issued.v1`, `payment.received.v1` | Advance or compensate the order state machine |
-| **Projector** | **All thirteen** | Maintain the `order_timeline` read model |
+| **Projector** | **All fourteen** | Maintain the `order_timeline` read model |
 | **Notifications** | `order.placed.v1`, `order.confirmed.v1`, `order.despatched.v1`, `invoice.issued.v1`, `payment.received.v1`, `order.completed.v1`, `order.cancelled.v1` | Outbound messages to the operator/party |
 
 Notifications deliberately **does not** notify on `stock.*` and `credit.*`

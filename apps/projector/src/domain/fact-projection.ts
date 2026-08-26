@@ -15,6 +15,7 @@ import type {
   OrderConfirmedPayload,
   OrderDespatchedPayload,
   OrderPlacedPayload,
+  OrderSagaFailedPayload,
   PaymentReceivedPayload,
   StockRejectedPayload,
   StockReleasedPayload,
@@ -32,6 +33,7 @@ import {
   orderConfirmedSummary,
   orderDespatchedSummary,
   orderPlacedSummary,
+  orderSagaFailedSummary,
   paymentReceivedSummary,
   stockRejectedSummary,
   stockReleasedSummary,
@@ -40,12 +42,12 @@ import {
 
 export class UnknownFactTypeError extends Error {
   constructor(eventType: string) {
-    super(`fact-projection: unknown eventType "${eventType}" — not one of the thirteen facts`);
+    super(`fact-projection: unknown eventType "${eventType}" — not one of the fourteen facts`);
     this.name = new.target.name;
   }
 }
 
-/** The thirteen `eventType` keys this switch covers — the other half of PR2's structural cross-check (fact-projection.spec.ts). */
+/** The fourteen `eventType` keys this switch covers — the other half of PR2's structural cross-check (fact-projection.spec.ts). */
 export const HANDLED_EVENT_TYPES = [
   'order.placed.v1',
   'stock.reserved.v1',
@@ -60,6 +62,7 @@ export const HANDLED_EVENT_TYPES = [
   'payment.received.v1',
   'order.completed.v1',
   'order.cancelled.v1',
+  'order.saga_failed.v1',
 ] as const;
 
 export function projectFact(envelope: Envelope): ProjectionDelta {
@@ -181,6 +184,16 @@ export function projectFact(envelope: Envelope): ProjectionDelta {
         entry: entryOf(envelope, summary, detail),
         fillIfAbsent: { cancellationReason: payload.cancellationReason },
       };
+    }
+    case 'order.saga_failed.v1': {
+      // R29's dead-letter clause / OR3 (feature 27) — the 14th fact,
+      // purely diagnostic (order-status-rank.ts: status null, rank 0),
+      // same "status-less" shape as stock.rejected.v1/credit.rejected.v1
+      // above: a timeline entry, `fillIfAbsent: {}`, no header/status
+      // change.
+      const payload = envelope.payload as OrderSagaFailedPayload;
+      const { summary, detail } = orderSagaFailedSummary(payload);
+      return { ...base, entry: entryOf(envelope, summary, detail), fillIfAbsent: {} };
     }
     default:
       throw new UnknownFactTypeError(envelope.eventType);

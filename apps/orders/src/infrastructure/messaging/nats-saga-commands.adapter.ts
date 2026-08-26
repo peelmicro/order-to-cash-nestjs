@@ -25,6 +25,7 @@ import {
   type SagaCommandMeta,
   type SagaCommandsPort,
 } from '../../application/ports/saga-commands.port';
+import { injectNatsTraceContext } from '../observability/trace-context';
 
 export const STOCK_RESERVE_SUBJECT = 'fulfillment.stock.reserve';
 export const STOCK_RELEASE_SUBJECT = 'fulfillment.stock.release';
@@ -40,11 +41,19 @@ export interface NatsRequestClient {
   request(subject: string, data: Uint8Array, opts: { timeout: number; headers?: MsgHdrs }): Promise<NatsRequestMessage>;
 }
 
-/** `x-correlation-id`/`x-request-id` as `nats` `MsgHdrs` (FS2, asyncapi.yaml `RpcHeaders`). */
+/**
+ * `x-correlation-id`/`x-request-id` as `nats` `MsgHdrs` (FS2, asyncapi.yaml
+ * `RpcHeaders`), plus `traceparent`/`tracestate` (OR4, R57, design.md
+ * §4.3) injected from the active OTel trace context — the responder in
+ * Fulfillment/Billing is out of this pass's bounded scope (neither service
+ * is touched), so THEIR extraction side is not wired up yet; this half of
+ * the hop (inject on publish) is still real and independently correct.
+ */
 function requestHeaders(meta: SagaCommandMeta): MsgHdrs {
   const h = natsHeaders();
   h.set('x-correlation-id', meta.correlationId.value);
   h.set('x-request-id', meta.requestId.value);
+  injectNatsTraceContext(h);
   return h;
 }
 

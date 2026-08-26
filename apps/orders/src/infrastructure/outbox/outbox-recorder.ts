@@ -7,6 +7,7 @@ import type { DomainEventEnvelope } from '@otc/shared-kernel';
 import { UniqueId } from '@otc/shared-kernel';
 import type { Clock } from '../../application/ports/clock.port';
 import type { TransactionContext } from '../../application/ports/unit-of-work.port';
+import { activeTraceParent } from '../observability/trace-context';
 import { asDrizzleTx } from '../persistence/drizzle-unit-of-work';
 import { outbox } from '../persistence/schema';
 
@@ -27,6 +28,14 @@ export class OutboxRecorder {
 
     const db = asDrizzleTx(tx);
     const createdAt = this.clock.now();
+    // OR4/R57 (design.md §4.3) — captured ONCE per call, from the active
+    // OTel trace context of the command handler that produced these
+    // events (extracted-and-continued upstream by the RPC responder or the
+    // fact-consume entry point, whichever triggered this write) — `null`
+    // if no trace context is active (a caller that never extracted one, or
+    // a test that never registered a `TracerProvider`), exactly the prior,
+    // pre-feature-27 behaviour.
+    const traceParent = activeTraceParent();
 
     await db.insert(outbox).values(
       events.map((event) => ({
@@ -40,7 +49,7 @@ export class OutboxRecorder {
         occurredAt: event.occurredAt,
         publishedAt: null,
         createdAt,
-        traceParent: null,
+        traceParent,
       })),
     );
   }

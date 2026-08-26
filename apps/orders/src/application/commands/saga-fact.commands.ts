@@ -9,66 +9,96 @@ import type { Envelope } from '@otc/contracts';
 import type { SagaFactResult } from '../saga-fact-handler.js';
 
 export class HandleOrderPlacedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleStockReservedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleStockRejectedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleCreditApprovedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleCreditRejectedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleStockReleasedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleOrderDespatchedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleInvoiceIssuedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandlePaymentReceivedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
 export class HandleCreditReleasedFactCommand extends Command<SagaFactResult> {
-  constructor(readonly envelope: Envelope) {
+  constructor(
+    readonly envelope: Envelope,
+    readonly topic: string,
+  ) {
     super();
   }
 }
 
-export type FactCommandConstructor = new (envelope: Envelope) => Command<SagaFactResult>;
+export type FactCommandConstructor = new (envelope: Envelope, topic: string) => Command<SagaFactResult>;
 
 const FACT_COMMAND_BY_EVENT_TYPE: Readonly<Record<string, FactCommandConstructor>> = {
   'order.placed.v1': HandleOrderPlacedFactCommand,

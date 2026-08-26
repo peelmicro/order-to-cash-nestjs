@@ -56,11 +56,11 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const inner = fakeHandler({ outcome: 'processed', enqueued: 'stock.reserve' });
     const eventBus = fakeEventBus();
     const handler = new HandleOrderPlacedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
-    const command = new HandleOrderPlacedFactCommand(envelope());
+    const command = new HandleOrderPlacedFactCommand(envelope(), 'otc.orders.facts.v1');
 
     const result = await handler.execute(command);
 
-    expect(inner.handle).toHaveBeenCalledWith(command.envelope);
+    expect(inner.handle).toHaveBeenCalledWith(command.envelope, command.topic);
     expect(result).toEqual({ outcome: 'processed', enqueued: 'stock.reserve' });
     expect(eventBus.publish).toHaveBeenCalledTimes(1);
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(OrderPlacedFactRecorded);
@@ -75,7 +75,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleOrderPlacedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleOrderPlacedFactCommand(envelope()));
+    await handler.execute(new HandleOrderPlacedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish).not.toHaveBeenCalled();
   });
@@ -85,7 +85,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleOrderPlacedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleOrderPlacedFactCommand(envelope()));
+    await handler.execute(new HandleOrderPlacedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish).not.toHaveBeenCalled();
   });
@@ -95,7 +95,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleStockReservedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleStockReservedFactCommand(envelope()));
+    await handler.execute(new HandleStockReservedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(OrderMarkedStockReserved);
   });
@@ -105,7 +105,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleCreditRejectedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleCreditRejectedFactCommand(envelope()));
+    await handler.execute(new HandleCreditRejectedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(CreditRejectionRecorded);
   });
@@ -115,7 +115,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleCreditApprovedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleCreditApprovedFactCommand(envelope()));
+    await handler.execute(new HandleCreditApprovedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(OrderConfirmed);
   });
@@ -125,7 +125,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const eventBus = fakeEventBus();
     const handler = new HandleOrderDespatchedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
 
-    await handler.execute(new HandleOrderDespatchedFactCommand(envelope()));
+    await handler.execute(new HandleOrderDespatchedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(OrderMarkedDespatched);
   });
@@ -134,7 +134,7 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     const inner = fakeHandler({ outcome: 'processed' });
     const handler = new HandleInvoiceIssuedFactHandler(inner as unknown as SagaFactHandler);
 
-    const result = await handler.execute(new HandleInvoiceIssuedFactCommand(envelope()));
+    const result = await handler.execute(new HandleInvoiceIssuedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(inner.handle).toHaveBeenCalledTimes(1);

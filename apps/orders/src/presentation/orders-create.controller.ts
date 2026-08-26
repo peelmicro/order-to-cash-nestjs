@@ -14,11 +14,14 @@
 // exact `RpcError` shape under this feature's own control instead of
 // Nest's default microservices exception handling.
 import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, Payload, Transport } from '@nestjs/microservices';
+import { Ctx, MessagePattern, NatsContext, Payload, Transport } from '@nestjs/microservices';
+import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import type { MsgHdrs } from 'nats';
 import type { OrdersCreateReplyPayload, RpcError } from '@otc/contracts';
 import { PlaceOrderHandler, type PlaceOrderCommand } from '../application/place-order.handler';
+import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
 import { OrdersCreateRequestDto } from './dto/orders-create.dto';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
@@ -40,8 +43,21 @@ export class OrdersCreateController {
   // microservice added by main.ts, and `ServerKafka` tried to
   // `consumer.subscribe()` a Kafka topic literally named "orders.create",
   // crashing the process at boot.
+  // `@Ctx() natsContext` (OR4, R57, design.md §4.3) — extracts the
+  // `traceparent`/`tracestate` the Gateway's `NatsRpcClientAdapter` now
+  // injects (`nats-rpc-client.adapter.ts`) and CONTINUES that trace
+  // (`otelContext.with(...)`) for the whole handler body, rather than
+  // starting a fresh one: `PlaceOrderHandler.execute`'s own transaction
+  // (and the outbox row it writes) runs inside this context, so
+  // `OutboxRecorder.record`'s `activeTraceParent()` captures the SAME
+  // trace id the Gateway's inbound HTTP request started.
   @MessagePattern('orders.create', Transport.NATS)
-  async create(@Payload() payload: unknown): Promise<OrdersCreateReplyPayload | RpcError> {
+  async create(@Payload() payload: unknown, @Ctx() natsContext: NatsContext): Promise<OrdersCreateReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(natsContext.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handle(payload));
+  }
+
+  private async handle(payload: unknown): Promise<OrdersCreateReplyPayload | RpcError> {
     const dto = plainToInstance(OrdersCreateRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true, forbidNonWhitelisted: false });
     if (violations.length > 0) {

@@ -16,16 +16,17 @@ const TABLE: readonly (readonly [string, string | null, number])[] = [
   ['stock.released.v1', null, 0],
   ['credit.rejected.v1', null, 0],
   ['credit.released.v1', null, 0],
+  ['order.saga_failed.v1', null, 0],
 ];
 
-describe('order-status-rank — PR12 › maps each of the thirteen facts to the implied status and rank of PR12\'s table, with the four compensation and credit facts implying none', () => {
+describe('order-status-rank — PR12 › maps each of the fourteen facts to the implied status and rank of PR12\'s table, with the five status-less facts implying none', () => {
   it.each(TABLE)('%s -> status %s, rank %d', (eventType, status, rank) => {
     expect(impliedStatusOf(eventType)).toBe(status);
     expect(rankOf(eventType)).toBe(rank);
   });
 
-  it('covers exactly the thirteen entries above — no more, no fewer', () => {
-    expect(TABLE).toHaveLength(13);
+  it('covers exactly the fourteen entries above — no more, no fewer', () => {
+    expect(TABLE).toHaveLength(14);
   });
 
   it('throws UnknownEventTypeForRankError for an eventType not in the table, rather than defaulting silently', () => {

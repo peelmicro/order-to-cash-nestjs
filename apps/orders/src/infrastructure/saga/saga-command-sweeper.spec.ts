@@ -3,6 +3,7 @@
 // `UnitOfWork`, `SagaCommandStore`, the dispatcher and `Clock` — no Docker.
 import { OrderNumber, UniqueId } from '@otc/shared-kernel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Envelope } from '@otc/contracts';
 import type { Clock } from '../../application/ports/clock.port';
 import type { SagaCommandRecord, SagaCommandStore } from '../../application/ports/saga-command-store.port';
 import type { TransactionContext, UnitOfWork } from '../../application/ports/unit-of-work.port';
@@ -38,8 +39,19 @@ function row(overrides: Partial<SagaCommandRecord> = {}): SagaCommandRecord {
       lines: [{ productCode: 'PRD-0001', units: 1 }],
     },
     triggeringEventId: UniqueId.generate(),
+    triggeringEventEnvelope: {
+      eventId: UniqueId.generate().value,
+      eventType: 'order.placed.v1',
+      aggregateId: UniqueId.generate().value,
+      correlationId: UniqueId.generate().value,
+      causationId: UniqueId.generate().value,
+      occurredAt: '2026-08-20T09:00:00.000Z',
+      payload: {},
+    } as unknown as Envelope,
+    triggeringEventTopic: 'otc.orders.facts.v1',
     status: 'pending',
     attempts: 0,
+    deadLetteredAt: null,
     ...overrides,
   };
 }
@@ -73,6 +85,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async claimDeadLetter() {
         return true;
       },
     };
@@ -109,6 +124,9 @@ describe('SagaCommandSweeperService', () => {
       async park() {
         return true;
       },
+      async claimDeadLetter() {
+        return true;
+      },
     };
     const dispatch = vi.fn().mockResolvedValue('sent');
     const dispatcher: DispatchesSagaCommands = { dispatch };
@@ -139,6 +157,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async claimDeadLetter() {
         return true;
       },
     };
@@ -174,6 +195,9 @@ describe('SagaCommandSweeperService', () => {
       async park() {
         return true;
       },
+      async claimDeadLetter() {
+        return true;
+      },
     };
     const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn() };
     const service = new SagaCommandSweeperService(fakeUnitOfWork(), store, dispatcher, fixedClock, config({ enabled: false }));
@@ -199,6 +223,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async claimDeadLetter() {
         return true;
       },
     };
@@ -229,6 +256,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async claimDeadLetter() {
         return true;
       },
     };

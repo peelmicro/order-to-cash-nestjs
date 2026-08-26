@@ -12,9 +12,18 @@ import { AppController } from './presentation/app.controller';
 import { ProjectorFactsController } from './presentation/projector-facts.controller';
 import { ProjectFactCommandHandler } from './application/commands/project-fact.command-handler';
 import { ProjectionApplyService } from './application/projection-apply.service';
-import { CLOCK } from './application/ports/clock.port';
+import { CLOCK, type Clock } from './application/ports/clock.port';
 import { READ_MODEL_WRITER, type ReadModelWriter } from './application/ports/read-model-writer.port';
 import { UPDATE_SIGNAL_PUBLISHER, type UpdateSignalPublisher } from './application/ports/update-signal.port';
+import { createKafkaClient } from './infrastructure/messaging/create-kafka-client';
+import {
+  FACT_RETRY_DISPATCHER,
+  FactRetryDispatcher,
+  REAL_DELAY,
+  loadFactRetryPolicy,
+} from './infrastructure/messaging/fact-retry-dispatcher';
+import { KafkaDlqPublisher } from './infrastructure/messaging/kafka-dlq-publisher';
+import { loadKafkaConfig } from './infrastructure/messaging/kafka.config';
 import { connectMongo, orderTimelineCollection, type MongoHandle } from './infrastructure/persistence/mongo-client';
 import { loadMongoConfig } from './infrastructure/persistence/mongo.config';
 import type { OrderTimelineDocument } from './infrastructure/persistence/order-timeline.document';
@@ -31,6 +40,8 @@ export const MONGO_DB = Symbol('MongoDb');
 const READ_MODEL_COLLECTION = Symbol('ReadModelCollection');
 /** The ONE outbound `NatsConnection` this service opens, for the update signal ONLY (design.md §7.1 — publish, never request). Exported (a plain symbol, not a domain port) so integration specs that exercise only the Kafka+MongoDB half (R50-R53, tasks.md group G) can `overrideProvider(NATS_CONNECTION)` with a fake, without needing a NATS broker for tests that are not about the signal at all — the signal itself (PR17-PR19) is proved separately, against a REAL NATS Testcontainers fixture, by update-signal.integration.spec.ts. */
 export const NATS_CONNECTION = Symbol('NatsConnection');
+/** Module-local token — the ONE `DlqPublisher` instance `FACT_RETRY_DISPATCHER` is built from (OR1/A4b) — same "module-local, not exported" shape apps/orders/src/app.module.ts uses for its own `DLQ_PUBLISHER`. A SEPARATE outbound Kafka producer from `UPDATE_SIGNAL_PUBLISHER`'s NATS connection above — this one targets `<topic>.dlq`, kafkajs, not NATS. */
+const DLQ_PUBLISHER = Symbol('DlqPublisher');
 
 /** Closes the outbound MongoDB connection on shutdown. */
 class MongoConnectionCloser implements OnApplicationShutdown {
@@ -72,6 +83,16 @@ class NatsConnectionCloser implements OnApplicationShutdown {
     {
       provide: NATS_CONNECTION,
       useFactory: (): Promise<NatsConnection> => createNatsConnection(loadNatsConfig()),
+    },
+    {
+      provide: DLQ_PUBLISHER,
+      useFactory: (): KafkaDlqPublisher => new KafkaDlqPublisher(createKafkaClient(loadKafkaConfig())),
+    },
+    {
+      provide: FACT_RETRY_DISPATCHER,
+      useFactory: (clock: Clock, dlq: KafkaDlqPublisher): FactRetryDispatcher =>
+        new FactRetryDispatcher(clock, REAL_DELAY, dlq, loadFactRetryPolicy()),
+      inject: [CLOCK, DLQ_PUBLISHER],
     },
     {
       provide: NatsConnectionCloser,

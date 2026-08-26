@@ -6,12 +6,15 @@ import { InvalidCredentialsError } from '../application/commands/login.command';
 import { InvoiceNotFoundError, InvoiceScanBudgetExceededError, OrderNotYetProjectedError } from '../application/commands/register-payment.command';
 import { RpcBusinessError, RpcTimeoutError } from '../application/ports/rpc-client.port';
 
-function fakeHost() {
+function fakeHost(requestCorrelationId?: string) {
   const json = vi.fn();
   const type = vi.fn().mockReturnValue({ json });
   const status = vi.fn().mockReturnValue({ type });
   const response = { status };
-  const host = { switchToHttp: () => ({ getResponse: () => response }) } as unknown as ArgumentsHost;
+  const request = { correlationId: requestCorrelationId };
+  const host = {
+    switchToHttp: () => ({ getResponse: () => response, getRequest: () => request }),
+  } as unknown as ArgumentsHost;
   return { host, status, type, json };
 }
 
@@ -110,5 +113,29 @@ describe('ProblemJsonExceptionFilter — R58 (every non-2xx is application/probl
     filter.catch(new InvalidCredentialsError(), host);
 
     expect(JSON.stringify(json.mock.calls[0][0])).not.toContain('secret');
+  });
+
+  // A6b/A6d — the problem-json response and its own log line share the
+  // SAME correlationId as the request that triggered it (design.md
+  // §4.4's named defect: this filter used to mint a FRESH
+  // `UniqueId.generate()` instead of reusing `CorrelationIdMiddleware`'s
+  // request-scoped id).
+  it('reuses the request-scoped correlationId — the response body and its own log line share the SAME id as the request, not a freshly minted one', () => {
+    const filter = new ProblemJsonExceptionFilter(clock);
+    const { host, json } = fakeHost('11111111-1111-4111-8111-111111111111');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      filter.catch(new Error('boom'), host);
+
+      const body = json.mock.calls[0]![0];
+      expect(body.correlationId).toBe('11111111-1111-4111-8111-111111111111');
+
+      const loggedLine = JSON.parse(errorSpy.mock.calls[0]![0] as string);
+      expect(loggedLine.correlationId).toBe('11111111-1111-4111-8111-111111111111');
+      expect(loggedLine.correlationId).toBe(body.correlationId);
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 });

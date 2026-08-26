@@ -1,3 +1,7 @@
+// A5 (observability_reliability design.md §4.3/§6): OTel bootstrap FIRST,
+// before every other import — `HttpInstrumentation` (this file's own
+// import) must patch `http` before `@nestjs/platform-express` requires it.
+import './infrastructure/observability/tracing';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';

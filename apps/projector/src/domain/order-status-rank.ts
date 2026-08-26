@@ -46,6 +46,10 @@ const RANK_TABLE: Readonly<Record<string, RankEntry>> = {
   'stock.released.v1': { status: null, rank: 0 },
   'credit.rejected.v1': { status: null, rank: 0 },
   'credit.released.v1': { status: null, rank: 0 },
+  // The 14th fact (R29's dead-letter clause / OR3, feature 27) — purely
+  // diagnostic, proves nothing about status, same shape as the other
+  // status-less facts above.
+  'order.saga_failed.v1': { status: null, rank: 0 },
 };
 
 export class UnknownEventTypeForRankError extends Error {

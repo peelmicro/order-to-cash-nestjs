@@ -8,6 +8,7 @@
 import { ArgumentsHost, BadRequestException, Catch, ExceptionFilter, HttpException, Inject } from '@nestjs/common';
 import type { Response } from 'express';
 import { UniqueId } from '@otc/shared-kernel';
+import type { RequestWithCorrelationId } from './correlation-id.middleware';
 import { classifyRpcError } from '../domain/problem/rpc-error-mapping';
 import { CLOCK, type Clock } from '../application/ports/clock.port';
 import { InvalidCredentialsError } from '../application/commands/login.command';
@@ -34,8 +35,15 @@ export class ProblemJsonExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const response = host.switchToHttp().getResponse<Response>();
+    const request = host.switchToHttp().getRequest<RequestWithCorrelationId>();
     const { status, code, title, detail, extra } = this.classify(exception);
-    const correlationId = UniqueId.generate().value;
+    // A6b — reuse the request-scoped id `CorrelationIdMiddleware` already
+    // stamped on every inbound request, so this error-path log line and
+    // response share the SAME correlationId as any other line logged
+    // about this request (R58's "every line" guarantee). Falls back to a
+    // fresh id only for the (untested-in-production) case of a context
+    // this middleware never ran for.
+    const correlationId = request?.correlationId ?? UniqueId.generate().value;
     const occurredAt = this.clock.now().toISOString();
 
     console.error(

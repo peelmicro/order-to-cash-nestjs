@@ -53,7 +53,8 @@ export class SagaFactHandler {
     private readonly ignoredFacts: RecordsIgnoredSagaFacts,
   ) {}
 
-  async handle(envelope: Envelope): Promise<SagaFactResult> {
+  /** `sourceTopic` — the Kafka topic constant `SagaFactsController.route` already knows for this call, threaded through so `commandStore.enqueue` can capture it verbatim (R29's dead-letter clause / OR3, observability_reliability design.md §4.2). */
+  async handle(envelope: Envelope, sourceTopic: string): Promise<SagaFactResult> {
     const step = stepFor(envelope.eventType);
     // Absent or `skip` (the three self-produced facts, SO2) — no I/O at
     // all, not even a dedup row. In production this branch is defensive:
@@ -126,6 +127,8 @@ export class SagaFactHandler {
             command: step.commandAfter,
             payload,
             triggeringEventId: UniqueId.from(envelope.eventId),
+            triggeringEventEnvelope: envelope,
+            triggeringEventTopic: sourceTopic,
           });
           enqueued = step.commandAfter;
         }

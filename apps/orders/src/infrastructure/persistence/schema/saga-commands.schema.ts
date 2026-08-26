@@ -5,6 +5,12 @@
 // both read/write this table, never a status the domain owns.
 import { char, datetime, index, int, json, mysqlTable, text, uniqueIndex, varchar } from 'drizzle-orm/mysql-core';
 
+// The full `Envelope` type lives in `@otc/contracts`; this schema file
+// stays framework/contracts-import-free (mirrors every other schema file's
+// convention) — `triggering_event_envelope` is typed `json`, mapped to
+// `Envelope` only at the repository/store boundary (observability_
+// reliability design.md §4.2).
+
 export const SAGA_COMMAND_KIND_VALUES = [
   'stock.reserve',
   'stock.release',
@@ -35,6 +41,16 @@ export const sagaCommands = mysqlTable(
     // The fact that owed this command — the causal link, and the join key
     // for feature 27's eventual dead-lettering (design.md §6.5).
     triggeringEventId: char('triggering_event_id', { length: 36 }).notNull(),
+    // The full, unmodified `Envelope` the fact handler held at `enqueue`
+    // time, and the Kafka topic it arrived on — captured verbatim so
+    // `SagaCommandDispatcher.park(...)` can dead-letter the triggering
+    // fact without a cross-service read (observability_reliability
+    // design.md §4.2, R29's DLQ clause / OR3).
+    triggeringEventEnvelope: json('triggering_event_envelope'),
+    triggeringEventTopic: varchar('triggering_event_topic', { length: 64 }),
+    // OR3's "at most once per row" marker: NULL until the row's first
+    // park, set exactly once in the same transaction as that park.
+    deadLetteredAt: datetime('dead_lettered_at', { mode: 'date' }),
     status: varchar('status', { length: 10 }).$type<SagaCommandStatusRow>().notNull().default('pending'),
     attempts: int('attempts').notNull().default(0),
     lastError: text('last_error'),

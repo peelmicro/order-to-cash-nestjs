@@ -12,7 +12,41 @@ import { StockCheckTimeoutError, type StockAvailabilityPort, type StockAvailabil
 import type { TransactionContext, UnitOfWork } from './ports/unit-of-work.port';
 import { OrderDiscountNotSupportedError, ReferenceDataNotFoundError, StockUnavailableError } from './place-order.errors';
 import { PlaceOrderHandler, type PlaceOrderCommand } from './place-order.handler';
+import { Order } from '../domain/order';
 import { OrderNumber, Quantity } from '@otc/shared-kernel';
+
+const FIXTURE_REQUEST_ID = '11111111-1111-4111-8111-111111111111';
+
+/** A fully-built `Order`, the shape `findByRequestId` returns for RI2/RI3's re-read paths — built via `Order.place` directly rather than through the handler, so these tests do not depend on the handler's own write path. */
+function buildOrder(sequence: number): Order {
+  return Order.place(
+    {
+      id: UniqueId.generate(),
+      orderReference: OrderNumber.fromSequence(sequence),
+      orderDate: new Date('2026-08-21T10:00:00.000Z'),
+      buyer: { gln: GLN.of('5412345000013'), code: FIXTURE_RETAILER_CODE },
+      supplier: { gln: GLN.of('5412345000037'), code: FIXTURE_COMPANY_CODE },
+      currency: FIXTURE_CURRENCY,
+      lines: [
+        {
+          productCode: FIXTURE_PRODUCT_CODE,
+          description: 'Widget',
+          quantity: Quantity.of(2),
+          unitPrice: Money.of(1_000, FIXTURE_CURRENCY),
+          lineDiscount: Money.of(0, FIXTURE_CURRENCY),
+        },
+      ],
+    },
+    { occurredAt: new Date('2026-08-21T10:00:00.000Z'), causationId: UniqueId.generate() },
+  );
+}
+
+/** The exact shape a `mysql2`/`drizzle-orm` duplicate-key error on `uq_orders_request_id` takes — `place-order-request-id.ts`'s `isDuplicateRequestIdError` narrows on `cause.code` plus the constraint name in the message (mirrors Billing's `isDuplicateEntryError`). */
+function duplicateRequestIdError(): Error {
+  return Object.assign(new Error("Duplicate entry 'x' for key 'orders.uq_orders_request_id'"), {
+    cause: { code: 'ER_DUP_ENTRY', sqlMessage: "Duplicate entry 'x' for key 'orders.uq_orders_request_id'" },
+  });
+}
 
 const FIXTURE_CURRENCY = 'EUR';
 const FIXTURE_RETAILER_CODE = 'RET-0001';
@@ -71,7 +105,12 @@ describe('PlaceOrderHandler', () => {
     executeSpy = vi.fn(async (work: (tx: TransactionContext) => Promise<unknown>) => work(fakeTx()));
 
     unitOfWork = { execute: executeSpy as UnitOfWork['execute'] };
-    orders = { save: saveSpy as OrderRepository['save'], findById: vi.fn(), findByReference: vi.fn() };
+    orders = {
+      save: saveSpy as OrderRepository['save'],
+      findById: vi.fn(),
+      findByReference: vi.fn(),
+      findByRequestId: vi.fn(async () => null),
+    };
     orderNumbers = { next: vi.fn(async () => OrderNumber.fromSequence(7)) };
     referenceData = { resolve: vi.fn(async () => fakeReferenceData()) };
     stockAvailability = {
@@ -177,5 +216,83 @@ describe('PlaceOrderHandler', () => {
     expect(savedOrder.lines[0].unitPrice.amount).toBe(999);
     expect(savedOrder.lines[0].lineDiscount.amount).toBe(50);
     expect(savedOrder.lines[0].quantity.equals(Quantity.of(3))).toBe(true);
+  });
+
+  // RI1–RI4 (observability_reliability requirements.md §4, R62)
+  describe('requestId idempotent replay (RI1–RI4)', () => {
+    it('RI4 — omitting requestId places a normal order, performing no requestId lookup and consulting no constraint', async () => {
+      await handler.execute(baseCommand());
+
+      expect(orders.findByRequestId).not.toHaveBeenCalled();
+      expect(saveSpy).toHaveBeenCalledTimes(1);
+      const [, , savedRequestId] = saveSpy.mock.calls[0]!;
+      expect(savedRequestId).toBeUndefined();
+    });
+
+    it('RI2 — a repeated requestId returns the original order\'s reply performing no reference-data lookup and no stock check', async () => {
+      const existing = buildOrder(42);
+      orders.findByRequestId = vi.fn(async () => existing);
+      referenceData.resolve = vi.fn(async () => {
+        throw new Error('RI2 violated: reference-data resolution must not run on the fast path');
+      });
+      stockAvailability.check = vi.fn(async () => {
+        throw new Error('RI2 violated: the stock check must not run on the fast path');
+      });
+      handler = new PlaceOrderHandler(unitOfWork, orders, orderNumbers, referenceData, stockAvailability, clock);
+
+      const result = await handler.execute(baseCommand({ requestId: FIXTURE_REQUEST_ID }));
+
+      expect(orders.findByRequestId).toHaveBeenCalledWith(FIXTURE_REQUEST_ID);
+      expect(result.orderId).toBe(existing.id.value);
+      expect(result.orderReference).toBe(existing.orderReference.value);
+      expect(executeSpy).not.toHaveBeenCalled();
+      expect(saveSpy).not.toHaveBeenCalled();
+      expect(orderNumbers.next).not.toHaveBeenCalled();
+    });
+
+    it('RI3 — a duplicate-key error on save resolving to uq_orders_request_id is caught (not order_reference\'s) and resolves to the winner\'s re-read reply', async () => {
+      const winner = buildOrder(99);
+      // First call (RI2's fast path, before the transaction opens): no
+      // committed order yet. Second call (RI3's re-read, inside `tx`
+      // after the losing INSERT throws): the winner is now visible.
+      const findByRequestId = vi.fn(async (_requestId: string, tx?: TransactionContext) =>
+        tx ? winner : null,
+      );
+      orders = {
+        save: saveSpy as OrderRepository['save'],
+        findById: vi.fn(),
+        findByReference: vi.fn(),
+        findByRequestId,
+      };
+      saveSpy.mockImplementation(async () => {
+        throw duplicateRequestIdError();
+      });
+      handler = new PlaceOrderHandler(unitOfWork, orders, orderNumbers, referenceData, stockAvailability, clock);
+
+      const result = await handler.execute(baseCommand({ requestId: FIXTURE_REQUEST_ID }));
+
+      expect(result.orderId).toBe(winner.id.value);
+      expect(result.orderReference).toBe(winner.orderReference.value);
+      expect(findByRequestId).toHaveBeenCalledTimes(2);
+    });
+
+    it('RI3 — a duplicate-key error on order_reference (not requestId) propagates unchanged', async () => {
+      const orderReferenceDup = Object.assign(new Error("Duplicate entry 'ORD-000007' for key 'orders.order_reference'"), {
+        cause: { code: 'ER_DUP_ENTRY', sqlMessage: "Duplicate entry 'ORD-000007' for key 'orders.order_reference'" },
+      });
+      saveSpy.mockImplementation(async () => {
+        throw orderReferenceDup;
+      });
+      handler = new PlaceOrderHandler(unitOfWork, orders, orderNumbers, referenceData, stockAvailability, clock);
+
+      await expect(handler.execute(baseCommand({ requestId: FIXTURE_REQUEST_ID }))).rejects.toBe(orderReferenceDup);
+    });
+
+    it('passes command.requestId through to save() so the repository can persist it on the genuine-INSERT path', async () => {
+      await handler.execute(baseCommand({ requestId: FIXTURE_REQUEST_ID }));
+
+      const [, , savedRequestId] = saveSpy.mock.calls[0]!;
+      expect(savedRequestId).toBe(FIXTURE_REQUEST_ID);
+    });
   });
 });

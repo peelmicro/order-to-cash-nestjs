@@ -38,13 +38,41 @@ export class DrizzleOrderRepository implements OrderRepository {
   }
 
   /**
+   * RI1/RI2's lookup (design.md §3.2) — same read shape as
+   * `findById`/`findByReference` when called WITHOUT `tx` (RI2's fast
+   * path, before any transaction opens). WITH `tx`, this is RI3's
+   * re-read-the-winner path — a LOCKING read (`findOne`'s `forUpdate`),
+   * required so the loser's re-read cannot miss a row its own INSERT's
+   * duplicate-key error just proved exists (see `findOne`'s comment).
+   */
+  async findByRequestId(requestId: string, tx?: TransactionContext): Promise<Order | null> {
+    return this.findOne(this.resolveQueryable(tx), eq(orders.requestId, requestId), tx !== undefined);
+  }
+
+  /**
    * Persists the `orders` row and its `order_items`, then hands
    * `order.pullDomainEvents()` to the `OutboxRecorder` inside the SAME
    * `tx` (R13). `tx` is required — never opens a transaction of its own.
+   *
+   * The `orders` row write forks on whether this `save` is a genuine
+   * INSERT (a brand-new order — `order.placed.v1` is among the pulled
+   * domain events, emitted only by `Order.place(...)`) or an UPDATE (a
+   * saga-step transition — `SagaFactHandler` always `findById`s an
+   * existing order first, so no creation event is pulled). The two paths
+   * were folded into one `ON DUPLICATE KEY UPDATE` upsert before this
+   * feature; that no longer works once `uq_orders_request_id` exists,
+   * because MySQL's upsert catches a collision on ANY of the row's unique
+   * keys and silently UPDATEs the matched row instead of raising —
+   * exactly the wrong shape for RI3, which needs a genuine, catchable
+   * duplicate-key error on a concurrent-first-request race. Events are
+   * pulled BEFORE either write so `isNewOrder` can be read from them
+   * without a second, destructive `pullDomainEvents()` call later.
    */
-  async save(order: Order, tx: TransactionContext): Promise<void> {
+  async save(order: Order, tx: TransactionContext, requestId?: string): Promise<void> {
     const db = asDrizzleTx(tx);
     const now = this.clock.now();
+    const events = order.pullDomainEvents();
+    const isNewOrder = events.some((event) => event.eventType === 'order.placed.v1');
 
     const [currencyRow] = await db
       .select({ id: currencies.id })
@@ -87,19 +115,31 @@ export class DrizzleOrderRepository implements OrderRepository {
       order,
       { currencyId: currencyRow.id, retailerId: retailerRow.id, companyId: companyRow.id },
       { createdAt: now, updatedAt: now },
+      requestId,
     );
 
-    await db
-      .insert(orders)
-      .values(orderRow)
-      .onDuplicateKeyUpdate({
-        set: {
+    if (isNewOrder) {
+      // A genuine INSERT — no `ON DUPLICATE KEY UPDATE`, so a collision on
+      // ANY unique key (id, order_reference, request_id) throws rather
+      // than silently overwriting an unrelated row. `PlaceOrderHandler`
+      // is the one place that knows what an `uq_orders_request_id`
+      // collision means (RI3); every other collision propagates as-is.
+      await db.insert(orders).values(orderRow);
+    } else {
+      // An UPDATE of an already-persisted order — `request_id` is
+      // immutable once set (never part of this SET clause) and the row is
+      // located by its own primary key, so no unique-key collision is
+      // possible here.
+      await db
+        .update(orders)
+        .set({
           status: orderRow.status,
           cancellationReason: orderRow.cancellationReason,
           notes: orderRow.notes,
           updatedAt: orderRow.updatedAt,
-        },
-      });
+        })
+        .where(eq(orders.id, orderRow.id));
+    }
 
     const itemRows = toOrderItemsTableRows(order, productIdByCode, { createdAt: now, updatedAt: now });
     if (itemRows.length > 0) {
@@ -122,8 +162,9 @@ export class DrizzleOrderRepository implements OrderRepository {
 
     // The repository — not the handler — drains the aggregate (design.md
     // §4.4): a handler that had to remember a second call could forget it,
-    // which is exactly the dual-write R13 exists to prevent.
-    const events = order.pullDomainEvents();
+    // which is exactly the dual-write R13 exists to prevent. `events` was
+    // already pulled above (to decide the insert/update fork); draining is
+    // a one-shot operation, so it is NOT called a second time here.
     await this.outboxRecorder.record(tx, events);
   }
 
@@ -131,8 +172,23 @@ export class DrizzleOrderRepository implements OrderRepository {
     return tx ? asDrizzleTx(tx) : this.db;
   }
 
-  private async findOne(db: Queryable, condition: ReturnType<typeof eq>): Promise<Order | null> {
-    const [row] = await db
+  /**
+   * `forUpdate`: a LOCKING (current) read rather than a plain snapshot
+   * read. Required for RI3's re-read-the-winner path specifically:
+   * MySQL's default REPEATABLE READ isolation takes its consistent
+   * snapshot at a transaction's FIRST read, which can predate the
+   * winner's commit even though the loser's own INSERT (a genuine
+   * duplicate-key check, not a snapshot read) already saw the conflict —
+   * so a plain `SELECT` inside the loser's transaction can miss a row
+   * its own INSERT just proved exists. `FOR UPDATE` always reads the
+   * latest committed version, closing that window. Every other caller
+   * (`findById`/`findByReference`, and `findByRequestId`'s own
+   * no-`tx` RI2 fast path) keeps the plain read — no other caller
+   * re-reads inside the SAME transaction as a write that could have
+   * lost a same-key race.
+   */
+  private async findOne(db: Queryable, condition: ReturnType<typeof eq>, forUpdate = false): Promise<Order | null> {
+    const query = db
       .select({
         id: orders.id,
         orderReference: orders.orderReference,
@@ -152,12 +208,13 @@ export class DrizzleOrderRepository implements OrderRepository {
       .innerJoin(currencies, eq(orders.currencyId, currencies.id))
       .where(condition)
       .limit(1);
+    const [row] = forUpdate ? await query.for('update') : await query;
 
     if (!row) {
       return null;
     }
 
-    const itemRows = await db
+    const itemsQuery = db
       .select({
         id: orderItems.id,
         productCode: products.code,
@@ -169,6 +226,13 @@ export class DrizzleOrderRepository implements OrderRepository {
       .from(orderItems)
       .innerJoin(products, eq(orderItems.productId, products.id))
       .where(eq(orderItems.orderId, row.id));
+    // MySQL/InnoDB REPEATABLE READ fixes this transaction's consistent-read
+    // snapshot at its FIRST read of any kind — including the earlier
+    // duplicate-key-triggering INSERT and the locking `orders` read above
+    // — so a PLAIN select here can still miss rows a `FOR UPDATE` sibling
+    // query just proved committed (found live, RI3's own integration
+    // test failed on exactly this before both queries were made locking).
+    const itemRows = forUpdate ? await itemsQuery.for('update') : await itemsQuery;
 
     return reconstituteOrder(row as OrderRowWithCodes, itemRows as OrderItemRowWithCode[]);
   }

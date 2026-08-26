@@ -49,6 +49,7 @@ function failFindByIdOnce(real: OrderRepository, failOnce: Set<string>): OrderRe
       return real.findById(id, tx);
     },
     findByReference: (...args) => real.findByReference(...args),
+    findByRequestId: (...args) => real.findByRequestId(...args),
     save: (...args) => real.save(...args),
   };
 }

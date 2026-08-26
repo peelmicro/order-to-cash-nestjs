@@ -20,11 +20,26 @@
 // explicit argument stays — cheap insurance against the same bug if a
 // second transport is ever added by mistake, and the ESLint
 // `no-restricted-syntax` guard enforces it regardless.
+//
+// OR1/A4b (observability_reliability design.md §4.1) — `route`'s dispatch
+// point is now wrapped by `FactRetryDispatcher`: the SAME
+// `commandBus.execute(...)` call as before, retried in-line with backoff,
+// dead-lettered to `<topic>.dlq` (and the offset still committed) only on
+// exhaustion. A syntactically malformed envelope is still handled entirely
+// by the pre-existing, unwrapped `parseFactEnvelope` log-and-ack path
+// above — this wrapper only widens what happens after a syntactically
+// valid envelope fails semantically deep inside a template builder (a
+// missing `retailerCode`, for instance — see
+// notification-dead-letter.integration.spec.ts's own incident
+// reproduction).
 import { Controller, Inject, Optional } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
-import { EventPattern, Payload, Transport } from '@nestjs/microservices';
+import { Ctx, EventPattern, KafkaContext, Payload, Transport } from '@nestjs/microservices';
+import { context as otelContext, SpanKind } from '@opentelemetry/api';
 import type { Envelope } from '@otc/contracts';
 import { notifyCommandFor } from '../application/commands/notify.commands';
+import { FACT_RETRY_DISPATCHER, type DispatchesFactRetries } from '../infrastructure/messaging/fact-retry-dispatcher';
+import { extractKafkaTraceContext, startChildSpan, type KafkaHeaderCarrier } from '../infrastructure/observability/trace-context';
 import {
   BILLING_FACTS_TOPIC,
   FULFILLMENT_FACTS_TOPIC,
@@ -96,6 +111,7 @@ export class NotificationFactsController {
 
   constructor(
     @Inject(CommandBus) private readonly commandBus: CommandBus,
+    @Inject(FACT_RETRY_DISPATCHER) private readonly retryDispatcher: DispatchesFactRetries,
     // `@Optional()` — same reasoning as saga-facts.controller.ts's
     // constructor comment: without it, Nest's container tries (and fails)
     // to resolve an interface-typed parameter with no registered provider.
@@ -105,21 +121,21 @@ export class NotificationFactsController {
   }
 
   @EventPattern(ORDERS_FACTS_TOPIC, Transport.KAFKA)
-  async onOrdersFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(ORDERS_FACTS_TOPIC, payload);
+  async onOrdersFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(ORDERS_FACTS_TOPIC, payload, kafkaContext);
   }
 
   @EventPattern(FULFILLMENT_FACTS_TOPIC, Transport.KAFKA)
-  async onFulfillmentFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(FULFILLMENT_FACTS_TOPIC, payload);
+  async onFulfillmentFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(FULFILLMENT_FACTS_TOPIC, payload, kafkaContext);
   }
 
   @EventPattern(BILLING_FACTS_TOPIC, Transport.KAFKA)
-  async onBillingFact(@Payload() payload: unknown): Promise<void> {
-    await this.route(BILLING_FACTS_TOPIC, payload);
+  async onBillingFact(@Payload() payload: unknown, @Ctx() kafkaContext: KafkaContext): Promise<void> {
+    await this.route(BILLING_FACTS_TOPIC, payload, kafkaContext);
   }
 
-  private async route(topic: string, payload: unknown): Promise<void> {
+  private async route(topic: string, payload: unknown, kafkaContext: KafkaContext): Promise<void> {
     let envelope: Envelope;
     try {
       envelope = parseFactEnvelope(payload);
@@ -142,6 +158,27 @@ export class NotificationFactsController {
       return;
     }
 
-    await this.commandBus.execute(new NotifyCommand(envelope));
+    // OR4/R57 (design.md §4.3) — the fact-consume entry point is one of
+    // the two points this feature creates a manual span at. Extracts the
+    // `traceparent` the outbox relay of the PRODUCING service injected and
+    // wraps the whole retry-then-DLQ dispatch below in it, so every retry
+    // attempt AND any eventual DLQ publish (`kafka-dlq-publisher.ts`)
+    // share the same trace id as the fact that triggered them.
+    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
+    const extracted = extractKafkaTraceContext(headers);
+    const { span, spanContext } = startChildSpan(`fact.consume ${envelope.eventType}`, extracted, SpanKind.CONSUMER);
+
+    // OR1/A4b — retried in-line with backoff, dead-lettered (offset still
+    // committed) only on exhaustion. On success this resolves normally,
+    // exactly as the bare `commandBus.execute(...)` call did before.
+    try {
+      await otelContext.with(spanContext, () =>
+        this.retryDispatcher.dispatch(topic, envelope, 'notifications', async (env) => {
+          await this.commandBus.execute(new NotifyCommand(env));
+        }),
+      );
+    } finally {
+      span.end();
+    }
   }
 }

@@ -7,7 +7,7 @@
 > per-feature `design.md`.
 >
 > Companion documents: [`domain-model.md`](./domain-model.md) (aggregates, state
-> machines, the thirteen facts) and [`requirements.md`](./requirements.md)
+> machines, the fourteen facts) and [`requirements.md`](./requirements.md)
 > (R19–R29 cover this document).
 
 ---
@@ -273,9 +273,12 @@ sequenceDiagram
 | `payment.received.v1` | ✅ → `paid` | ✅ | ✅ |
 | `order.completed.v1` | — *(it emitted it)* | ✅ | ✅ |
 | `order.cancelled.v1` | — *(it emitted it)* | ✅ | ✅ |
+| `order.saga_failed.v1` | — *(it emitted it)* | ✅ | — |
 
-- **Projector consumes all thirteen.** It is the audit timeline; a fact it does
-  not consume is a fact operations cannot see.
+- **Projector consumes all fourteen.** It is the audit timeline; a fact it does
+  not consume is a fact operations cannot see. `order.saga_failed.v1` renders
+  as a diagnostic timeline entry only (R29's dead-letter clause) — no
+  document status field changes because of it.
 - **Notifications consumes seven**: `order.placed`, `order.confirmed`,
   `order.despatched`, `invoice.issued`, `payment.received`, `order.completed`,
   `order.cancelled`. The `stock.*` and `credit.*` facts are internal saga

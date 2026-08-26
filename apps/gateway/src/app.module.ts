@@ -11,7 +11,8 @@
 // projector's `order_timeline` collection (R54 — never a write model),
 // and constructs NO write-database client of any kind (Group B's own
 // rule, enforced behaviourally by `no-write-database-client.spec.ts`).
-import { Module, type OnApplicationShutdown } from '@nestjs/common';
+import { type MiddlewareConsumer, Module, type NestModule, type OnApplicationShutdown } from '@nestjs/common';
+import { CorrelationIdMiddleware } from './presentation/correlation-id.middleware';
 import { CqrsModule } from '@nestjs/cqrs';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import type { Collection, Db } from 'mongodb';
@@ -200,4 +201,11 @@ class StreamSignalCloser implements OnApplicationShutdown {
     ListCatalogHandler,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  // A6b (observability_reliability) — stamps `req.correlationId` before
+  // every route, including the error path `problem-json.filter.ts` reads
+  // it from (R58's "every line" guarantee).
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+  }
+}

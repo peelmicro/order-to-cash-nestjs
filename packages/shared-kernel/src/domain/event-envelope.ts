@@ -3,8 +3,14 @@ import { UniqueId } from './unique-id.js';
 
 // `<aggregate>.<fact>.v<n>` — e.g. `order.placed.v1`. `n` never has a
 // leading zero (`v1`, `v2`, … `v10`), matching the coding-conventions table
-// in CLAUDE.md.
-const EVENT_TYPE_PATTERN = /^[a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9]*\.v[1-9][0-9]*$/;
+// in CLAUDE.md. The `<fact>` segment additionally allows an underscore
+// after its first letter (`[a-zA-Z][a-zA-Z0-9_]*`, widened by
+// `observability_reliability`/R29's dead-letter clause for
+// `order.saga_failed.v1` — the 14th fact, snake_case chosen so
+// `saga_failed` reads as one compound word on the wire and in every
+// consumer's `switch`); `<aggregate>` stays letters-only, since no
+// aggregate name has ever needed one.
+const EVENT_TYPE_PATTERN = /^[a-zA-Z][a-zA-Z0-9]*\.[a-zA-Z][a-zA-Z0-9_]*\.v[1-9][0-9]*$/;
 
 export class InvalidDomainEventEnvelopeError extends DomainError {
   readonly code = 'INVALID_DOMAIN_EVENT_ENVELOPE';
@@ -17,7 +23,7 @@ export class InvalidDomainEventEnvelopeError extends DomainError {
 /**
  * The fact envelope shared by every domain event in the trilogy —
  * domain-model.md §7.1. `payload` is fact-specific; every other field is
- * fixed by the envelope contract and identical across all thirteen facts.
+ * fixed by the envelope contract and identical across all fourteen facts.
  */
 export interface DomainEventEnvelope<
   TPayload extends Record<string, unknown> = Record<string, unknown>,

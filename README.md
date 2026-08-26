@@ -160,7 +160,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 11 | Notifications service | ✅ port + Mailtrap/console adapters, seven facts, durable idempotency |
 | 12 | Projector service + MongoDB read model | ✅ every fact → one order timeline, idempotent, NATS update signal |
 | 13 | Gateway / BFF | ✅ 18 REST paths, JWT, NATS RPC, SSE stream (reconnect-safe heartbeat), Swagger at `/docs` |
-| 14 | Health checks, OTel propagation, retry + DLQ | ⬜ |
+| 14 | Health checks, OTel propagation, retry + DLQ | 🚧 requestId dedup, dead-letter (3 services), trace propagation done; log correlation/metrics/health checks pending |
 | 15 | End-to-end saga verification | ⬜ |
 | 16 | Nuxt 4 web app | ⬜ |
 | 17 | Web component tests | ⬜ |

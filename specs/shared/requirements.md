@@ -57,8 +57,8 @@ Rules of this document:
 | `billing_credit` (incl. simulator affordance R42 – R44) | R37 – R44 | 8 |
 | `billing_invoicing` | R45 – R49 | 5 |
 | `projector_read_model` | R50 – R55 | 6 |
-| `observability_reliability` | R56 – R60 | 5 |
-| **Total** | | **61** |
+| `observability_reliability` | R56 – R60, R62 | 6 |
+| **Total** | | **62** |
 
 ---
 
@@ -502,11 +502,40 @@ unreachable, THEN the readiness check SHALL report not-ready while the liveness
 check SHALL remain unaffected, so that an unready service is withdrawn from
 traffic without being restarted.
 
+> **Id ordering / provenance.** This section reads R56 – R60 followed by
+> **R62**. R62 was added after R61 already existed and ids are **never
+> renumbered** (see *Notation*), so it takes the next free id. R62 is not,
+> conceptually, an observability or reliability requirement — it is
+> `orders.create`'s idempotent-replay contract. `asyncapi.yaml`'s
+> `OrdersCreateRequestPayload.requestId` has stated it normatively ("a repeat
+> with the same value returns the original order instead of placing a second
+> one") since Pass B, but it was never given a shared `R<n>` at the time, and
+> `orders_acceptance` (feature 15, `sdd: false`) shipped the field
+> unenforced — accepted, validated, seeded only into `causationId`. The gap
+> was opened by `progress/review_orders_acceptance.md`'s finding D3, tracked
+> as its own dormant feature (`orders_idempotent_replay`, id 39) from Phase 8,
+> and folded into this feature (`observability_reliability`, id 27) by
+> explicit human decision on 2026-08-26. R62 sits in **this** section because
+> feature 27 is the feature that closes it, exactly as R61 sits with
+> `fulfillment_stock` for the same reason — not because request-id dedup is
+> conceptually about tracing, logs, metrics or health.
+
+**R62.** WHEN `orders.create` is received carrying a `requestId` that matches
+a previously accepted request, THE SYSTEM SHALL create no new order and SHALL
+return the reply of the **original** order — the same `orderId`,
+`orderReference`, `currency` and monetary fields — as if this request had
+placed it; WHERE two requests carrying the same, not-yet-seen `requestId`
+arrive concurrently, THE SYSTEM SHALL ensure that exactly one order is
+created for that `requestId` and SHALL resolve the other request to that same
+order's reply, never to a second order or to an error; and WHERE `requestId`
+is omitted, THE SYSTEM SHALL place a normal order with no deduplication
+performed.
+
 ---
 
 ## 9. Coverage notes
 
-What these 61 requirements deliberately cover, so a reviewer can check the
+What these 62 requirements deliberately cover, so a reviewer can check the
 spec rather than the code:
 
 | Concern | Covered by |
@@ -524,6 +553,7 @@ spec rather than the code:
 | **Read-model projection idempotency** | R51 |
 | **Out-of-order tolerance in the read model** | R50 (ordering key), R52 (no status regression), R53 (placeholder) |
 | **Trace propagation across both brokers** | R56, R57 |
+| **Client-retry-safe order acceptance** | R62 (`orders.create`'s `requestId`; the concurrent-first-request race resolves to one order, never two, never an error) |
 | **Money as integer minor units, always** | R1, reinforced by R2 |
 | **The `.99` affordance, labelled as an affordance** | R42, R43, R44 and the boxed warning in §5.1 |
 

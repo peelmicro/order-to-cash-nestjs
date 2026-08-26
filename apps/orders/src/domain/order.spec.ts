@@ -376,3 +376,43 @@ describe('Order.lines — OA5', () => {
     expect(order.lines).toEqual(order.lines);
   });
 });
+
+// R29's dead-letter clause / OR3 (observability_reliability design.md §4.2)
+describe('Order.recordSagaFailure — R29, OR3', () => {
+  it('appends exactly one OrderSagaFailed event and leaves status, lines and totals unchanged', () => {
+    const order = driveTo('stock_reserved');
+    order.pullDomainEvents(); // drain place()'s + markStockReserved()'s events first
+    const statusBefore = order.status;
+    const linesBefore = order.lines;
+    const totalBefore = order.totalAmount;
+
+    order.recordSagaFailure(
+      { command: 'credit.hold', attempts: 3, lastError: 'SagaCommandTimeoutError: timed out after 5000ms' },
+      ctx(),
+    );
+
+    const events = order.pullDomainEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]!.eventType).toBe('order.saga_failed.v1');
+    expect(events[0]!.payload).toMatchObject({
+      orderReference: order.orderReference.value,
+      command: 'credit.hold',
+      attempts: 3,
+      lastError: 'SagaCommandTimeoutError: timed out after 5000ms',
+    });
+    expect(order.status).toBe(statusBefore);
+    expect(order.lines).toEqual(linesBefore);
+    expect(order.totalAmount.equals(totalBefore)).toBe(true);
+  });
+
+  it('correlationId and aggregateId are both the order id (R12) — the same convention every other fact follows', () => {
+    const order = Order.place(placeInput(), ctx());
+    order.pullDomainEvents();
+
+    order.recordSagaFailure({ command: 'stock.reserve', attempts: 3, lastError: 'boom' }, ctx());
+
+    const [event] = order.pullDomainEvents();
+    expect(event!.correlationId.equals(order.id)).toBe(true);
+    expect(event!.aggregateId.equals(order.id)).toBe(true);
+  });
+});

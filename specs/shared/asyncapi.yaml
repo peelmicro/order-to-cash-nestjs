@@ -7,7 +7,7 @@ info:
     **Stack-agnostic** messaging contract of the Order-To-Cash trilogy, reused
     **verbatim** by assessments **#7**, **#8** and **#9**. It defines the two
     transports, the fact topics and their dead-letter companions, the shared
-    event envelope, all thirteen domain facts, and every request-reply subject
+    event envelope, all fourteen domain facts, and every request-reply subject
     with both its request and its reply schema.
 
     Companion documents: `domain-model.md` (aggregates, invariants, the fact
@@ -18,7 +18,7 @@ info:
 
     | | Fact stream (Kafka) | RPC transport (NATS core request-reply) |
     |---|---|---|
-    | Carries | The thirteen domain **facts** — immutable, durable, replayable | **Commands and queries** — one responder, answer needed now |
+    | Carries | The fourteen domain **facts** — immutable, durable, replayable | **Commands and queries** — one responder, answer needed now |
     | Channels here | `otc.*.facts.v1` (+ `.dlq`) | the `orders.*`, `fulfillment.*`, `billing.*`, `catalog.*` subjects |
     | Delivery | At-least-once, per-order ordered by partition key | At-most-once; a timeout is a legitimate, handled answer |
     | Advances the saga | **Yes — only facts advance it** | **No.** A reply is used only to decide whether to retry |
@@ -96,8 +96,11 @@ channels:
     description: |
       **Producer:** `orders`.
       **Consumers:** `orders.saga` (for `order.placed.v1` only — the
-      orchestrator ignores the three facts it produced itself), `projector`
-      (all facts), `notifications` (all four facts on this topic).
+      orchestrator ignores the three facts it produced itself, and never
+      consumes `order.saga_failed.v1` either — it is the one that emits
+      it), `projector` (all facts), `notifications` (four of the five
+      facts on this topic — not `order.saga_failed.v1`, which is purely
+      diagnostic, R29's dead-letter clause / OR3).
 
       Partition key: `correlationId` (the order id).
     servers:
@@ -111,6 +114,8 @@ channels:
         $ref: '#/components/messages/OrderCompleted'
       orderCancelled:
         $ref: '#/components/messages/OrderCancelled'
+      orderSagaFailed:
+        $ref: '#/components/messages/OrderSagaFailed'
     bindings:
       kafka:
         topic: otc.orders.facts.v1
@@ -650,17 +655,20 @@ operations:
       $ref: '#/channels/ordersFacts'
     summary: Consumer name — projector.
     description: &projectorDescription |
-      The projector consumes **all thirteen** facts and is the **sole writer**
+      The projector consumes **all fourteen** facts and is the **sole writer**
       of the read model (R54). For each fact it appends a timeline entry keyed
       by `correlationId`, ordered by `occurredAt` (R50), skips an `eventId`
       already present (R51), never regresses the document status on
       out-of-order delivery (R52), and creates a placeholder document when a
-      fact outruns `order.placed.v1` (R53).
+      fact outruns `order.placed.v1` (R53). `order.saga_failed.v1` renders as
+      a diagnostic timeline entry only — it changes no document status field
+      (R29's dead-letter clause / OR3).
     messages:
       - $ref: '#/channels/ordersFacts/messages/orderPlaced'
       - $ref: '#/channels/ordersFacts/messages/orderConfirmed'
       - $ref: '#/channels/ordersFacts/messages/orderCompleted'
       - $ref: '#/channels/ordersFacts/messages/orderCancelled'
+      - $ref: '#/channels/ordersFacts/messages/orderSagaFailed'
 
   projectorConsumesFulfillmentFacts:
     action: receive
@@ -696,7 +704,7 @@ operations:
       $ref: '#/channels/ordersFacts'
     summary: Consumer name — notifications.
     description: &notificationsDescription |
-      Notifications consumes exactly seven of the thirteen facts:
+      Notifications consumes exactly seven of the fourteen facts:
       `order.placed.v1`, `order.confirmed.v1`, `order.despatched.v1`,
       `invoice.issued.v1`, `payment.received.v1`, `order.completed.v1`,
       `order.cancelled.v1`.
@@ -1140,7 +1148,7 @@ components:
       location: '$message.header#/x-correlation-id'
 
   messages:
-    # ───────────────────────────── the 13 facts ─────────────────────────────
+    # ───────────────────────────── the 14 facts ─────────────────────────────
     OrderPlaced:
       name: order.placed.v1
       title: Order placed
@@ -1464,6 +1472,32 @@ components:
       tags:
         - name: orders
         - name: compensation
+
+    OrderSagaFailed:
+      name: order.saga_failed.v1
+      title: Saga command dead-lettered
+      summary: A saga command exhausted its in-line retries and parked; the order stays in its last legal status.
+      description: |
+        Emitted by Orders, at most once per `saga_commands` row, on the first
+        transition into `parked` (R29's dead-letter clause, OR3) — never on a
+        later re-park of the same row. Purely diagnostic: no aggregate
+        invariant depends on it, and `SO5`'s indefinite capped-backoff retry
+        of the underlying command is unaffected by its emission.
+      contentType: application/json
+      correlationId:
+        $ref: '#/components/correlationIds/orderCorrelationId'
+      headers:
+        $ref: '#/components/schemas/FactHeaders'
+      payload:
+        $ref: '#/components/schemas/OrderSagaFailedEvent'
+      bindings:
+        kafka:
+          key:
+            $ref: '#/components/schemas/UniqueId'
+          bindingVersion: '0.5.0'
+      tags:
+        - name: orders
+        - name: reliability
 
     # ─────────────────────────── dead-letter record ──────────────────────────
     DeadLetterRecord:
@@ -2056,7 +2090,7 @@ components:
       description: |
         The payload-independent contract carried by **every** fact, identical
         across the trilogy (R11, R12). No field may be absent, null or empty.
-        Each of the thirteen fact schemas composes this with a `const`
+        Each of the fourteen fact schemas composes this with a `const`
         `eventType` and its own `payload`.
       properties:
         eventId:
@@ -2149,7 +2183,7 @@ components:
         - x-attempts
         - x-error
 
-    # ──────────────────────── the 13 fact payloads ──────────────────────────
+    # ──────────────────────── the 14 fact payloads ──────────────────────────
     OrderPlacedPayload:
       type: object
       properties:
@@ -2524,7 +2558,43 @@ components:
         - cancelledAt
         - compensationSteps
 
-    # ─────────────────────── the 13 fact event schemas ──────────────────────
+    # ── the 14th fact (observability_reliability / feature 27) ───────────────
+    # OrderSagaFailedPayload is the 14th fact, added to satisfy R29's
+    # dead-letter clause ("record a saga-failure entry in the order
+    # timeline" — `order timeline` is R50's defined term, the projector's
+    # read model). Gate decision (progress/spec_observability_reliability.md's
+    # open-points table, row 3): Option 1 — mint this fact — chosen over
+    # Option 2 (an Orders-owned side channel merged only at the Gateway).
+    # Registered on the `ordersFacts` channel's `messages:` map, consumed by
+    # the projector alongside the other thirteen (never by `orders.saga`
+    # itself, which emits it, and never by `notifications`, which is
+    # purely diagnostic — see the channel's own description).
+    OrderSagaFailedPayload:
+      type: object
+      description: A saga command was retried to exhaustion (SO4) and parked (SO5) without ever completing; the order stays in its last legal status. Emitted at most once per parked `saga_commands` row (OR3), on the first park transition only — a later re-park after a further exhausted retry emits nothing further.
+      properties:
+        orderReference:
+          $ref: '#/components/schemas/OrderReference'
+        command:
+          type: string
+          description: The saga command that could not be delivered — one of `stock.reserve`, `stock.release`, `despatch.create`, `credit.hold`, `invoice.issue`.
+        attempts:
+          type: integer
+          minimum: 1
+          description: In-line attempts made before parking (SO4's configured maximum).
+        lastError:
+          type: string
+          description: The error of the final in-line attempt.
+        failedAt:
+          $ref: '#/components/schemas/Instant'
+      required:
+        - orderReference
+        - command
+        - attempts
+        - lastError
+        - failedAt
+
+    # ─────────────────────── the 14 fact event schemas ──────────────────────
     OrderPlacedEvent:
       allOf:
         - $ref: '#/components/schemas/Envelope'
@@ -2654,6 +2724,16 @@ components:
               const: order.cancelled.v1
             payload:
               $ref: '#/components/schemas/OrderCancelledPayload'
+
+    OrderSagaFailedEvent:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            eventType:
+              const: order.saga_failed.v1
+            payload:
+              $ref: '#/components/schemas/OrderSagaFailedPayload'
 
     # ───────────────────────── RPC common structures ────────────────────────
     RpcHeaders:

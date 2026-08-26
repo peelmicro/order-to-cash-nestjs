@@ -21,6 +21,7 @@ import type { OrderRepository } from './ports/order-repository.port';
 import type { StockAvailabilityLine, StockAvailabilityPort } from './ports/stock-availability.port';
 import type { UnitOfWork } from './ports/unit-of-work.port';
 import { OrderDiscountNotSupportedError, ReferenceDataNotFoundError, StockUnavailableError } from './place-order.errors';
+import { isDuplicateRequestIdError } from './place-order-request-id';
 import { Order, type PlaceOrderLineInput } from '../domain/order';
 
 export interface PlaceOrderLineCommand {
@@ -32,7 +33,7 @@ export interface PlaceOrderLineCommand {
 }
 
 export interface PlaceOrderCommand {
-  /** Accepted for wire-contract completeness (asyncapi.yaml's idempotency-key description); NOT resolved against a stored request — a repeated `requestId` places a second order today. Tracked as its own feature (`orders_idempotent_replay`, `feature_list.json` id 39) rather than folded in here, because closing the gap needs a persisted lookup column/index, not a local fix. Used only to seed `causationId` when it parses as a `UniqueId`. */
+  /** RI1–RI4 (`observability_reliability` design.md §3, R62): the client's idempotency key. A repeated, already-committed `requestId` short-circuits to the original order's reply (RI2); a concurrent first-time race resolves to the winner's reply, never a second order or an error (RI3); omitted, this places a normal order (RI4). Also seeds `causationId` when it parses as a `UniqueId` (unchanged, `resolveCausationId`). */
   readonly requestId?: string;
   readonly retailerCode: string;
   readonly companyCode: string;
@@ -66,6 +67,17 @@ export class PlaceOrderHandler {
   async execute(command: PlaceOrderCommand): Promise<PlaceOrderResult> {
     if (command.orderDiscount !== undefined && command.orderDiscount !== 0) {
       throw new OrderDiscountNotSupportedError(command.orderDiscount);
+    }
+
+    // RI2 — the fast path: a `requestId` for which a committed order
+    // already exists performs NO reference-data resolution and NO stock
+    // check (design.md §3.2). RI4 — `requestId` omitted skips this
+    // lookup entirely and consults no constraint.
+    if (command.requestId) {
+      const existing = await this.orders.findByRequestId(command.requestId);
+      if (existing) {
+        return this.toResult(existing);
+      }
     }
 
     const productCodes = command.lines.map((line) => line.productCode);
@@ -131,7 +143,27 @@ export class PlaceOrderHandler {
         { occurredAt: now, causationId: this.resolveCausationId(command.requestId) },
       );
 
-      await this.orders.save(order, tx);
+      try {
+        await this.orders.save(order, tx, command.requestId);
+      } catch (error) {
+        // RI3 — the concurrent-first-request race: two requests carrying
+        // the same, not-yet-committed `requestId` both pass RI2's fast
+        // path (neither commits yet), then race the INSERT. Exactly one
+        // wins; the loser's INSERT throws a duplicate-key error on
+        // `uq_orders_request_id` specifically, caught HERE (never at
+        // `order_reference`'s, which propagates unchanged) and resolved
+        // by re-reading the now-committed winner INSIDE this same
+        // transaction, returning ITS reply rather than a second order or
+        // an error (deliberately diverging from Billing's
+        // `PaymentReferenceConflictError` shape — design.md §3.3).
+        if (command.requestId && isDuplicateRequestIdError(error)) {
+          const winner = await this.orders.findByRequestId(command.requestId, tx);
+          if (winner) {
+            return this.toResult(winner);
+          }
+        }
+        throw error;
+      }
 
       return this.toResult(order);
     });

@@ -6,7 +6,7 @@
 // set for this infrastructure layer only; the domain's own `OrderStatus`
 // union type (implemented in a later, sdd:true feature) is the source of
 // truth and this type must track it, never the reverse.
-import { char, datetime, index, int, mysqlTable, text, varchar } from 'drizzle-orm/mysql-core';
+import { char, datetime, index, int, mysqlTable, text, uniqueIndex, varchar } from 'drizzle-orm/mysql-core';
 import { companies } from './companies.schema';
 import { currencies } from './currencies.schema';
 import { retailers } from './retailers.schema';
@@ -30,6 +30,11 @@ export const orders = mysqlTable(
   {
     id: char('id', { length: 36 }).primaryKey(),
     orderReference: varchar('order_reference', { length: 20 }).notNull().unique(),
+    // Nullable client idempotency key (RI1/R62, observability_reliability
+    // design.md §3.1). MySQL's UNIQUE on a nullable column admits any
+    // number of NULLs (the "requestId omitted" case, RI4) while still
+    // admitting at most one row per non-null value (RI1/RI3).
+    requestId: char('request_id', { length: 36 }),
     orderDate: datetime('order_date', { mode: 'date' }).notNull(),
     companyId: char('company_id', { length: 36 })
       .notNull()
@@ -57,5 +62,8 @@ export const orders = mysqlTable(
     index('idx_orders_retailer_status').on(table.retailerId, table.status),
     // The outbox-relay-adjacent "orders in status X, oldest first" query.
     index('idx_orders_status_order_date').on(table.status, table.orderDate),
+    // RI1's uniqueness constraint — the real serialisation point for RI3's
+    // concurrent-first-request race (design.md §3.1, §3.3).
+    uniqueIndex('uq_orders_request_id').on(table.requestId),
   ],
 );
