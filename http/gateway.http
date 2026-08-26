@@ -1,0 +1,362 @@
+### Order To Cash — the Gateway (feature 25)
+###
+### THE FIRST FILE HERE THAT CALLS THE BUSINESS ITSELF. Every other file in
+### this folder probes infrastructure, because until the Gateway landed the
+### interesting operations were NATS request-reply and the REST Client
+### extension speaks HTTP only. That is no longer true: the Gateway is the
+### single public entry point, and it translates HTTP into the NATS RPC calls
+### the services answer.
+###
+### Requires: pnpm dc:up:infra, then the services this file's requests need:
+###   pnpm dev:orders  dev:fulfillment  dev:billing  dev:projector
+###   pnpm --filter @otc/gateway build && pnpm --filter @otc/gateway start
+###
+### Read endpoints (GET /orders, /invoices, ...) need only the PROJECTOR and
+### MongoDB — they are served exclusively from the read model (R54), never by
+### reading a write database. Write endpoints (POST /orders, ...) need the
+### service that answers the RPC, and will return 503 naming the subject if it
+### is down — an instant, honest failure rather than a timeout.
+
+@gateway  = http://localhost:3001
+
+### ────────────────────────────────────────────────────────────────────────
+### 1. Authentication
+### ────────────────────────────────────────────────────────────────────────
+###
+### A single operator identity — deliberately not multi-tenant
+### (domain-model.md §9). Credentials come from .env:
+### GATEWAY_OPERATOR_USERNAME / GATEWAY_OPERATOR_PASSWORD.
+###
+### Send THIS request first. `# @name login` captures the response so every
+### request below can reuse the token without you copying anything.
+
+# @name login
+POST {{gateway}}/auth/login
+Content-Type: application/json
+
+{
+  "username": "operator",
+  "password": "otc_operator_dev_password_change_me"
+}
+
+###
+### Reply: { "accessToken": "...", "tokenType": "Bearer", "expiresIn": 3600 }
+### A wrong password returns 401 INVALID_CREDENTIALS as application/problem+json.
+
+@token = {{login.response.body.accessToken}}
+
+### Who am I — the cheapest proof the token works
+GET {{gateway}}/auth/me
+Authorization: Bearer {{token}}
+
+### Without a token: 401. Exactly four routes are public — POST /auth/login,
+### GET /health/live, GET /health/ready and GET /docs — and a test asserts
+### that every OTHER registered route rejects an anonymous request.
+GET {{gateway}}/auth/me
+
+### ────────────────────────────────────────────────────────────────────────
+### 2. Health and documentation — the four public routes
+### ────────────────────────────────────────────────────────────────────────
+
+### Liveness — is the process up
+GET {{gateway}}/health/live
+
+### Readiness — real dependency indicators arrive with feature 27
+GET {{gateway}}/health/ready
+
+### Swagger UI, serving specs/shared/openapi.yaml verbatim.
+### Open http://localhost:3001/docs in a browser for the interactive version.
+GET {{gateway}}/docs
+
+### ────────────────────────────────────────────────────────────────────────
+### 3. Placing an order — the saga's front door
+### ────────────────────────────────────────────────────────────────────────
+###
+### Returns 201 with Location and X-Correlation-Id. The correlation id IS the
+### order id (saga.md makes that an invariant), and every fact in this order's
+### saga carries it.
+###
+### The saga then runs ASYNCHRONOUSLY: stock reserved, credit approved, order
+### confirmed, despatched, invoiced. Give it a second, then read it back at
+### section 4 or watch it live at section 8.
+
+# @name placeOrder
+POST {{gateway}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "retailerCode": "CarrefourEs",
+  "companyCode": "IBERFOODS",
+  "currency": "EUR",
+  "lines": [
+    { "productCode": "PRD-0001", "quantity": 2 }
+  ]
+}
+
+###
+@orderId = {{placeOrder.response.body.orderId}}
+
+### A total ending in .99 — the credit simulator REJECTS it and the saga
+### compensates: stock released, order cancelled, reason simulated_cents_rule.
+### `unitPrice` is supplied explicitly to engineer the total (R42).
+POST {{gateway}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "retailerCode": "CarrefourEs",
+  "companyCode": "IBERFOODS",
+  "currency": "EUR",
+  "lines": [
+    { "productCode": "PRD-0001", "quantity": 1, "unitPrice": 24999 }
+  ]
+}
+
+### A GENUINE credit rejection — over the buyer's limit. Produces the identical
+### fact and the identical compensation as the simulated one above, differing
+### only in `reason: over_limit`. That equivalence is requirement R44.
+POST {{gateway}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "retailerCode": "CarrefourEs",
+  "companyCode": "IBERFOODS",
+  "currency": "EUR",
+  "lines": [
+    { "productCode": "PRD-0001", "quantity": 21 }
+  ]
+}
+
+### An order with no lines — 400, rejected by the domain (invariant O1, R5)
+POST {{gateway}}/orders
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "retailerCode": "CarrefourEs",
+  "companyCode": "IBERFOODS",
+  "currency": "EUR",
+  "lines": []
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### 4. Reading orders — from the read model ONLY (R54)
+### ────────────────────────────────────────────────────────────────────────
+###
+### These need the projector running, not the write services. A guard proves
+### mysql2 and drizzle-orm cannot even be RESOLVED from the gateway process,
+### so a write-model read is structurally impossible rather than merely absent.
+
+### The order just placed, with its full saga timeline ordered by occurredAt
+GET {{gateway}}/orders/{{orderId}}
+Authorization: Bearer {{token}}
+
+### 202 vs 404 — worth understanding, it was review finding F3.
+### An id THIS gateway process issued, not yet projected, returns 202 with
+### `projection_pending` and Retry-After. An id it never issued returns 404,
+### because openapi.yaml says "a genuine 404 means the identifier is unknown".
+### The window is bounded and TTL'd (5 min default) and PROCESS-LOCAL: with two
+### replicas, a POST on one and a GET on the other returns 404.
+GET {{gateway}}/orders/00000000-0000-4000-8000-000000000000
+Authorization: Bearer {{token}}
+
+### First page of orders, newest first
+GET {{gateway}}/orders?page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### Only the cancelled ones — both compensation paths land here
+GET {{gateway}}/orders?status=cancelled&page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### Repeat `status` to accept several
+GET {{gateway}}/orders?status=invoiced&status=completed&page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### By business reference
+GET {{gateway}}/orders?orderReference=ORD-000001
+Authorization: Bearer {{token}}
+
+### By trading partners
+GET {{gateway}}/orders?retailerCode=CarrefourEs&companyCode=IBERFOODS
+Authorization: Bearer {{token}}
+
+### Cancel an order — an operator note lands on the timeline
+POST {{gateway}}/orders/{{orderId}}/cancel
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "note": "Cancelled by hand from gateway.http"
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### 5. Invoices and remittance — closing the order-to-cash cycle
+### ────────────────────────────────────────────────────────────────────────
+
+### Everything still awaiting payment
+GET {{gateway}}/invoices?status=issued&page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### Issued more than N minutes ago — what a payment robot would poll for
+GET {{gateway}}/invoices?status=issued&issuedBeforeMinutes=5
+Authorization: Bearer {{token}}
+
+### REGISTER A PAYMENT. Take an `invoiceId` from the list above and paste it in.
+###
+### This endpoint closes a gap recorded at feature 22: Billing needs the ORDER
+### id as its correlation id, but an HTTP caller holds only an invoice id. The
+### gateway resolves invoice -> order through the READ MODEL, whose _id IS the
+### order id — never by reading a write database.
+###
+### `paymentReference` is the idempotency key (R48): send this twice and the
+### second returns `duplicate` with the same paidAt, not a second payment.
+### `amount` must equal the invoice totalAmount and currency EXACTLY —
+### partial and over-payment are out of scope (invariant B10, R49).
+
+@invoiceId = 75ad5d4b-6946-4373-a9c7-ca28895a0189
+#"invoiceReference": "INV-000009"
+
+POST {{gateway}}/invoices/{{invoiceId}}/payments
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "paymentReference": "PAY-HTTP-0001",
+  "amount": { "amount": 49998, "currency": "EUR" },
+  "valueDate": "2026-08-25T12:00:00.000Z",
+  "source": "operator"
+}
+
+### Send the SAME request again — R48 idempotency, `outcome: duplicate`,
+### byte-identical paidAt. That equality is what proves the original record was
+### returned rather than a second payment written.
+
+### A deliberately wrong amount — rejected, no fact emitted, ledger untouched
+POST {{gateway}}/invoices/{{invoiceId}}/payments
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "paymentReference": "PAY-HTTP-WRONG",
+  "amount": { "amount": 1, "currency": "EUR" },
+  "valueDate": "2026-08-25T12:00:00.000Z",
+  "source": "test"
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### 6. Stock
+### ────────────────────────────────────────────────────────────────────────
+
+### Current stock across the catalogue
+GET {{gateway}}/stock?page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### Only what has fallen below its reorder threshold
+GET {{gateway}}/stock?belowThreshold=true
+Authorization: Bearer {{token}}
+
+### One product
+GET {{gateway}}/stock?companyCode=IBERFOODS&productCode=PRD-0001
+Authorization: Bearer {{token}}
+
+### Replenish — what the n8n replenishment workflow calls
+POST {{gateway}}/stock/replenish
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "companyCode": "IBERFOODS",
+  "lines": [
+    { "productCode": "PRD-0001", "units": 100 }
+  ]
+}
+
+### ────────────────────────────────────────────────────────────────────────
+### 7. Credit and catalogue
+### ────────────────────────────────────────────────────────────────────────
+
+### Buyer credit lines — limit, exposure, available.
+### Exposure is RECOMPUTED from the ledger on every load, never stored, so it
+### cannot drift from the hold/release entries that produced it.
+GET {{gateway}}/credits?page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### One buyer's credit
+GET {{gateway}}/credits?retailerCode=CarrefourEs&companyCode=IBERFOODS
+Authorization: Bearer {{token}}
+
+### Catalogue — the reference data every other request's codes come from
+GET {{gateway}}/catalog/products
+Authorization: Bearer {{token}}
+
+###
+GET {{gateway}}/catalog/retailers
+Authorization: Bearer {{token}}
+
+###
+GET {{gateway}}/catalog/companies
+Authorization: Bearer {{token}}
+
+### ────────────────────────────────────────────────────────────────────────
+### 8. The SSE stream — live saga progress
+### ────────────────────────────────────────────────────────────────────────
+###
+### CAVEAT, and the reason this section is last: the REST Client extension
+### does not render text/event-stream incrementally. It will hold the request
+### open and show nothing useful. This block documents the contract; use curl
+### below to actually watch it.
+###
+### Fed by the projector's NATS update signal (R55) — a NATS core publish, not
+### a Kafka topic, chosen at the gate because a shared Kafka consumer group
+### would deliver each signal to exactly ONE gateway replica.
+
+GET {{gateway}}/orders/stream
+Authorization: Bearer {{token}}
+Accept: text/event-stream
+
+###
+### Watch it properly, in a terminal:
+###
+###   TOKEN=$(curl -s -X POST http://localhost:3001/auth/login \
+###     -H 'content-type: application/json' \
+###     -d '{"username":"operator","password":"otc_operator_dev_password_change_me"}' \
+###     | node -pe 'JSON.parse(require("fs").readFileSync(0)).accessToken')
+###
+###   curl -N -H "Authorization: Bearer $TOKEN" \
+###     http://localhost:3001/orders/stream
+###
+### Then place an order in another terminal (section 3, or `pnpm order:place`)
+### and watch the frames arrive.
+###
+### Frames look like:
+###   id: 1755511234567-17
+###   event: order.updated
+###   data: {"orderId":"...","status":"confirmed", ...}
+###
+### `ping` and `stream.ready` carry NO `id:` line — deliberately. A browser's
+### EventSource updates its remembered Last-Event-ID from ANY id-bearing frame,
+### heartbeat or not. `ping` fires every 15s while real content is rare, so if
+### it carried an id, a client's remembered cursor would almost always be a
+### heartbeat's — which is never in the replay buffer (nothing to replay) — and
+### reconnecting would answer `resumed: false` on nearly every disconnect, not
+### just when the buffer genuinely aged out. Found by hand-testing this file:
+### reconnecting with a copied PING id gave resumed:false; the same reconnect
+### with a copied `timeline.appended` id gave resumed:true, as it should.
+###
+### On reconnect a browser's EventSource sends Last-Event-ID automatically and
+### the stream resumes after that cursor from a BOUNDED buffer. Away longer
+### than the buffer holds, it answers `stream.ready` with `resumed: false` and
+### the client must re-fetch — stated honestly rather than hidden, because the
+### stream is a notification channel and the read model is the source of truth.
+### Delivery is at-least-once, so clients deduplicate on the eventId in `data`.
+###
+### NOTE: EventSource cannot set an Authorization header, which is why the web
+### app (feature 26 onward) needs a different scheme — carried as review
+### finding F14.
+
+### Follow one order only
+GET {{gateway}}/orders/stream?orderId={{orderId}}
+Authorization: Bearer {{token}}
+Accept: text/event-stream

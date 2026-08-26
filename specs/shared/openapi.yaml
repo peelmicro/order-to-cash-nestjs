@@ -396,16 +396,37 @@ paths:
 
         - `event` names the event type. The types emitted are listed below.
         - `data` is a single-line JSON document whose schema depends on `event`.
-        - `id` is an opaque, monotonically increasing cursor.
+        - `id` is an opaque, monotonically increasing cursor **on `order.updated`
+          and `timeline.appended` only** — the two event types the replay buffer
+          stores. **`ping` deliberately carries no `id` line.**
+
+          This is not an oversight: a browser's `EventSource` updates its
+          internal `lastEventId` from *any* dispatched event that carries one,
+          heartbeat or not. `ping` fires on a fixed interval and real content
+          fires rarely, so if `ping` carried an id, the client's remembered
+          resume point would almost always be a heartbeat's — and a heartbeat's
+          id is never in the replay buffer (there is nothing to replay), so
+          `Last-Event-ID` would name it and reconnection would answer
+          `resumed: false` on nearly every disconnect, forcing a re-fetch even
+          when nothing was actually missed. Omitting `id` from `ping` keeps a
+          client's remembered cursor pointed at real content, so reconnection
+          `resumed: false` means what §2 below says it means: the buffer
+          genuinely could not find that cursor, not "you happened to disconnect
+          between two heartbeats." `ping` still carries its documented `event`
+          and `data` (`StreamPing`) — only the `id` line is absent. Found by
+          hand-testing after feature 26 landed; `stream.ready`'s cursor has the
+          identical property (minted, never stored) for the same reason, but is
+          sent only once per connection so the interaction is not observable in
+          practice the way `ping`'s is.
 
         ### Event types
 
-        | `event` | `data` schema | Meaning |
-        |---|---|---|
-        | `order.updated` | `OrderStreamUpdate` | A read-model document changed — status, references or totals |
-        | `timeline.appended` | `TimelineStreamEntry` | One fact was appended to an order's timeline |
-        | `stream.ready` | `StreamReady` | Sent once on connect, carrying the cursor the stream resumed from |
-        | `ping` | `StreamPing` | Keep-alive, sent on an idle interval so proxies do not close the connection |
+        | `event` | `data` schema | Carries `id`? | Meaning |
+        |---|---|---|---|
+        | `order.updated` | `OrderStreamUpdate` | Yes — resumable | A read-model document changed — status, references or totals |
+        | `timeline.appended` | `TimelineStreamEntry` | Yes — resumable | One fact was appended to an order's timeline |
+        | `stream.ready` | `StreamReady` | No | Sent once on connect, carrying the cursor the stream resumed from |
+        | `ping` | `StreamPing` | No | Keep-alive, sent on an idle interval so proxies do not close the connection |
 
         ### Reconnection
 

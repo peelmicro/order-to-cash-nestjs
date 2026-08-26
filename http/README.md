@@ -4,6 +4,7 @@ These files are for poking at a running stack by hand, using the [REST Client](h
 
 | File | What it reaches |
 |---|---|
+| [`gateway.http`](gateway.http) | **The business itself** — place orders, read the saga timeline, register payments, drive stock and credit, through the Gateway |
 | [`services.http`](services.http) | Each service's HTTP liveness endpoint |
 | [`nats.http`](nats.http) | The NATS monitoring API — including which RPC subjects are currently answered |
 | [`kafka.http`](kafka.http) | Topics, consumer groups, and **the domain facts themselves**, via the Redpanda Console API |
@@ -11,11 +12,11 @@ These files are for poking at a running stack by hand, using the [REST Client](h
 
 Start the infrastructure with `pnpm dc:up:infra`, and any service with `pnpm dev:orders` (or `dev:fulfillment`, `dev:billing`).
 
-## Why there are no business requests here yet
+## Why the business requests live in one file
 
 The interesting operations of this system — placing an order, reserving stock, holding credit — are **NATS request-reply**, not HTTP. The REST Client extension speaks HTTP only, so it cannot call them.
 
-That is not an oversight: it is the architecture. Commands and synchronous queries travel over NATS, domain facts travel over Kafka, and **HTTP is reserved for the Gateway**, which is the single public entry point for the web app. The Gateway arrives in **feature 25**, and when it does these files gain the requests that actually matter:
+That is not an oversight: it is the architecture. Commands and synchronous queries travel over NATS, domain facts travel over Kafka, and **HTTP is reserved for the Gateway**, which is the single public entry point for the web app. The Gateway **landed in feature 25**, so those requests now exist — all of them in [`gateway.http`](gateway.http):
 
 - `POST /orders` — place an order
 - `GET /orders`, `GET /orders/{id}` — the read model, including the full saga timeline
@@ -23,11 +24,11 @@ That is not an oversight: it is the architecture. Commands and synchronous queri
 - `GET /stock`, `GET /credits`, `GET /catalog/...`
 - `POST /auth/login` — and the JWT every other request carries
 
-Until then, `kafka.http` is the most useful file here: it shows the facts each saga step publishes, which is the closest thing to watching the system think.
+`kafka.http` remains the best view of the machinery underneath: it shows the facts each saga step publishes, which is the closest thing to watching the system think. `gateway.http` shows the same story from the outside, as a client sees it.
 
-## Placing an order before the Gateway exists
+## Placing an order without the Gateway
 
-Use the NATS script instead:
+The NATS script still works, and needs one fewer process running:
 
 ### What needs to be running
 

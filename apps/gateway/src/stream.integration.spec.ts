@@ -4,7 +4,6 @@
 // — exactly the subjects `apps/projector`'s own update-signal publisher
 // uses (this gateway never talks to the projector directly; it only
 // consumes the signal it publishes).
-import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { JSONCodec } from 'nats';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -12,59 +11,7 @@ import request from 'supertest';
 import { startAuthenticatedMongoTestFixture, type StandaloneMongoTestFixture } from './test-support/mongo-test-fixture';
 import { startNatsTestFixture, type NatsTestFixture } from './test-support/nats-test-fixture';
 import { bootGatewayTestApp, TEST_OPERATOR_PASSWORD, TEST_OPERATOR_USERNAME, type GatewayTestApp } from './test-support/gateway-app-test-harness';
-
-interface SseFrame {
-  id: string;
-  event: string;
-  data: unknown;
-}
-
-/** Parses complete `id:`/`event:`/`data:`\n\n blocks out of an accumulating SSE text buffer, returning the parsed frames and the unconsumed remainder. */
-function parseSseFrames(buffer: string): { frames: SseFrame[]; rest: string } {
-  const frames: SseFrame[] = [];
-  const blocks = buffer.split('\n\n');
-  const rest = blocks.pop() ?? '';
-  for (const block of blocks) {
-    if (!block.trim()) continue;
-    const idLine = block.match(/^id: (.*)$/m);
-    const eventLine = block.match(/^event: (.*)$/m);
-    const dataLine = block.match(/^data: (.*)$/m);
-    if (idLine && eventLine && dataLine) {
-      frames.push({ id: idLine[1]!, event: eventLine[1]!, data: JSON.parse(dataLine[1]!) });
-    }
-  }
-  return { frames, rest };
-}
-
-function openSseConnection(port: number, token: string, query = '', lastEventId?: string): Promise<{ req: http.ClientRequest; res: http.IncomingMessage }> {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { host: '127.0.0.1', port, path: `/orders/stream${query}`, headers: { Authorization: `Bearer ${token}`, ...(lastEventId ? { 'Last-Event-ID': lastEventId } : {}) } },
-      (res) => resolve({ req, res }),
-    );
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-function collectUntil(res: http.IncomingMessage, predicate: (frames: SseFrame[]) => boolean, timeoutMs = 5000): Promise<SseFrame[]> {
-  return new Promise((resolve, reject) => {
-    let buffer = '';
-    const collected: SseFrame[] = [];
-    const timer = setTimeout(() => reject(new Error(`collectUntil: timed out, collected so far: ${JSON.stringify(collected)}`)), timeoutMs);
-    res.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString('utf8');
-      const { frames, rest } = parseSseFrames(buffer);
-      buffer = rest;
-      collected.push(...frames);
-      if (predicate(collected)) {
-        clearTimeout(timer);
-        resolve(collected);
-      }
-    });
-    res.on('error', reject);
-  });
-}
+import { collectUntil, openSseConnection } from './test-support/sse-test-client';
 
 describe('Gateway SSE stream — Group D (R55)', () => {
   let mongo: StandaloneMongoTestFixture;
@@ -176,6 +123,87 @@ describe('Gateway SSE stream — Group D (R55)', () => {
     expect((ready.data as { resumed: boolean }).resumed).toBe(false);
     req.destroy();
   });
+
+  // Acceptance criterion 1 of feature 26, "client reconnect resumes without
+  // duplicates" — read literally against openapi.yaml's own admission that
+  // delivery is AT-LEAST-ONCE (a frame may repeat after a reconnect;
+  // clients deduplicate on `eventId`). That rules out "the transport
+  // guarantees exactly-once" as the reading. What IS a transport-level
+  // guarantee, and what THIS test proves: resuming from a given cursor
+  // returns strictly the frames AFTER that cursor, never the cursor's own
+  // frame again — "resumes after", never "resumes at-or-before". The test
+  // above ('a known Last-Event-ID replays every frame missed since') proves
+  // the replay is non-empty; it does not prove the boundary is exclusive.
+  // This one does: it captures the cursor AND the eventId of a frame
+  // actually delivered on connection one, reconnects with exactly that
+  // cursor, and asserts neither the cursor nor the eventId reappears.
+  it('R55 "without duplicates" — reconnecting with the cursor of an already-received frame never redelivers that frame', async () => {
+    const orderId = randomUUID();
+    const codec = JSONCodec<Record<string, unknown>>();
+    const firstEventId = randomUUID();
+    const secondEventId = randomUUID();
+
+    const first = await openSseConnection(port, token, `?orderId=${orderId}`);
+    await collectUntil(first.res, (frames) => frames.some((f) => f.event === 'stream.ready'));
+
+    publisherConnection.publish(
+      `readmodel.order.updated.${orderId}`,
+      codec.encode({ eventId: firstEventId, orderId, status: 'stock_reserved', occurredAt: new Date().toISOString() }),
+    );
+    const firstFrames = await collectUntil(first.res, (frames) => frames.some((f) => f.event === 'order.updated'));
+    const cursorOfReceivedFrame = firstFrames.find((f) => f.event === 'order.updated')!.id;
+    first.req.destroy();
+
+    // Disconnected here. One more fact arrives — this IS what the reconnect
+    // is legitimately supposed to replay; the assertion below is that it
+    // replays ONLY this one, never the one already delivered above.
+    publisherConnection.publish(
+      `readmodel.order.updated.${orderId}`,
+      codec.encode({ eventId: secondEventId, orderId, status: 'credit_approved', occurredAt: new Date().toISOString() }),
+    );
+    await publisherConnection.flush();
+
+    // `flush()` only proves the publish reached the NATS server — not that
+    // the app's OWN internal NATS subscription (started once at boot,
+    // independent of any SSE client — see the comment on the previous
+    // test) has run its handler and written the fact into the replay
+    // buffer yet. A single fixed delay here (this test's previous version:
+    // `await new Promise((resolve) => setTimeout(resolve, 100))`) let the
+    // test PASS via the live-push path instead of the replay path under
+    // load, silently, with every assertion below still green and the
+    // off-by-one replay-boundary mutation surviving undetected (review
+    // finding F3). Retry the reconnect itself on TERMINAL evidence instead
+    // — `stream.ready`'s own `resumed` flag — so the test only proceeds
+    // once the replay buffer has actually captured the fact. Every retry
+    // opens a genuinely new, independent connection with the same cursor;
+    // reading the buffer's state is side-effect-free, so repeating it is
+    // safe.
+    const deadlineAt = Date.now() + 10_000;
+    let second: Awaited<ReturnType<typeof openSseConnection>> | undefined;
+    let resumed: boolean;
+    for (;;) {
+      second = await openSseConnection(port, token, `?orderId=${orderId}`, cursorOfReceivedFrame);
+      const readyFrames = await collectUntil(second.res, (frames) => frames.some((f) => f.event === 'stream.ready'), 2000);
+      const readyFrame = readyFrames.find((f) => f.event === 'stream.ready')!;
+      resumed = (readyFrame.data as { resumed: boolean }).resumed;
+      if (resumed) break;
+      second.req.destroy();
+      if (Date.now() > deadlineAt) {
+        throw new Error('R55 "without duplicates": stream.ready never reported resumed:true within 10s — the replay buffer never captured the second publish.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(resumed).toBe(true);
+
+    const frames = await collectUntil(second.res, (collected) => collected.some((f) => f.event === 'order.updated'));
+    second.req.destroy();
+
+    const updateFrames = frames.filter((f) => f.event === 'order.updated');
+    expect(updateFrames.some((f) => f.id === cursorOfReceivedFrame)).toBe(false);
+    expect(updateFrames.some((f) => (f.data as { eventId: string }).eventId === firstEventId)).toBe(false);
+    expect(updateFrames).toHaveLength(1);
+    expect((updateFrames[0]!.data as { eventId: string }).eventId).toBe(secondEventId);
+  });
 });
 
 
@@ -227,5 +255,76 @@ describe('Gateway SSE stream — ping heartbeat (F7, review finding)', () => {
     }
 
     req.destroy();
+  });
+
+  // Regression for the human hand-testing finding: `writeFrame` used to put
+  // an `id:` line on EVERY frame, `ping` included. A browser `EventSource`
+  // updates its `lastEventId` from any dispatched event carrying an `id`,
+  // heartbeat or not — and `ping`'s minted cursor is never pushed into the
+  // replay buffer (`StreamHub.mintCursor()`'s docstring), so a client whose
+  // remembered cursor happened to be a ping's would answer every reconnect
+  // with `resumed: false`, even though nothing was actually missed. This
+  // test proves the fix from the client's own vantage point, exactly the
+  // way the human found the bug: capture a REAL content frame's id, observe
+  // a `ping` arriving after it has NO `id` at all, then reconnect with the
+  // content frame's id and confirm the stream resumes.
+  it('F: ping frames carry no id, and reconnecting with a real content frame\'s id still resumes (review finding, hand-tested)', async () => {
+    const orderId = randomUUID();
+    const codec = JSONCodec<Record<string, unknown>>();
+    const publisherConnection = await nats.connect();
+
+    // Destroyed unconditionally in `finally` below (review finding, this
+    // change): a failed assertion mid-test used to leave the raw HTTP
+    // socket open, which could stall this describe block's `afterAll`
+    // (`testApp.close()`) waiting on it — burying the real assertion
+    // failure under an unrelated 120s hook timeout.
+    let firstReq: Awaited<ReturnType<typeof openSseConnection>>['req'] | undefined;
+    let secondReq: Awaited<ReturnType<typeof openSseConnection>>['req'] | undefined;
+
+    try {
+      const { req, res } = await openSseConnection(port, token);
+      firstReq = req;
+      await collectUntil(res, (frames) => frames.some((f) => f.event === 'stream.ready'));
+
+      publisherConnection.publish(
+        `readmodel.order.updated.${orderId}`,
+        codec.encode({ eventId: randomUUID(), orderId, status: 'confirmed', occurredAt: new Date().toISOString() }),
+      );
+
+      // Wait until a `ping` has arrived STRICTLY AFTER the content frame —
+      // not merely "a ping was seen somewhere in the connection" — so the
+      // assertion below is genuinely about a heartbeat the client received
+      // once it already held a real, resumable cursor.
+      const framesSoFar = await collectUntil(
+        res,
+        (frames) => {
+          const contentIndex = frames.findIndex((f) => f.event === 'order.updated');
+          if (contentIndex === -1) return false;
+          return frames.slice(contentIndex + 1).some((f) => f.event === 'ping');
+        },
+        5000,
+      );
+      const contentIndex = framesSoFar.findIndex((f) => f.event === 'order.updated');
+      const contentFrame = framesSoFar[contentIndex]!;
+      const pingFrame = framesSoFar.slice(contentIndex + 1).find((f) => f.event === 'ping')!;
+
+      expect(contentFrame.id).toBeDefined();
+      expect(pingFrame.id).toBeUndefined();
+
+      const contentCursor = contentFrame.id!;
+      req.destroy();
+
+      const second = await openSseConnection(port, token, '', contentCursor);
+      secondReq = second.req;
+      const readyFrames = await collectUntil(second.res, (frames) => frames.some((f) => f.event === 'stream.ready'));
+      const ready = readyFrames.find((f) => f.event === 'stream.ready')!;
+      expect((ready.data as { resumed: boolean }).resumed).toBe(true);
+
+      second.req.destroy();
+    } finally {
+      firstReq?.destroy();
+      secondReq?.destroy();
+      await publisherConnection.close();
+    }
   });
 });

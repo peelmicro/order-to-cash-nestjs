@@ -3,8 +3,8 @@
 ### Every backend service is a HYBRID app: it listens on HTTP *and* on NATS
 ### and/or Kafka. Only the HTTP side is reachable from this file — the
 ### business operations (orders.create, fulfillment.stock.reserve,
-### billing.credit.hold, ...) are NATS request-reply and cannot be called
-### over HTTP until the Gateway lands in feature 25. See http/README.md.
+### billing.credit.hold, ...) are NATS request-reply. They are reachable over
+### HTTP through the Gateway, which landed in feature 25 — see gateway.http.
 ###
 ### Start a service with, e.g.:  pnpm dev:orders
 ### Ports come from .env (defaults below match .env.example).
@@ -25,13 +25,13 @@ GET {{fulfillment}}/
 ### Billing — buyer credit, and (from feature 21) invoicing
 GET {{billing}}/
 
-### Gateway — REST/OpenAPI + SSE. Not implemented until feature 25; expect a connection error.
+### Gateway — REST/OpenAPI + SSE (feature 25). The real requests are in gateway.http.
 GET {{gateway}}/
 
-### Notifications — Mailtrap/console notification port. Feature 23; expect a connection error.
+### Notifications — Mailtrap/console notification port (feature 23).
 GET {{notifications}}/
 
-### Projector — Kafka facts -> MongoDB order_timeline. Feature 24; expect a connection error.
+### Projector — Kafka facts -> MongoDB order_timeline (feature 24).
 GET {{projector}}/
 
 ### A healthy reply looks like:  { "service": "orders", "status": "ok" }

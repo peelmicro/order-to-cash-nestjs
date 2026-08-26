@@ -359,7 +359,7 @@
       "phase": 13,
       "title": "SSE push of saga progress with heartbeat and Last-Event-ID reconnect",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "client reconnect resumes without duplicates",
         "heartbeat keeps the connection alive"
@@ -534,6 +534,33 @@
         "requestId remains optional: omitting it places a normal, non-deduplicated order"
       ],
       "notes": "Opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) does not implement it — requestId is accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass because it is schema-affecting, not a local bug fix."
+    },
+    {
+      "id": 40,
+      "name": "orders_catalog_responder",
+      "phase": 13,
+      "title": "Orders: catalog.reference.list NATS responder for products/retailers/companies",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "GET /catalog/products, /catalog/retailers, /catalog/companies return real data through the Gateway",
+        "no new bounded context — domain-model.md already assigns the reference catalogue to Orders",
+        "reuses the same reference-data lookup PlaceOrderHandler already calls, exposed as a query rather than duplicated"
+      ]
+    },
+    {
+      "id": 41,
+      "name": "orders_cancel_responder",
+      "phase": 13,
+      "title": "Orders: orders.cancel NATS responder for operator-initiated cancellation",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "POST /orders/{id}/cancel succeeds through the Gateway for a cancellable order",
+        "reuses the Order aggregate's existing cancelled state and cancellationReason invariant — no new domain modeling",
+        "an order in a terminal state (invoiced, completed, already cancelled) is rejected with a domain error, not a 503",
+        "the operator note from CancelOrderRequest lands on the read-model timeline"
+      ]
     }
   ]
 }

@@ -12,8 +12,18 @@ import { StreamHub, type StreamFrame } from '../application/stream-hub';
 import type { SseConfig } from '../infrastructure/messaging/sse.config';
 import { SSE_CONFIG } from './sse-config.token';
 
-function writeFrame(res: Response, id: string, event: string, data: unknown): void {
-  res.write(`id: ${id}\n`);
+// `id` is `null` for `stream.ready`/`ping` — deliberately: per the SSE spec, any
+// dispatched event carrying an `id:` line updates a browser `EventSource`'s
+// `lastEventId`, heartbeat or not. `ping` fires on a fixed interval and real
+// content fires rarely, so if `ping` carried an id, a client's remembered
+// resume point would almost always be a heartbeat's — one the replay buffer
+// never stores (`StreamHub.mintCursor()`'s docstring) — making reconnection
+// answer `resumed: false` on nearly every disconnect instead of only when
+// content was genuinely missed. See openapi.yaml's "Frame format" section.
+function writeFrame(res: Response, id: string | null, event: string, data: unknown): void {
+  if (id !== null) {
+    res.write(`id: ${id}\n`);
+  }
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
@@ -45,7 +55,7 @@ export class StreamController {
     // (a fresh connection).
     const replay = this.hub.replayAfter(lastEventId);
     const readyCursor = lastEventId ?? this.hub.mintCursor();
-    writeFrame(res, readyCursor, 'stream.ready', {
+    writeFrame(res, null, 'stream.ready', {
       cursor: readyCursor,
       resumed: replay.resumed,
       orderId: orderId ?? null,
@@ -63,7 +73,8 @@ export class StreamController {
     });
 
     const pingInterval = setInterval(() => {
-      writeFrame(res, this.hub.mintCursor(), 'ping', { at: new Date().toISOString() });
+      this.hub.mintCursor(); // consumed for its side effect on the cursor sequence only — `ping` carries no `id:` line, see `writeFrame` above.
+      writeFrame(res, null, 'ping', { at: new Date().toISOString() });
     }, this.config.pingIntervalMs);
 
     res.on('close', () => {
