@@ -165,3 +165,8 @@ catalog:
   # above). Peer-compatible with `api@1.9.1` (`sdk-metrics@2.10.0` requires
   # `api` `>=1.9.0 <1.10.0`), verified before pinning.
   "@opentelemetry/sdk-metrics": ^2.10.0
+
+minimumReleaseAgeExclude:
+  - '@nuxt/test-utils@4.2.0'
+  - '@vue/test-utils@2.5.0'
+  - happy-dom@20.11.10
