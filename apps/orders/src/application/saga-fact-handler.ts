@@ -12,7 +12,8 @@ import { NOOP_SAGA_METRICS, type RecordsSagaMetrics } from './ports/saga-metrics
 import type { SagaCommandStore } from './ports/saga-command-store.port.js';
 import type { TransactionContext } from './ports/unit-of-work.port.js';
 import { buildSagaCommandPayload } from './saga-command-payloads.js';
-import { stepFor, transitionContextFrom, type SagaCommandKind } from './saga-steps.js';
+import { stepForStatus, stepVariantsFor, transitionContextFrom, type SagaCommandKind, type SagaStep } from './saga-steps.js';
+import type { OrderStatus } from '../domain/order-status.js';
 import type { ConsumptionOutcome } from '../infrastructure/messaging/idempotent-consumer.js';
 import type { RecordIgnoredFactInput } from '../infrastructure/saga/saga-ignored-facts.repository.js';
 
@@ -61,14 +62,26 @@ export class SagaFactHandler {
 
   /** `sourceTopic` — the Kafka topic constant `SagaFactsController.route` already knows for this call, threaded through so `commandStore.enqueue` can capture it verbatim (R29's dead-letter clause / OR3, observability_reliability design.md §4.2). */
   async handle(envelope: Envelope, sourceTopic: string): Promise<SagaFactResult> {
-    const step = stepFor(envelope.eventType);
-    // Absent or `skip` (the three self-produced facts, SO2) — no I/O at
-    // all, not even a dedup row. In production this branch is defensive:
-    // the presentation controller's `factCommandFor` map (saga-fact.commands.ts)
-    // never dispatches a command for these event types in the first place.
-    if (!step || step.kind === 'skip') {
+    const variants = stepVariantsFor(envelope.eventType);
+    // Absent or every variant `skip` (the three self-produced facts, SO2)
+    // — no I/O at all, not even a dedup row. In production this branch is
+    // defensive: the presentation controller's `factCommandFor` map
+    // (saga-fact.commands.ts) never dispatches a command for these event
+    // types in the first place. `credit.released.v1` now has THREE
+    // variants (feature 41's follow-up pass) — none of them `skip`, so
+    // this check still correctly proceeds to I/O for it.
+    if (variants.length === 0 || variants.every((variant) => variant.kind === 'skip')) {
       return { outcome: 'processed' };
     }
+    // The precondition to report on an `ignored` record when NO variant
+    // matches — unambiguous for every existing single-variant fact type
+    // (unchanged behaviour); `null` for a multi-variant fact type
+    // (`credit.released.v1`), where no single "the expected status" exists
+    // — the ignored-facts table's own diagnostic marker plus `eventType`
+    // is enough to find `saga-steps.ts`'s full precondition set for a
+    // human investigating it.
+    const soleExpectedStatus: OrderStatus | null =
+      variants.length === 1 && variants[0]!.kind !== 'skip' ? (variants[0] as Exclude<SagaStep, { kind: 'skip' }>).precondition : null;
 
     let enqueued: SagaCommandKind | undefined;
     let ignored = false;
@@ -88,24 +101,27 @@ export class SagaFactHandler {
           orderId: null,
           correlationId,
           observedStatus: null,
-          expectedStatus: step.precondition,
+          expectedStatus: soleExpectedStatus,
           marker: 'unknown_order',
         });
         ignored = true;
         return;
       }
 
-      if (order.status !== step.precondition) {
-        // R25 — equality only, no ranges. Every unmet precondition on first
-        // delivery is impossible by construction (design.md §4.4); in
-        // practice this is always a stale redelivery.
+      const step = stepForStatus(envelope.eventType, order.status);
+      if (!step) {
+        // R25 — equality only, no ranges, extended unchanged to fact types
+        // with more than one legal precondition: NO variant's precondition
+        // equals the order's CURRENT status. Every unmet precondition on
+        // first delivery is impossible by construction (design.md §4.4);
+        // in practice this is always a stale redelivery.
         await this.ignoredFacts.record(tx, {
           eventId: UniqueId.from(envelope.eventId),
           eventType: envelope.eventType,
           orderId: order.id,
           correlationId,
           observedStatus: order.status,
-          expectedStatus: step.precondition,
+          expectedStatus: soleExpectedStatus,
           marker: 'precondition_unmet',
         });
         ignored = true;
@@ -119,7 +135,7 @@ export class SagaFactHandler {
         this.recordSagaCompletionIfClosed(order, ctx);
         await this.orders.save(order, tx);
         if (step.commandAfter) {
-          const payload = buildSagaCommandPayload(step.commandAfter, order);
+          const payload = buildSagaCommandPayload(step.commandAfter, order, envelope);
           // D1: `enqueue` is idempotent on (order_id, command) — a distinct-eventId
           // duplicate of a fact whose precondition still holds (e.g. a redelivered
           // credit.rejected.v1 mid-compensation) resolves to 'already_owed' rather

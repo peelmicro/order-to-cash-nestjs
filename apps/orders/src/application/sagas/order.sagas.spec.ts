@@ -1,9 +1,12 @@
 // Pure unit — a plain RxJS `Subject`, NO Nest runtime (design.md §5.5, §11,
 // SO3's fast-path row). Proves the `@Saga` stream mapping (each of the
-// five dispatch-owed events in -> its `Issue…Command` out, all five
-// streams) and that an error thrown inside one branch's `map` does not
-// terminate the merged subscription — a later event on ANY branch is still
-// observed.
+// six dispatch-owed events in -> its `Issue…Command` out, all six
+// streams — feature 41's follow-up pass added the sixth,
+// `CreditReleasedForCancellationRecorded`, mapping to the SAME
+// `IssueStockReleaseCommand` a pre-existing fifth stream already maps
+// `CreditRejectionRecorded` to) and that an error thrown inside one
+// branch's `map` does not terminate the merged subscription — a later
+// event on ANY branch is still observed.
 import { UniqueId } from '@otc/shared-kernel';
 import { Subject } from 'rxjs';
 import { describe, expect, it } from 'vitest';
@@ -16,6 +19,7 @@ import {
   IssueStockReserveCommand,
 } from '../commands/saga-dispatch.commands.js';
 import {
+  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
@@ -61,6 +65,17 @@ describe('OrderSagas — the @Saga stream mapping (design.md §5.5)', () => {
 
     events$.next(new CreditRejectionRecorded(orderId, orderId));
 
+    expect(seen[0]).toBeInstanceOf(IssueStockReleaseCommand);
+    expect((seen[0] as IssueStockReleaseCommand).orderId).toBe(orderId);
+  });
+
+  it('maps CreditReleasedForCancellationRecorded -> IssueStockReleaseCommand (feature 41 follow-up — the credit_approved/confirmed compensation variant, a SEPARATE branch from CreditRejectionRecorded above but the SAME output command)', () => {
+    const { events$, seen } = harness();
+    const orderId = UniqueId.generate().value;
+
+    events$.next(new CreditReleasedForCancellationRecorded(orderId, orderId));
+
+    expect(seen).toHaveLength(1);
     expect(seen[0]).toBeInstanceOf(IssueStockReleaseCommand);
     expect((seen[0] as IssueStockReleaseCommand).orderId).toBe(orderId);
   });

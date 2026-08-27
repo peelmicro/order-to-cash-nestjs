@@ -572,6 +572,39 @@ export interface CreditReleasedPayload {
   reason: 'invoice_paid' | 'order_cancelled';
 }
 /**
+ * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
+ * via the `definition` "CreditReleaseReplyPayload".
+ */
+export interface CreditReleaseReplyPayload {
+  /**
+   * `true` — an outstanding hold existed and was released this call.
+   * `false` — idempotent repeat or nothing was ever held (BC11, B5);
+   * not an error, no ledger entry, no fact.
+   *
+   */
+  released: boolean;
+  orderReference: OrderReference;
+  creditCode?: CreditCode;
+  currency: CurrencyCode;
+  releasedAmount?: MinorUnits;
+  availableCreditAfter: MinorUnits;
+}
+/**
+ * `reason` is not a caller-supplied field — this RPC always releases
+ * with reason `order_cancelled` (the only external trigger for it).
+ * `invoice_paid` is set only by Billing's own payment-registration flow,
+ * never by an external caller.
+ *
+ *
+ * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
+ * via the `definition` "CreditReleaseRequestPayload".
+ */
+export interface CreditReleaseRequestPayload {
+  orderReference: OrderReference;
+  retailerCode: PartyCode;
+  companyCode: PartyCode;
+}
+/**
  * Diagnostic headers of a dead-letter record. The payload stays the
  * unmodified original envelope so a redrive is a byte-for-byte republish;
  * everything about the failure lives here.

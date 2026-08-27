@@ -12,16 +12,18 @@ import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { MsgHdrs } from 'nats';
-import type { CreditHoldReplyPayload, CreditListReplyPayload, RpcError } from '@otc/contracts';
-import { HoldCreditCommand } from '../application/commands/credit.commands';
+import type { CreditHoldReplyPayload, CreditListReplyPayload, CreditReleaseReplyPayload, RpcError } from '@otc/contracts';
+import { HoldCreditCommand, ReleaseCreditCommand } from '../application/commands/credit.commands';
 import { ListCreditQuery } from '../application/queries/credit.queries';
 import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
-import { CreditHoldRequestDto, CreditListRequestDto } from './dto/credit.dto';
+import { CreditHoldRequestDto, CreditListRequestDto, CreditReleaseRequestDto } from './dto/credit.dto';
 import { missingHeadersRpcError, parseRpcMeta } from './rpc-meta';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
 export const CREDIT_HOLD_SUBJECT = 'billing.credit.hold';
 export const CREDIT_LIST_SUBJECT = 'billing.credit.list';
+/** The follow-up pass closing feature 41's `credit_approved`/`confirmed` gap — Caller: orders.saga (`CancelOrderHandler`). */
+export const CREDIT_RELEASE_SUBJECT = 'billing.credit.release';
 
 @Controller()
 export class CreditController {
@@ -57,6 +59,37 @@ export class CreditController {
     try {
       return await this.commands.execute<HoldCreditCommand, CreditHoldReplyPayload>(
         new HoldCreditCommand(dto, meta.correlationId, meta.requestId),
+      );
+    } catch (error) {
+      return toRpcError(error);
+    }
+  }
+
+  // `billing.credit.release` — the follow-up pass closing feature 41's
+  // `credit_approved`/`confirmed` gap. Same shape as `hold` above (`@Ctx()`
+  // + trace-context extraction, DTO validation, header check, `try/catch`
+  // → `toRpcError`, never throws).
+  @MessagePattern(CREDIT_RELEASE_SUBJECT, Transport.NATS)
+  async release(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<CreditReleaseReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleRelease(payload, ctx));
+  }
+
+  private async handleRelease(payload: unknown, ctx: NatsContext): Promise<CreditReleaseReplyPayload | RpcError> {
+    const dto = plainToInstance(CreditReleaseRequestDto, payload ?? {});
+    const violations = await validate(dto, { whitelist: true });
+    if (violations.length > 0) {
+      return validationRpcError(violations);
+    }
+
+    const meta = parseRpcMeta(ctx);
+    if (!meta) {
+      return missingHeadersRpcError();
+    }
+
+    try {
+      return await this.commands.execute<ReleaseCreditCommand, CreditReleaseReplyPayload>(
+        new ReleaseCreditCommand(dto, meta.correlationId, meta.requestId),
       );
     } catch (error) {
       return toRpcError(error);

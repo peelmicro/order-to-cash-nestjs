@@ -7,7 +7,7 @@
 import 'reflect-metadata';
 import { Type } from 'class-transformer';
 import { IsInt, IsOptional, IsString, Matches, Max, Min, ValidateNested } from 'class-validator';
-import type { CreditHoldRequestPayload, CreditListRequestPayload, Money } from '@otc/contracts';
+import type { CreditHoldRequestPayload, CreditListRequestPayload, CreditReleaseRequestPayload, Money } from '@otc/contracts';
 
 const ORDER_REFERENCE_PATTERN = /^ORD-\d{6}$/;
 const CURRENCY_CODE_PATTERN = /^[A-Z]{3}$/;
@@ -33,6 +33,18 @@ export class CreditHoldRequestDto implements CreditHoldRequestPayload {
   @ValidateNested()
   @Type(() => MoneyDto)
   amount!: MoneyDto;
+}
+
+/** `billing.credit.release` — no `amount` field (the released amount is recomputed from the ledger, never caller-supplied), no `reason` field either (`ReleaseCreditCommand`'s own doc comment: this RPC always releases with reason `order_cancelled`). */
+export class CreditReleaseRequestDto implements CreditReleaseRequestPayload {
+  @Matches(ORDER_REFERENCE_PATTERN)
+  orderReference!: string;
+
+  @IsString()
+  retailerCode!: string;
+
+  @IsString()
+  companyCode!: string;
 }
 
 export class CreditListRequestDto implements CreditListRequestPayload {

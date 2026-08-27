@@ -8,6 +8,7 @@ import { UniqueId } from '@otc/shared-kernel';
 import { describe, expect, it, vi } from 'vitest';
 import type { SagaFactHandler, SagaFactResult } from '../saga-fact-handler.js';
 import {
+  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
@@ -16,6 +17,7 @@ import {
 } from '../events/saga-dispatch.events.js';
 import {
   HandleCreditApprovedFactCommand,
+  HandleCreditReleasedFactCommand,
   HandleCreditRejectedFactCommand,
   HandleInvoiceIssuedFactCommand,
   HandleOrderDespatchedFactCommand,
@@ -24,6 +26,7 @@ import {
 } from './saga-fact.commands.js';
 import {
   HandleCreditApprovedFactHandler,
+  HandleCreditReleasedFactHandler,
   HandleCreditRejectedFactHandler,
   HandleInvoiceIssuedFactHandler,
   HandleOrderDespatchedFactHandler,
@@ -128,6 +131,28 @@ describe('saga-fact.handlers — delegation + publish-only-on-processed-with-enq
     await handler.execute(new HandleOrderDespatchedFactCommand(envelope(), 'otc.orders.facts.v1'));
 
     expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(OrderMarkedDespatched);
+  });
+
+  it('HandleCreditReleasedFactHandler publishes CreditReleasedForCancellationRecorded on processed+enqueued (feature 41 follow-up — the credit_approved/confirmed variant owing stock.release)', async () => {
+    const inner = fakeHandler({ outcome: 'processed', enqueued: 'stock.release' });
+    const eventBus = fakeEventBus();
+    const handler = new HandleCreditReleasedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
+
+    await handler.execute(new HandleCreditReleasedFactCommand(envelope(), 'otc.orders.facts.v1'));
+
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+    expect(eventBus.publish.mock.calls[0]?.[0]).toBeInstanceOf(CreditReleasedForCancellationRecorded);
+  });
+
+  it('HandleCreditReleasedFactHandler publishes nothing for R24\'s paid variant, which owes no command', async () => {
+    const inner = fakeHandler({ outcome: 'processed' });
+    const eventBus = fakeEventBus();
+    const handler = new HandleCreditReleasedFactHandler(inner as unknown as SagaFactHandler, eventBus as never);
+
+    const result = await handler.execute(new HandleCreditReleasedFactCommand(envelope(), 'otc.orders.facts.v1'));
+
+    expect(result).toEqual({ outcome: 'processed' });
+    expect(eventBus.publish).not.toHaveBeenCalled();
   });
 
   it('handlers for facts that never own a command (invoice.issued.v1) take no EventBus at all and just delegate', async () => {

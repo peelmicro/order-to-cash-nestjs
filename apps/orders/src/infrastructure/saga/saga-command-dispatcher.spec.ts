@@ -103,6 +103,7 @@ function fakePort(overrides: Partial<SagaCommandsPort> = {}): SagaCommandsPort {
     createDespatch: vi.fn(),
     holdCredit: vi.fn(),
     issueInvoice: vi.fn(),
+    releaseCredit: vi.fn(),
     ...overrides,
   };
 }

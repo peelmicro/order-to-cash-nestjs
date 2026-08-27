@@ -7,6 +7,7 @@ import { Inject } from '@nestjs/common';
 import { CommandHandler, EventBus, type ICommandHandler } from '@nestjs/cqrs';
 import { SagaFactHandler, type SagaFactResult } from '../saga-fact-handler';
 import {
+  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
@@ -170,11 +171,28 @@ export class HandlePaymentReceivedFactHandler
 export class HandleCreditReleasedFactHandler
   implements ICommandHandler<HandleCreditReleasedFactCommand, SagaFactResult>
 {
-  constructor(@Inject(SagaFactHandler) private readonly handler: SagaFactHandler) {}
+  constructor(
+    @Inject(SagaFactHandler) private readonly handler: SagaFactHandler,
+    @Inject(EventBus) private readonly eventBus: EventBus,
+  ) {}
 
-  // R24 — closes the saga (order.completed.v1); no further command is owed.
+  /**
+   * `credit.released.v1` now has THREE step-table variants (feature 41's
+   * follow-up pass, saga-steps.ts): R24's `paid` variant closes the saga
+   * (`order.completed.v1`) and owes NO command — `result.enqueued` stays
+   * `undefined` for it, exactly as before this pass touched anything. The
+   * `credit_approved`/`confirmed` variants owe `stock.release` — THIS is
+   * the new case, published as `CreditReleasedForCancellationRecorded` so
+   * `order.sagas.ts`'s fast path can issue it, mirroring every other
+   * dispatch-owed event's "publish only when `result.enqueued`" guard.
+   */
   async execute(command: HandleCreditReleasedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope, command.topic);
+    const result = await this.handler.handle(command.envelope, command.topic);
+    if (result.outcome === 'processed' && result.enqueued) {
+      const orderId = command.envelope.correlationId;
+      this.eventBus.publish(new CreditReleasedForCancellationRecorded(orderId, command.envelope.correlationId));
+    }
+    return result;
   }
 }
 

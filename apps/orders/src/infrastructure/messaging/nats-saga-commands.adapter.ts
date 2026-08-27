@@ -9,6 +9,8 @@ import { ErrorCode, headers as natsHeaders, JSONCodec, type MsgHdrs, type NatsCo
 import type {
   CreditHoldReplyPayload,
   CreditHoldRequestPayload,
+  CreditReleaseReplyPayload,
+  CreditReleaseRequestPayload,
   DespatchCreateReplyPayload,
   DespatchCreateRequestPayload,
   InvoiceIssueReplyPayload,
@@ -32,6 +34,8 @@ export const STOCK_RELEASE_SUBJECT = 'fulfillment.stock.release';
 export const DESPATCH_CREATE_SUBJECT = 'fulfillment.despatch.create';
 export const CREDIT_HOLD_SUBJECT = 'billing.credit.hold';
 export const INVOICE_ISSUE_SUBJECT = 'billing.invoice.issue';
+/** Feature 41's follow-up pass — closing the `credit_approved`/`confirmed` cancel gap. */
+export const CREDIT_RELEASE_SUBJECT = 'billing.credit.release';
 
 export interface NatsRequestMessage {
   readonly data: Uint8Array;
@@ -103,6 +107,10 @@ export class NatsSagaCommandsAdapter implements SagaCommandsPort {
 
   issueInvoice(request: InvoiceIssueRequestPayload, meta: SagaCommandMeta): Promise<InvoiceIssueReplyPayload> {
     return this.call(INVOICE_ISSUE_SUBJECT, request, meta);
+  }
+
+  releaseCredit(request: CreditReleaseRequestPayload, meta: SagaCommandMeta): Promise<CreditReleaseReplyPayload> {
+    return this.call(CREDIT_RELEASE_SUBJECT, request, meta);
   }
 
   private async call<TRequest, TReply>(subject: string, request: TRequest, meta: SagaCommandMeta): Promise<TReply> {

@@ -113,6 +113,8 @@ export type {
   DespatchCreateReplyPayload,
   CreditHoldRequestPayload,
   CreditHoldReplyPayload,
+  CreditReleaseRequestPayload,
+  CreditReleaseReplyPayload,
   CreditListRequestPayload,
   CreditListReplyPayload,
   InvoiceIssueRequestPayload,

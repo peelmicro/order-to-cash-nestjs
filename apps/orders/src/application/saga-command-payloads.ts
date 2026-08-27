@@ -6,7 +6,10 @@
 // the result to `SagaCommandStore.enqueue` (design.md §5.1 step 3).
 import type {
   CreditHoldRequestPayload,
+  CreditReleasedPayload,
+  CreditReleaseRequestPayload,
   DespatchCreateRequestPayload,
+  Envelope,
   InvoiceIssueRequestPayload,
   InvoiceLine,
   StockReleaseRequestPayload,
@@ -20,7 +23,8 @@ export type SagaCommandPayload =
   | StockReleaseRequestPayload
   | DespatchCreateRequestPayload
   | CreditHoldRequestPayload
-  | InvoiceIssueRequestPayload;
+  | InvoiceIssueRequestPayload
+  | CreditReleaseRequestPayload;
 
 function nonEmptyReserveLines(order: Order): StockReserveRequestPayload['lines'] {
   const lines = order.lines.map((line) => ({ productCode: line.productCode, units: line.quantity.value }));
@@ -44,11 +48,44 @@ function nonEmptyInvoiceLines(order: Order): [InvoiceLine, ...InvoiceLine[]] {
 }
 
 /**
+ * `stock.release` is now owed by TWO different step-table rows (design.md
+ * §4.3 Path B, and feature 41's follow-up pass): `credit.rejected.v1`
+ * (reason always `credit_rejected`) and `credit.released.v1`'s
+ * `credit_approved`/`confirmed` variant (reason always `order_cancelled` —
+ * asserted here, not assumed: see `saga-steps.ts`'s `credit.released.v1`
+ * module comment for why no other reason can reach that variant). Any
+ * OTHER triggering fact type would be a step-table/payload-builder mismatch
+ * — a programming error, not a runtime condition to swallow.
+ */
+function stockReleaseReasonFor(fact: Envelope): StockReleaseRequestPayload['reason'] {
+  switch (fact.eventType) {
+    case 'credit.rejected.v1':
+      return 'credit_rejected';
+    case 'credit.released.v1': {
+      const reason = (fact.payload as CreditReleasedPayload).reason;
+      if (reason !== 'order_cancelled') {
+        throw new Error(
+          `saga-command-payloads: stock.release owed by credit.released.v1 with unexpected reason "${reason}" — expected order_cancelled (the paid variant owes no commandAfter and should never reach here)`,
+        );
+      }
+      return 'order_cancelled';
+    }
+    default:
+      throw new Error(`saga-command-payloads: stock.release owed by unexpected fact type "${fact.eventType}"`);
+  }
+}
+
+/**
  * `kind` must be the `commandAfter` the step table just enqueued for
  * `order` — the switch is total over `SagaCommandKind`, so a new kind added
  * to the closed set without a case here fails to compile (`never` below).
+ * `fact` — the triggering envelope `SagaFactHandler` already holds — is
+ * required for `stock.release` (its `reason` depends on which fact owed
+ * it) and unused by every other kind; kept optional on the signature so
+ * every existing single-argument test call site for `credit.hold`/
+ * `invoice.issue`/etc. stays unchanged.
  */
-export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order): SagaCommandPayload {
+export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order, fact?: Envelope): SagaCommandPayload {
   switch (kind) {
     case 'stock.reserve':
       return {
@@ -57,14 +94,15 @@ export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order): Sa
         companyCode: order.companyCode,
         lines: nonEmptyReserveLines(order),
       } satisfies StockReserveRequestPayload;
-    case 'stock.release':
-      // The only step-table row that owes `stock.release` is
-      // `credit.rejected.v1` (design.md §4.3 Path B) — the operator-initiated
-      // release (`order_cancelled`) is feature 25's, not built here.
+    case 'stock.release': {
+      if (!fact) {
+        throw new Error('saga-command-payloads: stock.release requires the triggering fact envelope to determine its reason');
+      }
       return {
         orderReference: order.orderReference.value,
-        reason: 'credit_rejected',
+        reason: stockReleaseReasonFor(fact),
       } satisfies StockReleaseRequestPayload;
+    }
     case 'despatch.create':
       return { orderReference: order.orderReference.value } satisfies DespatchCreateRequestPayload;
     case 'credit.hold':
@@ -91,6 +129,20 @@ export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order): Sa
         lines: nonEmptyInvoiceLines(order),
         discount: order.initialDiscount.amount,
       } satisfies InvoiceIssueRequestPayload;
+    case 'credit.release':
+      // No step-table row ever names `credit.release` as its
+      // `commandAfter` — `CancelOrderHandler` enqueues it directly (same
+      // "outside the fact-driven table" shape `stock.release`'s
+      // operator-cancel variant uses in `beginStockReleaseCompensation`),
+      // so this case is never reached via `SagaFactHandler`'s call site
+      // today. Implemented anyway for the switch's own exhaustiveness
+      // (`never` below) and so any FUTURE fact-driven caller gets the
+      // correct shape for free, matching `credit.hold`'s own two fields.
+      return {
+        orderReference: order.orderReference.value,
+        retailerCode: order.retailerCode,
+        companyCode: order.companyCode,
+      } satisfies CreditReleaseRequestPayload;
     default: {
       const exhaustive: never = kind;
       throw new Error(`saga-command-payloads: unmapped saga command kind "${String(exhaustive)}"`);

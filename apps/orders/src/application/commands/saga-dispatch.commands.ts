@@ -32,3 +32,10 @@ export class IssueInvoiceIssueCommand extends Command<void> {
     super();
   }
 }
+
+/** Feature 41's follow-up pass — `CancelOrderHandler`'s fast-path hop for the `credit_approved`/`confirmed` branch, mirrors `IssueStockReleaseCommand` exactly. */
+export class IssueCreditReleaseCommand extends Command<void> {
+  constructor(readonly orderId: string) {
+    super();
+  }
+}

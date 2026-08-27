@@ -22,6 +22,7 @@ import type {
 import { SagaCommandTimeoutError, SagaCommandTransportError, type SagaCommandMeta } from '../../application/ports/saga-commands.port';
 import {
   CREDIT_HOLD_SUBJECT,
+  CREDIT_RELEASE_SUBJECT,
   DESPATCH_CREATE_SUBJECT,
   INVOICE_ISSUE_SUBJECT,
   NatsSagaCommandsAdapter,
@@ -52,7 +53,7 @@ function channelAddress(specText: string, channelName: string): string {
 }
 
 describe('NatsSagaCommandsAdapter — subject constants match the AsyncAPI addresses (design.md §6.1)', () => {
-  it('uses exactly the five documented RPC subjects, read from asyncapi.yaml as text', () => {
+  it('uses exactly the six documented RPC subjects, read from asyncapi.yaml as text', () => {
     const specText = readFileSync(ASYNCAPI_SPEC_PATH, 'utf8');
 
     expect(STOCK_RESERVE_SUBJECT).toBe(channelAddress(specText, 'stockReserve'));
@@ -60,6 +61,8 @@ describe('NatsSagaCommandsAdapter — subject constants match the AsyncAPI addre
     expect(DESPATCH_CREATE_SUBJECT).toBe(channelAddress(specText, 'despatchCreate'));
     expect(CREDIT_HOLD_SUBJECT).toBe(channelAddress(specText, 'creditHold'));
     expect(INVOICE_ISSUE_SUBJECT).toBe(channelAddress(specText, 'invoiceIssue'));
+    // Feature 41's follow-up pass, closing the credit_approved/confirmed cancel gap.
+    expect(CREDIT_RELEASE_SUBJECT).toBe(channelAddress(specText, 'creditRelease'));
   });
 });
 
@@ -284,6 +287,20 @@ describe('NatsSagaCommandsAdapter — releaseStock, createDespatch, issueInvoice
     );
 
     expect(calledSubject).toBe(INVOICE_ISSUE_SUBJECT);
+  });
+
+  it('releaseCredit calls billing.credit.release', async () => {
+    let calledSubject = '';
+    const client = fakeClient(async (subject) => {
+      calledSubject = subject;
+      const codec = JSONCodec();
+      return { data: codec.encode({ released: true, orderReference: 'ORD-000001', currency: 'EUR', releasedAmount: 10_000, availableCreditAfter: 50_000 }) };
+    });
+    const adapter = new NatsSagaCommandsAdapter(client, 5000);
+
+    await adapter.releaseCredit({ orderReference: 'ORD-000001', retailerCode: 'RET-0001', companyCode: 'COM-0001' }, META);
+
+    expect(calledSubject).toBe(CREDIT_RELEASE_SUBJECT);
   });
 });
 

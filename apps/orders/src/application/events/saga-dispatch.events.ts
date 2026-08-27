@@ -46,3 +46,21 @@ export class OrderMarkedDespatched implements IEvent {
     readonly correlationId: string,
   ) {}
 }
+
+/**
+ * `credit.released.v1` processed while `credit_approved`/`confirmed` — owes
+ * `stock.release` (feature 41's follow-up pass: the compensation release,
+ * reverse order of acquisition, saga.md §4.3). A SEPARATE class from
+ * `CreditRejectionRecorded` even though both ultimately map to the SAME
+ * `IssueStockReleaseCommand` (`order.sagas.ts` merges both streams into
+ * one) — the name stays honest about which fact and which precondition
+ * actually owed the command; `credit.released.v1`'s OTHER variant
+ * (precondition `paid`, R24) never reaches this event at all, since that
+ * variant has no `commandAfter`.
+ */
+export class CreditReleasedForCancellationRecorded implements IEvent {
+  constructor(
+    readonly orderId: string,
+    readonly correlationId: string,
+  ) {}
+}

@@ -17,6 +17,11 @@ export const SAGA_COMMAND_KIND_VALUES = [
   'despatch.create',
   'credit.hold',
   'invoice.issue',
+  // feature 41's follow-up pass — `CancelOrderHandler` enqueues this
+  // directly for the `credit_approved`/`confirmed` cancel branch, the
+  // same "outside the fact-driven step table" shape `stock.release`'s
+  // operator-cancel variant already uses.
+  'credit.release',
 ] as const;
 
 export type SagaCommandKindRow = (typeof SAGA_COMMAND_KIND_VALUES)[number];

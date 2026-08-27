@@ -8,7 +8,7 @@ import path from 'node:path';
 import { NatsContext } from '@nestjs/microservices';
 import { UniqueId } from '@otc/shared-kernel';
 import { describe, expect, it, vi } from 'vitest';
-import { CREDIT_HOLD_SUBJECT, CREDIT_LIST_SUBJECT, CreditController } from './credit.controller';
+import { CREDIT_HOLD_SUBJECT, CREDIT_LIST_SUBJECT, CREDIT_RELEASE_SUBJECT, CreditController } from './credit.controller';
 import { CreditLineNotFoundError } from '../application/credit-application-errors';
 
 const ASYNCAPI_SPEC_PATH = path.resolve(__dirname, '../../../../specs/shared/asyncapi.yaml');
@@ -26,11 +26,12 @@ function channelAddress(specText: string, channelName: string): string {
 }
 
 describe('CreditController — subject constants match the AsyncAPI addresses', () => {
-  it('uses exactly the two documented subjects, read from asyncapi.yaml as text', () => {
+  it('uses exactly the three documented subjects, read from asyncapi.yaml as text', () => {
     const specText = readFileSync(ASYNCAPI_SPEC_PATH, 'utf8');
 
     expect(CREDIT_HOLD_SUBJECT).toBe(channelAddress(specText, 'creditHold'));
     expect(CREDIT_LIST_SUBJECT).toBe(channelAddress(specText, 'creditList'));
+    expect(CREDIT_RELEASE_SUBJECT).toBe(channelAddress(specText, 'creditRelease'));
   });
 });
 
@@ -49,6 +50,7 @@ function buses() {
 }
 
 const VALID_REQUEST = { orderReference: 'ORD-000001', retailerCode: 'RET-0001', companyCode: 'COM-0001', amount: { amount: 4_000, currency: 'EUR' } };
+const VALID_RELEASE_REQUEST = { orderReference: 'ORD-000001', retailerCode: 'RET-0001', companyCode: 'COM-0001' };
 
 describe('CreditController — BC1 header refusal', () => {
   it('replies VALIDATION_FAILED and dispatches nothing when x-correlation-id or x-request-id is missing or malformed on billing.credit.hold', async () => {
@@ -128,5 +130,76 @@ describe('CreditController — validation and error mapping, never throws', () =
     const result = await controller.list({ page: 1, pageSize: 25 }, fakeContext());
 
     expect(result).toMatchObject({ code: 'INTERNAL_ERROR' });
+  });
+});
+
+// The follow-up pass closing feature 41's `credit_approved`/`confirmed`
+// gap — `billing.credit.release`'s own responder, same shape as `hold`'s
+// own tests above.
+describe('CreditController — billing.credit.release, BC1 header refusal', () => {
+  it('replies VALIDATION_FAILED and dispatches nothing when x-correlation-id or x-request-id is missing or malformed', async () => {
+    const { queries, commands, commandExecute } = buses();
+    const controller = new CreditController(queries, commands);
+
+    const noHeaders = await controller.release(VALID_RELEASE_REQUEST, fakeContext());
+    expect(noHeaders).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const malformed = await controller.release(
+      VALID_RELEASE_REQUEST,
+      fakeContext({ 'x-correlation-id': 'not-a-uuid', 'x-request-id': UniqueId.generate().value }),
+    );
+    expect(malformed).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    const missingOne = await controller.release(VALID_RELEASE_REQUEST, fakeContext({ 'x-correlation-id': UniqueId.generate().value }));
+    expect(missingOne).toMatchObject({ code: 'VALIDATION_FAILED' });
+
+    expect(commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('dispatches ReleaseCreditCommand with the parsed correlationId/requestId when headers are present and valid', async () => {
+    const { queries, commands, commandExecute } = buses();
+    commandExecute.mockResolvedValue({ released: true, orderReference: 'ORD-000001', currency: 'EUR', releasedAmount: 4_000, availableCreditAfter: 6_000 });
+    const controller = new CreditController(queries, commands);
+    const correlationId = UniqueId.generate();
+    const requestId = UniqueId.generate();
+
+    const result = await controller.release(
+      VALID_RELEASE_REQUEST,
+      fakeContext({ 'x-correlation-id': correlationId.value, 'x-request-id': requestId.value }),
+    );
+
+    expect(result).toMatchObject({ released: true, releasedAmount: 4_000 });
+    expect(commandExecute).toHaveBeenCalledTimes(1);
+    const dispatchedCommand = commandExecute.mock.calls[0]![0];
+    expect(dispatchedCommand.correlationId.equals(correlationId)).toBe(true);
+    expect(dispatchedCommand.requestId.equals(requestId)).toBe(true);
+  });
+});
+
+describe('CreditController — billing.credit.release, validation and error mapping, never throws', () => {
+  it('a validation failure replies RpcError and dispatches nothing', async () => {
+    const { queries, commands, commandExecute } = buses();
+    const controller = new CreditController(queries, commands);
+
+    const result = await controller.release(
+      { orderReference: 'not-a-valid-reference', retailerCode: 'RET-0001', companyCode: 'COM-0001' },
+      fakeContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+
+    expect(result).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(commandExecute).not.toHaveBeenCalled();
+  });
+
+  it('a handler error is mapped to an RpcError, not thrown', async () => {
+    const { queries, commands, commandExecute } = buses();
+    commandExecute.mockRejectedValue(new CreditLineNotFoundError('AldiDe', 'ALBIONFOODS'));
+    const controller = new CreditController(queries, commands);
+
+    const result = await controller.release(
+      VALID_RELEASE_REQUEST,
+      fakeContext({ 'x-correlation-id': UniqueId.generate().value, 'x-request-id': UniqueId.generate().value }),
+    );
+
+    expect(result).toMatchObject({ code: 'NOT_FOUND' });
   });
 });

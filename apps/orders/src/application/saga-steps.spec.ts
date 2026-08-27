@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { Order, type PlaceOrderInput, type PlaceOrderLineInput } from '../domain/order.js';
 import { OrderTransitionNotAllowedError } from '../domain/order-errors.js';
 import { ORDER_STATUSES, type OrderStatus } from '../domain/order-status.js';
-import { mapReason, SAGA_STEPS, stepFor, stepsFrom, transitionContextFrom, type SagaStep } from './saga-steps.js';
+import { mapReason, SAGA_STEPS, stepFor, stepForStatus, stepsFrom, stepVariantsFor, transitionContextFrom, type SagaStep } from './saga-steps.js';
 
 const BUYER_GLN = GLN.of('5412345000013');
 const SUPPLIER_GLN = GLN.of('5412345000037');
@@ -86,9 +86,23 @@ function apply(step: SagaStep, order: Order, envelope: Envelope): void {
   }
 }
 
-const NON_SKIP_FACT_TYPES = Object.entries(SAGA_STEPS)
-  .filter(([, step]) => step.kind !== 'skip')
-  .map(([eventType]) => eventType);
+// `credit.released.v1` and `stock.released.v1` (feature 41's follow-up
+// pass) are the two fact types with more than one legal precondition —
+// R24's `paid` happy path vs the operator-cancel-compensation
+// `credit_approved`/`confirmed` variants for the former, and R28/SO7's
+// `stock_reserved` compensation vs the SAME `credit_approved`/`confirmed`
+// operator-cancel variants (now releasing stock SECOND) for the latter.
+// Several of these variants are deliberate no-ops (mirroring
+// `credit.rejected.v1`'s own R27 no-op) rather than real domain
+// transitions. The generic "exactly one precondition per fact type" matrix
+// below does not generalise cleanly to that mix, so both are excluded here
+// and given their own dedicated, exhaustive test blocks further down
+// instead.
+const MULTI_VARIANT_FACT_TYPES = new Set(['credit.released.v1', 'stock.released.v1']);
+
+const NON_SKIP_FACT_TYPES = Object.keys(SAGA_STEPS).filter(
+  (eventType) => !MULTI_VARIANT_FACT_TYPES.has(eventType) && stepVariantsFor(eventType).some((step) => step.kind !== 'skip'),
+);
 
 describe('SAGA_STEPS — the step table, every fact x every status (design.md §4.1)', () => {
   describe.each(NON_SKIP_FACT_TYPES)('%s', (eventType) => {
@@ -99,11 +113,10 @@ describe('SAGA_STEPS — the step table, every fact x every status (design.md §
 
     it.each(ORDER_STATUSES)('status %s', (status) => {
       const order = driveTo(status);
-      const envelope = fact({
-        eventType,
-        correlationId: order.id.value,
-        payload: eventType === 'stock.released.v1' ? { reason: 'credit_rejected' } : {},
-      });
+      // `stock.released.v1` is excluded from this generic loop (multi-variant
+      // now, see MULTI_VARIANT_FACT_TYPES above) — no eventType reaching
+      // here needs a `reason` payload field any more.
+      const envelope = fact({ eventType, correlationId: order.id.value, payload: {} });
 
       if (status === step.precondition) {
         // The one status this fact legally advances/cancels from.
@@ -210,8 +223,12 @@ describe('credit.rejected.v1 — R27: status unchanged, owes stock.release', () 
 });
 
 describe('stock.released.v1 — R28, SO7: compensation path B, one stock_released step from the observed fact', () => {
+  it('stepFor("stock.released.v1") is ambiguous — three variants exist (feature 41\'s follow-up pass), so the status-less lookup refuses', () => {
+    expect(() => stepFor('stock.released.v1')).toThrow(/ambiguous/);
+  });
+
   it('cancels stock_reserved with reason credit_rejected and one compensation step built from the fact', () => {
-    const step = stepFor('stock.released.v1');
+    const step = stepForStatus('stock.released.v1', 'stock_reserved');
     if (!step || step.kind !== 'cancel') throw new Error('unreachable');
     expect(step.precondition).toBe('stock_reserved');
 
@@ -259,6 +276,36 @@ describe('stock.released.v1 — R28, SO7: compensation path B, one stock_release
       }),
     ]);
   });
+
+  it.each(['credit_approved', 'confirmed'] as const)(
+    'the follow-up pass — %s: cancels with reason operator_cancelled (always — this is the ONLY trigger for stock.release from this status) and compensationSteps names BOTH credit_released and stock_released',
+    (status) => {
+      const step = stepForStatus('stock.released.v1', status);
+      if (!step || step.kind !== 'cancel') throw new Error('unreachable');
+
+      const envelope = fact({ eventType: 'stock.released.v1', payload: { reason: 'order_cancelled' } });
+      expect(step.reason(envelope)).toBe('operator_cancelled');
+
+      const steps = step.compensationSteps(envelope);
+      expect(steps).toHaveLength(2);
+      expect(steps[0]).toMatchObject({ step: 'credit_released', eventType: 'credit.released.v1' });
+      expect(steps[0]).not.toHaveProperty('eventId'); // honestly disclosed — no cross-fact state to source it from
+      expect(steps[1]).toMatchObject({ step: 'stock_released', eventId: envelope.eventId, eventType: 'stock.released.v1' });
+
+      const order = driveTo(status);
+      apply(step, order, { ...envelope, correlationId: order.id.value });
+      expect(order.status).toBe('cancelled');
+      expect(order.cancellationReason).toBe('operator_cancelled');
+    },
+  );
+
+  it('R25 — every OTHER status has no matching variant at all (stepForStatus returns undefined)', () => {
+    const otherStatuses = ORDER_STATUSES.filter((status) => status !== 'stock_reserved' && status !== 'credit_approved' && status !== 'confirmed');
+    expect(otherStatuses.length).toBeGreaterThan(0);
+    for (const status of otherStatuses) {
+      expect(stepForStatus('stock.released.v1', status)).toBeUndefined();
+    }
+  });
 });
 
 describe('order.despatched.v1 — advances to despatched, owes invoice.issue', () => {
@@ -297,17 +344,42 @@ describe('payment.received.v1 — advances to paid, owes nothing', () => {
   });
 });
 
-describe('credit.released.v1 — R24: closes the saga, emits order.completed.v1', () => {
-  it('transitions paid -> completed and emits exactly one order.completed.v1', () => {
-    const step = stepFor('credit.released.v1');
+describe('credit.released.v1 — three variants (feature 41\'s follow-up pass): R24\'s paid happy path, and the credit_approved/confirmed compensation variants', () => {
+  it('stepFor("credit.released.v1") is ambiguous — three variants exist, so the status-less lookup refuses rather than silently picking one', () => {
+    expect(() => stepFor('credit.released.v1')).toThrow(/ambiguous/);
+  });
+
+  it('R24 — paid: transitions paid -> completed, emits exactly one order.completed.v1, owes nothing', () => {
+    const step = stepForStatus('credit.released.v1', 'paid');
     if (!step || step.kind !== 'advance') throw new Error('unreachable');
     expect('commandAfter' in step).toBe(false);
 
     const order = driveTo('paid');
-    apply(step, order, fact({ eventType: 'credit.released.v1', correlationId: order.id.value }));
+    apply(step, order, fact({ eventType: 'credit.released.v1', correlationId: order.id.value, payload: { reason: 'invoice_paid' } }));
     expect(order.status).toBe('completed');
     const completedEvents = order.pullDomainEvents().filter((event) => event.eventType === 'order.completed.v1');
     expect(completedEvents).toHaveLength(1);
+  });
+
+  it.each(['credit_approved', 'confirmed'] as const)(
+    'the follow-up pass — %s: status unchanged (no-op apply, mirrors credit.rejected.v1\'s own R27 no-op), owes stock.release',
+    (status) => {
+      const step = stepForStatus('credit.released.v1', status);
+      if (!step || step.kind !== 'advance') throw new Error('unreachable');
+      expect(step.commandAfter).toBe('stock.release');
+
+      const order = driveTo(status);
+      apply(step, order, fact({ eventType: 'credit.released.v1', correlationId: order.id.value, payload: { reason: 'order_cancelled' } }));
+      expect(order.status).toBe(status);
+    },
+  );
+
+  it('R25 — every OTHER status has no matching variant at all (stepForStatus returns undefined)', () => {
+    const otherStatuses = ORDER_STATUSES.filter((status) => status !== 'paid' && status !== 'credit_approved' && status !== 'confirmed');
+    expect(otherStatuses.length).toBeGreaterThan(0);
+    for (const status of otherStatuses) {
+      expect(stepForStatus('credit.released.v1', status)).toBeUndefined();
+    }
   });
 });
 

@@ -8,6 +8,7 @@ import { UniqueId } from '@otc/shared-kernel';
 import { SAGA_COMMAND_DISPATCHER, type DispatchesSagaCommands } from '../../infrastructure/saga/saga-command-dispatcher';
 import {
   IssueCreditHoldCommand,
+  IssueCreditReleaseCommand,
   IssueDespatchCreateCommand,
   IssueInvoiceIssueCommand,
   IssueStockReleaseCommand,
@@ -59,6 +60,16 @@ export class IssueInvoiceIssueHandler implements ICommandHandler<IssueInvoiceIss
   }
 }
 
+/** Feature 41's follow-up pass — `CancelOrderHandler`'s fast-path hop for the `credit_approved`/`confirmed` branch. */
+@CommandHandler(IssueCreditReleaseCommand)
+export class IssueCreditReleaseHandler implements ICommandHandler<IssueCreditReleaseCommand, void> {
+  constructor(@Inject(SAGA_COMMAND_DISPATCHER) private readonly dispatcher: DispatchesSagaCommands) {}
+
+  async execute(command: IssueCreditReleaseCommand): Promise<void> {
+    await this.dispatcher.dispatch(UniqueId.from(command.orderId), 'credit.release');
+  }
+}
+
 /** Every `@CommandHandler` class this module declares — for `app.module.ts`'s class-provider list. */
 export const SAGA_DISPATCH_COMMAND_HANDLERS = [
   IssueStockReserveHandler,
@@ -66,4 +77,5 @@ export const SAGA_DISPATCH_COMMAND_HANDLERS = [
   IssueStockReleaseHandler,
   IssueDespatchCreateHandler,
   IssueInvoiceIssueHandler,
+  IssueCreditReleaseHandler,
 ] as const;

@@ -40,6 +40,7 @@ import { INVOICE_COMMAND_HANDLERS } from './application/commands/invoice.command
 import { INVOICE_QUERY_HANDLERS } from './application/queries/invoice.query-handlers';
 import { PAYMENT_COMMAND_HANDLERS } from './application/commands/payment.command-handlers';
 import { CreditHoldHandler } from './application/credit-hold.handler';
+import { CreditReleaseHandler } from './application/credit-release.handler';
 import { InvoiceIssueHandler } from './application/invoice-issue.handler';
 import { PaymentRegisterHandler } from './application/payment-register.handler';
 import type { CreditDecisionPort } from './application/ports/credit-decision.port';
@@ -149,6 +150,12 @@ class NatsConnectionCloser implements OnApplicationShutdown {
         clock: Clock,
       ): CreditHoldHandler => new CreditHoldHandler(unitOfWork, credits, decision, clock),
       inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, CREDIT_DECISION, CLOCK],
+    },
+    {
+      provide: CreditReleaseHandler,
+      useFactory: (unitOfWork: UnitOfWork, credits: BuyerCreditRepository, clock: Clock): CreditReleaseHandler =>
+        new CreditReleaseHandler(unitOfWork, credits, clock),
+      inject: [UNIT_OF_WORK, BUYER_CREDIT_REPOSITORY, CLOCK],
     },
     {
       provide: INVOICE_REPOSITORY,

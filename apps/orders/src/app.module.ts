@@ -1,13 +1,16 @@
 import { Module, type OnApplicationShutdown } from '@nestjs/common';
-import { CqrsModule } from '@nestjs/cqrs';
+import { CommandBus, CqrsModule } from '@nestjs/cqrs';
 import type { NatsConnection } from 'nats';
 import { Kafka as KafkaJsClient } from 'kafkajs';
 import type { Pool } from 'mysql2/promise';
 import { AppController } from './presentation/app.controller';
+import { CatalogReferenceListController } from './presentation/catalog-reference-list.controller';
 import { HealthController } from './presentation/health.controller';
+import { OrdersCancelController } from './presentation/orders-cancel.controller';
 import { OrdersCreateController } from './presentation/orders-create.controller';
 import { SagaFactsController } from './presentation/saga-facts.controller';
 import { READINESS_CHECKS, type HealthCheck } from './application/ports/health-check.port';
+import { CATALOG_REFERENCE_LIST } from './application/ports/catalog-reference-list.port';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import { FACT_PUBLISHER } from './application/ports/fact-publisher.port';
 import { ORDER_NUMBER_ALLOCATOR } from './application/ports/order-number-allocator.port';
@@ -17,7 +20,9 @@ import { SAGA_COMMANDS } from './application/ports/saga-commands.port';
 import { SAGA_COMMAND_STORE, type SagaCommandStore } from './application/ports/saga-command-store.port';
 import { STOCK_AVAILABILITY } from './application/ports/stock-availability.port';
 import { UNIT_OF_WORK, type UnitOfWork } from './application/ports/unit-of-work.port';
+import { CancelOrderHandler } from './application/cancel-order.handler';
 import { PlaceOrderHandler } from './application/place-order.handler';
+import { ListCatalogReferenceHandler } from './application/queries/list-catalog-reference.query';
 import { SagaFactHandler } from './application/saga-fact-handler';
 import { SAGA_DISPATCH_COMMAND_HANDLERS } from './application/commands/saga-dispatch.handlers';
 import { SAGA_FACT_COMMAND_HANDLERS } from './application/commands/saga-fact.handlers';
@@ -81,7 +86,14 @@ class NatsConnectionCloser implements OnApplicationShutdown {
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, OrdersCreateController, SagaFactsController, HealthController],
+  controllers: [
+    AppController,
+    OrdersCreateController,
+    OrdersCancelController,
+    CatalogReferenceListController,
+    SagaFactsController,
+    HealthController,
+  ],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
@@ -111,6 +123,17 @@ class NatsConnectionCloser implements OnApplicationShutdown {
       provide: ORDER_REFERENCE_DATA,
       useFactory: (db: OrdersDb): DrizzleOrderReferenceDataRepository => new DrizzleOrderReferenceDataRepository(db),
       inject: [ORDERS_DB],
+    },
+    // `orders_catalog_responder` — an ALIAS (`useExisting`), not a second
+    // `useFactory`: `DrizzleOrderReferenceDataRepository` implements BOTH
+    // `OrderReferenceDataPort` and `CatalogReferenceListPort` (see that
+    // port's own header comment), so this token resolves to the EXACT SAME
+    // instance `ORDER_REFERENCE_DATA` above does — one adapter, one `OrdersDb`
+    // connection, never a second repository that could read the four
+    // reference tables differently.
+    {
+      provide: CATALOG_REFERENCE_LIST,
+      useExisting: ORDER_REFERENCE_DATA,
     },
     {
       provide: NATS_CONNECTION,
@@ -153,6 +176,25 @@ class NatsConnectionCloser implements OnApplicationShutdown {
       ): PlaceOrderHandler =>
         new PlaceOrderHandler(unitOfWork, orders, orderNumbers, referenceData, stockAvailability, clock),
       inject: [UNIT_OF_WORK, ORDER_REPOSITORY, ORDER_NUMBER_ALLOCATOR, ORDER_REFERENCE_DATA, STOCK_AVAILABILITY, CLOCK],
+    },
+    {
+      // `orders_cancel_responder` (feature 41) — `SAGA_COMMAND_STORE` and
+      // `CommandBus` (the same fast-path hop `saga-dispatch.handlers.ts`
+      // uses) are wired here rather than resolved lazily, so this handler's
+      // `stock_reserved` branch reuses R27/R28's EXACT durable-command
+      // mechanism, never a second one. `ORDERS_FACTS_TOPIC` is threaded in
+      // as a plain string — see cancel-order.handler.ts's own header for
+      // why the application layer does not import the infrastructure
+      // constant itself.
+      provide: CancelOrderHandler,
+      useFactory: (
+        unitOfWork: DrizzleUnitOfWork,
+        orders: DrizzleOrderRepository,
+        commandStore: DrizzleSagaCommandStore,
+        commandBus: CommandBus,
+        clock: Clock,
+      ): CancelOrderHandler => new CancelOrderHandler(unitOfWork, orders, commandStore, commandBus, clock, ORDERS_FACTS_TOPIC),
+      inject: [UNIT_OF_WORK, ORDER_REPOSITORY, SAGA_COMMAND_STORE, CommandBus, CLOCK],
     },
     {
       provide: FACT_PUBLISHER,
@@ -267,6 +309,9 @@ class NatsConnectionCloser implements OnApplicationShutdown {
     OrderSagas,
     ...SAGA_FACT_COMMAND_HANDLERS,
     ...SAGA_DISPATCH_COMMAND_HANDLERS,
+
+    // ── orders_catalog_responder ────────────────────────────────────────
+    ListCatalogReferenceHandler,
   ],
 })
 export class AppModule {}

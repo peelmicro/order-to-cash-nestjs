@@ -11,7 +11,7 @@
 import { eq } from 'drizzle-orm';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
-import { CqrsModule } from '@nestjs/cqrs';
+import { CommandBus, CqrsModule } from '@nestjs/cqrs';
 import { Transport, type MicroserviceOptions } from '@nestjs/microservices';
 import type { NatsConnection } from 'nats';
 import { connect } from 'nats';
@@ -22,11 +22,14 @@ import { ORDER_REPOSITORY, type OrderRepository } from '../application/ports/ord
 import { SAGA_COMMANDS } from '../application/ports/saga-commands.port';
 import { SAGA_COMMAND_STORE, type SagaCommandStore } from '../application/ports/saga-command-store.port';
 import { UNIT_OF_WORK, type UnitOfWork } from '../application/ports/unit-of-work.port';
+import { CancelOrderHandler } from '../application/cancel-order.handler';
 import { SagaFactHandler } from '../application/saga-fact-handler';
 import { SAGA_DISPATCH_COMMAND_HANDLERS } from '../application/commands/saga-dispatch.handlers';
 import { SAGA_FACT_COMMAND_HANDLERS } from '../application/commands/saga-fact.handlers';
 import { OrderSagas } from '../application/sagas/order.sagas';
+import { OrdersCancelController } from '../presentation/orders-cancel.controller';
 import { SagaFactsController } from '../presentation/saga-facts.controller';
+import { createOrdersNatsMicroserviceOptions } from '../main';
 import { DrizzleUnitOfWork } from '../infrastructure/persistence/drizzle-unit-of-work';
 import { DrizzleOrderRepository } from '../infrastructure/persistence/order.repository';
 import * as ordersSchema from '../infrastructure/persistence/schema/index';
@@ -327,7 +330,7 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
 
   const moduleRef = await Test.createTestingModule({
     imports: [CqrsModule.forRoot()],
-    controllers: [SagaFactsController],
+    controllers: [SagaFactsController, OrdersCancelController],
     providers: [
       { provide: CLOCK, useValue: clock },
       { provide: UNIT_OF_WORK, useValue: unitOfWork },
@@ -335,6 +338,19 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
       { provide: SAGA_COMMAND_STORE, useValue: commandStore },
       { provide: SAGA_COMMANDS, useValue: new NatsSagaCommandsAdapter(appNatsConnection, dispatcherConfig.timeoutMs) },
       { provide: FACT_RETRY_DISPATCHER, useValue: factRetryDispatcher },
+      {
+        // `orders_cancel_responder` (feature 41) — the `orders.cancel` NATS
+        // responder, wired into this SAME harness so its `stock_reserved`
+        // branch can be proven against the real fast-path hop
+        // (`IssueStockReleaseCommand` -> `CommandBus` -> `SAGA_COMMAND_DISPATCHER`,
+        // registered above) and the real Kafka consumer group
+        // (`SagaFactsController`, also registered above) that completes the
+        // compensation on `stock.released.v1` — one app instance, exactly
+        // as production's `AppModule` composes both.
+        provide: CancelOrderHandler,
+        useFactory: (commandBus: CommandBus) => new CancelOrderHandler(unitOfWork, orders, commandStore, commandBus, clock, ORDERS_FACTS_TOPIC),
+        inject: [CommandBus],
+      },
       {
         provide: SagaFactHandler,
         useFactory: () =>
@@ -380,6 +396,20 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
       run: { partitionsConsumedConcurrently: 1 },
     },
   });
+  // `orders_cancel_responder` (feature 41) — the bare-JSON NATS microservice
+  // `main.ts`'s own `bootstrap()` connects in production, via the SAME
+  // exported factory `orders-create-wire.integration.spec.ts` already
+  // proves against (main.ts's own header, "G6"). Without this, the newly
+  // registered `OrdersCancelController.cancel` `@MessagePattern` would never
+  // actually be reachable over `testNatsConnection` in this harness.
+  const natsConnectionOptions = natsFixture.container.getConnectionOptions();
+  app.connectMicroservice<MicroserviceOptions>(
+    createOrdersNatsMicroserviceOptions({
+      servers: natsConnectionOptions.servers,
+      user: natsConnectionOptions.user,
+      pass: natsConnectionOptions.pass,
+    }),
+  );
   await app.startAllMicroservices();
   await app.init();
 

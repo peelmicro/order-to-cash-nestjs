@@ -7,6 +7,8 @@ import type { UniqueId } from '@otc/shared-kernel';
 import type {
   CreditHoldReplyPayload,
   CreditHoldRequestPayload,
+  CreditReleaseReplyPayload,
+  CreditReleaseRequestPayload,
   DespatchCreateReplyPayload,
   DespatchCreateRequestPayload,
   InvoiceIssueReplyPayload,
@@ -31,6 +33,8 @@ export interface SagaCommandsPort {
   createDespatch(request: DespatchCreateRequestPayload, meta: SagaCommandMeta): Promise<DespatchCreateReplyPayload>;
   holdCredit(request: CreditHoldRequestPayload, meta: SagaCommandMeta): Promise<CreditHoldReplyPayload>;
   issueInvoice(request: InvoiceIssueRequestPayload, meta: SagaCommandMeta): Promise<InvoiceIssueReplyPayload>;
+  /** `billing.credit.release` — feature 41's follow-up pass, closing the `credit_approved`/`confirmed` cancel gap. */
+  releaseCredit(request: CreditReleaseRequestPayload, meta: SagaCommandMeta): Promise<CreditReleaseReplyPayload>;
 }
 
 /** The caller observed no reply within its deadline (SO4) — distinct from a transport error so the dispatcher's retry/park bookkeeping can log which one happened. */

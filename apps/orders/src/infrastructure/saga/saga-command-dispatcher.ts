@@ -106,6 +106,8 @@ function callFor(
       return (payload, meta) => port.holdCredit(payload as Parameters<SagaCommandsPort['holdCredit']>[0], meta);
     case 'invoice.issue':
       return (payload, meta) => port.issueInvoice(payload as Parameters<SagaCommandsPort['issueInvoice']>[0], meta);
+    case 'credit.release':
+      return (payload, meta) => port.releaseCredit(payload as Parameters<SagaCommandsPort['releaseCredit']>[0], meta);
     default: {
       const exhaustive: never = command;
       throw new Error(`saga-command-dispatcher: unmapped saga command kind "${String(exhaustive)}"`);

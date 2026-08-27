@@ -17,6 +17,7 @@ allowBuilds:
   esbuild: true
   protobufjs: true
   ssh2: true
+  vue-demi: true
 
 # Shared devDependency versions for every workspace member. Referenced from
 # package.json files as "catalog:" so the whole monorepo upgrades NestJS,

@@ -1,6 +1,9 @@
 // The `@nestjs/cqrs` `@Saga` construct (design.md §5.5, §9) — the
 // IN-MEMORY FAST PATH over the durable `saga_commands` guarantee (§6.3,
-// §6.4). One `@Saga()` method merges five `ofType` streams, each a pure
+// §6.4). One `@Saga()` method merges six `ofType` streams (feature 41's
+// follow-up pass added the sixth — `credit.released.v1`'s mid-cancellation
+// variant, mapping to the SAME `IssueStockReleaseCommand` a fifth,
+// pre-existing stream already maps `credit.rejected.v1` to), each a pure
 // `map` from a dispatch-owed event to its `Issue…Command`. Each branch is
 // wrapped with the standard RxJS "resubscribe on error" recipe
 // (`catchError((_, caught) => caught)`) — a cqrs saga stream that errors
@@ -21,6 +24,7 @@ import {
   IssueStockReserveCommand,
 } from '../commands/saga-dispatch.commands';
 import {
+  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
@@ -97,12 +101,26 @@ export class OrderSagas {
       this.logger,
     );
 
-    const stockRelease = resilient(
+    const stockReleaseFromCreditRejection = resilient(
       events$.pipe(
         ofType(CreditRejectionRecorded),
         map((event) => new IssueStockReleaseCommand(event.orderId)),
       ),
-      'stock.release',
+      'stock.release (credit.rejected.v1)',
+      this.logger,
+    );
+
+    // Feature 41's follow-up pass — the SAME `IssueStockReleaseCommand`,
+    // owed by a DIFFERENT fact (`credit.released.v1`'s `credit_approved`/
+    // `confirmed` variant, mid operator-cancel compensation) — a separate
+    // branch, not a shared `ofType`, so either source's failure is isolated
+    // by its OWN `resilient` wrapper (this function's own header).
+    const stockReleaseFromCancelCompensation = resilient(
+      events$.pipe(
+        ofType(CreditReleasedForCancellationRecorded),
+        map((event) => new IssueStockReleaseCommand(event.orderId)),
+      ),
+      'stock.release (credit.released.v1 cancel compensation)',
       this.logger,
     );
 
@@ -124,6 +142,6 @@ export class OrderSagas {
       this.logger,
     );
 
-    return merge(stockReserve, creditHold, stockRelease, despatchCreate, invoiceIssue);
+    return merge(stockReserve, creditHold, stockReleaseFromCreditRejection, stockReleaseFromCancelCompensation, despatchCreate, invoiceIssue);
   };
 }

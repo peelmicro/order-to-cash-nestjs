@@ -533,7 +533,7 @@
       "phase": 13,
       "title": "Orders: catalog.reference.list NATS responder for products/retailers/companies",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "GET /catalog/products, /catalog/retailers, /catalog/companies return real data through the Gateway",
         "no new bounded context \u2014 domain-model.md already assigns the reference catalogue to Orders",
@@ -546,13 +546,27 @@
       "phase": 13,
       "title": "Orders: orders.cancel NATS responder for operator-initiated cancellation",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "POST /orders/{id}/cancel succeeds through the Gateway for a cancellable order",
         "reuses the Order aggregate's existing cancelled state and cancellationReason invariant \u2014 no new domain modeling",
         "an order in a terminal state (invoiced, completed, already cancelled) is rejected with a domain error, not a 503",
         "the operator note from CancelOrderRequest lands on the read-model timeline"
       ]
+    },
+    {
+      "id": 42,
+      "name": "orders_saga_terminal_rejection_classification",
+      "phase": 8,
+      "title": "NatsSagaCommandsAdapter: distinguish a terminal RpcError (business rejection) from a retryable transport error",
+      "sdd": false,
+      "status": "pending",
+      "acceptance": [
+        "a PRECONDITION_FAILED (or other terminal-business-outcome) RpcError reply from a responder is classified as terminal, not retried at capped backoff forever",
+        "a genuinely retryable transport failure (timeout, connection refused, no responder) is unaffected \u2014 still retried exactly as today",
+        "a saga_commands row that receives a terminal RpcError reaches a resolved end state (parked-with-reason, or equivalent) rather than retrying indefinitely"
+      ],
+      "notes": "Found live by feature 41's follow-up pass (progress/impl_orders_cancel_responder.md, \"Follow-up pass\" section), reviewed and independently confirmed pre-existing (not introduced by that pass) in progress/review_orders_catalog_and_cancel_responders.md \u2014 flagged HIGH severity, non-blocking. NatsSagaCommandsAdapter.call() treats ANY RpcError-shaped reply as a SagaCommandTransportError, never a terminal business outcome. Reproduced live, twice: an operator-cancel racing the saga's own forward progress (despatch.create winning) leaves a stock.release command targeting a reservation Fulfillment has legitimately marked 'consumed' \u2014 Fulfillment correctly refuses with PRECONDITION_FAILED, but the adapter retries it forever at capped backoff. Net effect: the order is stuck at despatched (not cancelled), cancellation_reason stays NULL despite credit having genuinely already been refunded, and one saga_commands row retries permanently, unresolvable. The deeper race itself (operator-cancel vs. saga-forward-progress) needs a genuine saga-design decision (transactional re-check before dispatching the fast path, or CancelOrderHandler superseding an already-owed forward-progress command) and is NOT this feature's scope \u2014 this feature is the narrower, more urgent fix: make the adapter stop retrying a reply that was never going to succeed, so the SYMPTOM (permanent un-resolvable retry) is closed even before the underlying race is redesigned. Phase 8 because NatsSagaCommandsAdapter is orders_saga_orchestrator's own file."
     }
   ]
 }

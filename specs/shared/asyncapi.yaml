@@ -436,6 +436,27 @@ channels:
       error:
         $ref: '#/components/messages/RpcErrorReply'
 
+  creditRelease:
+    address: billing.credit.release
+    title: billing.credit.release — request
+    summary: Release an order's outstanding credit hold. Caller — orders.saga. Responder — billing.
+    servers:
+      - $ref: '#/servers/rpcTransport'
+    messages:
+      request:
+        $ref: '#/components/messages/CreditReleaseRequest'
+  creditReleaseReply:
+    address: null
+    title: billing.credit.release — reply
+    description: *replyChannelDescription
+    servers:
+      - $ref: '#/servers/rpcTransport'
+    messages:
+      success:
+        $ref: '#/components/messages/CreditReleaseReply'
+      error:
+        $ref: '#/components/messages/RpcErrorReply'
+
   creditList:
     address: billing.credit.list
     title: billing.credit.list — request
@@ -1016,6 +1037,34 @@ operations:
         - $ref: '#/channels/creditHoldReply/messages/error'
     messages:
       - $ref: '#/channels/creditHold/messages/request'
+
+  requestCreditRelease:
+    action: send
+    title: billing.credit.release
+    summary: Caller — orders.saga. Responder — billing.
+    channel:
+      $ref: '#/channels/creditRelease'
+    description: |
+      Releases the order's outstanding hold, appending exactly one `release`
+      ledger entry and emitting `credit.released.v1` with `reason:
+      order_cancelled` (added to Phase 14's operator-cancellation feature;
+      the domain method `BuyerCredit.releaseHold` and the `order_cancelled`
+      reason already existed — only this RPC surface was missing). Idempotent
+      by construction: exposure is recomputed from the ledger on every call,
+      so a repeat after the hold is already released finds zero outstanding
+      exposure and appends nothing (BC11, B5) — the reply still reports
+      success, `released` false, so a caller can tell a repeat from a first
+      release without treating either as an error.
+    reply:
+      address:
+        location: '$message.header#/reply-to'
+      channel:
+        $ref: '#/channels/creditReleaseReply'
+      messages:
+        - $ref: '#/channels/creditReleaseReply/messages/success'
+        - $ref: '#/channels/creditReleaseReply/messages/error'
+    messages:
+      - $ref: '#/channels/creditRelease/messages/request'
 
   requestCreditList:
     action: send
@@ -1719,6 +1768,24 @@ components:
         $ref: '#/components/schemas/RpcHeaders'
       payload:
         $ref: '#/components/schemas/CreditHoldReplyPayload'
+    CreditReleaseRequest:
+      name: billing.credit.release.request
+      title: billing.credit.release — request
+      contentType: application/json
+      correlationId:
+        $ref: '#/components/correlationIds/rpcCorrelationId'
+      headers:
+        $ref: '#/components/schemas/RpcHeaders'
+      payload:
+        $ref: '#/components/schemas/CreditReleaseRequestPayload'
+    CreditReleaseReply:
+      name: billing.credit.release.reply
+      title: billing.credit.release — success reply
+      contentType: application/json
+      headers:
+        $ref: '#/components/schemas/RpcHeaders'
+      payload:
+        $ref: '#/components/schemas/CreditReleaseReplyPayload'
 
     CreditListRequest:
       name: billing.credit.list.request
@@ -3429,6 +3496,50 @@ components:
         - orderReference
         - currency
         - availableCredit
+
+    CreditReleaseRequestPayload:
+      type: object
+      properties:
+        orderReference:
+          $ref: '#/components/schemas/OrderReference'
+        retailerCode:
+          $ref: '#/components/schemas/PartyCode'
+        companyCode:
+          $ref: '#/components/schemas/PartyCode'
+      required:
+        - orderReference
+        - retailerCode
+        - companyCode
+      description: |
+        `reason` is not a caller-supplied field — this RPC always releases
+        with reason `order_cancelled` (the only external trigger for it).
+        `invoice_paid` is set only by Billing's own payment-registration flow,
+        never by an external caller.
+
+    CreditReleaseReplyPayload:
+      type: object
+      properties:
+        released:
+          type: boolean
+          description: |
+            `true` — an outstanding hold existed and was released this call.
+            `false` — idempotent repeat or nothing was ever held (BC11, B5);
+            not an error, no ledger entry, no fact.
+        orderReference:
+          $ref: '#/components/schemas/OrderReference'
+        creditCode:
+          $ref: '#/components/schemas/CreditCode'
+        currency:
+          $ref: '#/components/schemas/CurrencyCode'
+        releasedAmount:
+          $ref: '#/components/schemas/MinorUnits'
+        availableCreditAfter:
+          $ref: '#/components/schemas/MinorUnits'
+      required:
+        - released
+        - orderReference
+        - currency
+        - availableCreditAfter
 
     CreditListRequestPayload:
       allOf:
