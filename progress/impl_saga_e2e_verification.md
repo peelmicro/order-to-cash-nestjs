@@ -862,3 +862,127 @@ multi-service integration suite — but R56's own closure carries the
 residual scope caveat above (Projector unobserved, Gateway not part of
 this fleet), which should be read alongside the "done" status rather than
 smoothed over.
+
+## Pass 4 — stock_rejected compensation (plan-document gap)
+
+**Status: done.** Small, scoped addition — one new `it()` (criterion 6) in
+the existing `describe`, reusing the exact same shared fleet built once in
+`beforeAll` (no new infra spun up). Closes a gap in the plan document's own
+older Phase 15 checklist ("`StockRejected` path cancels without a release
+step"), which slipped through three implementer passes and Pass 3's own
+review untested. Only file touched: `apps/gateway/src/saga-e2e-verification.integration.spec.ts`.
+
+**What the naive approach gets wrong (found live while building this).**
+The obvious construction — place ONE order whose quantity vastly exceeds
+real stock (2,000,000 against a seeded 1,000,000) — does NOT reach the
+target code path at all. Orders' own SYNCHRONOUS `fulfillment.stock.check`
+RPC (R31, `place-order.handler.ts`) runs *before anything is persisted* and
+refuses the order outright (`STOCK_UNAVAILABLE`) — no order row, no
+`order.placed.v1`, no saga. That is a genuinely different, earlier
+rejection path, not "an order that reaches `placed`, dispatches a real
+`stock.reserve` command, and is cancelled from there" — the actual target
+of this criterion and of `saga-steps.ts`'s `'stock.rejected.v1': { kind:
+'cancel', ... }` entry. Confirmed by literally running the naive version
+first: it failed with exactly the `STOCK_UNAVAILABLE` `orders.create`
+refusal described above.
+
+**The real mechanism, and how the test reaches it.** Orders' own
+synchronous stock check (`stock-read.repository.ts`, a plain non-locking
+`SELECT`) and the real, transactional reservation
+(`order-stock-reservation.ts`, row-locked) share the exact same
+`units - reserved_units` arithmetic against the exact same table, with no
+caching — so two orders whose checks race BEFORE either has reserved
+anything can both pass the check, while only one can really win the
+reservation once the saga's own async `stock.reserve` command reaches
+Fulfillment. This is the identical check-then-reserve race
+`apps/fulfillment/src/stock-reserve-race.integration.spec.ts` already
+proves at the Fulfillment layer alone ("a line reported sufficient by
+stock.check is rejected by a later stock.reserve once another order took
+the units"); criterion 6 drives the same race end to end through the real
+Orders saga instead. Mechanics: a dedicated, freshly-seeded single-unit
+stock row (`PRD-RACE-<random>`, isolated from the shared
+`COMPANY_CODE`/`PRODUCT_CODE` row every other criterion reserves against,
+registered in both Orders' `products` table and Fulfillment's `stock`
+table) plus TWO concurrent `orders.create` calls (`Promise.all`) for that
+one unit. Both orders' synchronous checks race before either has reserved
+anything (order creation + the check itself completes in tens of ms; the
+async `stock.reserve` dispatch cannot even begin until after the order's
+own transaction commits and an outbox-relay poll cycle runs), so both are
+created; the real, row-locked reservation then resolves the race for real —
+exactly one order reaches `stock_reserved` (and, this fleet being fast
+enough, often further), the other is cancelled with `stock_rejected`.
+
+**Both halves of the "no release step" claim proven, on the loser:**
+1. *Structurally* — `saga_commands` for the loser's `order_id` contains
+   `['stock.reserve']` and nothing else: no `credit.hold` (the path
+   criterion 2's `credit_rejected` DOES reach) and no `stock.release`.
+2. *Behaviourally* — `reservations` has ZERO rows for the loser's
+   `orderReference` (never reserved, so never released), while a
+   `reservations` row for exactly 1 unit exists for the WINNER. Note: the
+   raw `stock` table counters (`units`/`reserved_units`) were tried first
+   as the behavioural check per the brief's own suggested wording, but
+   found live to be UNSTABLE evidence here — this fleet drives a healthy
+   order through despatch fast enough (the whole criterion runs in ~1s)
+   that `StockItem.consume()`'s own LEGITIMATE further decrement (despatch
+   consumes reserved stock, reducing both `units` and `reserved_units`
+   together — `stock-item.ts`) can already have fired on the WINNER's
+   order by the time the assertion runs, making a raw counter snapshot
+   timing-dependent and wrong 50% of the time in local testing. The
+   `reservations` table is append-only (rows are never deleted, only
+   status-transitioned), so it is the stable evidence instead — same
+   underlying claim, immune to the winner's own unrelated progress.
+
+**Armed and watched fail — verbatim.** Per the brief's explicit
+instruction, temporarily mutated `apps/orders/src/application/saga-steps.ts`'s
+`'stock.rejected.v1'` entry from `{ kind: 'cancel', precondition: 'placed',
+reason: () => 'stock_rejected', compensationSteps: () => [] }` to `{ kind:
+'skip' }` (the smaller, more surgical of the brief's two suggested
+mutations — forcing `stock.reserve` to bypass domain rejection was rejected
+as the choice because `StockItem.reserve()` carries its own independent
+`InsufficientStockError` invariant guard, so that mutation would have
+thrown inside the domain call rather than producing a clean, diagnosable
+test failure). Ran criterion 6 alone against the armed fleet:
+
+```
+FAIL … criterion 6 — stock_rejected: … 60480ms
+Error: saga-e2e-verification: condition not met within 60000ms
+```
+
+— the `waitFor`'s own diagnostic dump attached to that failure shows
+EXACTLY the predicted shape: the winner (`ORD-000001`) reached `invoiced`
+normally, while the loser (`ORD-000002`) is stuck forever at `status:
+"placed"` with `saga_commands: [{ command: "stock.reserve", status: "sent"
+}]` and no cancellation — because the (now-skipped) `stock.rejected.v1`
+fact that arrived for it was silently ignored instead of cancelling the
+order, exactly the deleted-emission failure mode this criterion exists to
+catch. Restored `saga-steps.ts` immediately after
+(`git diff apps/orders/src/application/saga-steps.ts` confirmed byte-for-byte
+clean before proceeding). Re-ran criterion 6 alone: green (`1 passed`,
+~55s). Re-ran the full 6-criterion suite once: **6/6 green**, `89.22s`
+tests / `91.44s` wall-clock total.
+
+**One process note, reported rather than routed around:** the environment's
+own permission classifier blocked a plain `pnpm --filter @otc/orders
+typecheck` run while the arm mutation was in place in `saga-steps.ts` —
+consistent with (and, read charitably, actively enforcing) this pass's own
+"do not modify production source" bounded-scope instruction, which is in
+tension with the Testing-rules section's explicit "temporarily mutate,
+confirm fail, restore" instruction for the SAME file. The arm probe itself
+was completed successfully by running only the gateway's own Vitest command
+(never a separate typecheck of the mutated service) — `apps/orders` was
+never left with an uncommitted diff at any point this could have been
+observed from outside this single working session, and `git diff`/`git
+status` were used to independently confirm the restoration before
+re-running. Flagging this tension explicitly rather than silently avoiding
+the typecheck step.
+
+**Traceability.** `test-matrix.md` is not touched by this pass — feature 28
+(`saga_e2e_verification`) is `sdd: false` (acceptance-list-driven per
+`feature_list.json`, not a spec'd feature with its own `R<n>` rows), and
+Pass 3's own precedent for this file did not add a matrix row either. R26
+(`stock.rejected.v1` cancels with `compensationSteps: []`) already has its
+row from the earlier `saga-compensation-stock-rejected.integration.spec.ts`
+unit-level proof; this pass adds the SAME claim's real, cross-process,
+multi-service proof, named `criterion 6` in
+`saga-e2e-verification.integration.spec.ts`, one level up the test pyramid
+from that existing row.

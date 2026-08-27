@@ -342,7 +342,7 @@ interface OutboxRow {
   payload: unknown;
 }
 
-describe('saga_e2e_verification — happy path, .99 compensation, redelivery, poison→DLQ, and R56 composed-stack trace (real spawned Orders/Fulfillment/Billing/Projector, Testcontainers infra)', () => {
+describe('saga_e2e_verification — happy path, .99 compensation, redelivery, poison→DLQ, R56 composed-stack trace, and stock_rejected (no-release) compensation (real spawned Orders/Fulfillment/Billing/Projector, Testcontainers infra)', () => {
   let ordersContainer: StartedMySqlContainer;
   let fulfillmentContainer: StartedMySqlContainer;
   let billingContainer: StartedMySqlContainer;
@@ -964,6 +964,163 @@ describe('saga_e2e_verification — happy path, .99 compensation, redelivery, po
       expect(distinctTraceIds, `expected exactly ONE trace id across the composed stack, saw: ${JSON.stringify([...distinctTraceIds])}`).toEqual(
         new Set([ordersTraceIds[0]]),
       );
+    },
+    120_000,
+  );
+
+  it(
+    "criterion 6 — stock_rejected: a genuine check-then-reserve race (Orders' own synchronous stock check, R31, passes for BOTH concurrent orders; only ONE order's real, transactional reservation can actually win the single unit) drives the loser to cancelled/stock_rejected with NO release step",
+    async () => {
+      // FOUND WHILE BUILDING THIS CRITERION: an order whose quantity simply
+      // exceeds on-hand stock never reaches the async saga's own
+      // `stock.reserve` command at all — Orders' OWN synchronous
+      // `fulfillment.stock.check` (R31, `place-order.handler.ts`) runs
+      // BEFORE anything is persisted and refuses the order outright
+      // (`STOCK_UNAVAILABLE`, no order row, no saga, no `order.placed.v1`).
+      // That is a genuinely different, EARLIER rejection path — not this
+      // criterion's target (an order that reaches `placed`, dispatches a
+      // REAL `stock.reserve` command, and is cancelled from there). Reaching
+      // the target path for real requires the same check-then-reserve race
+      // `apps/fulfillment/src/stock-reserve-race.integration.spec.ts`
+      // already proves at the Fulfillment layer alone ("a line reported
+      // sufficient by stock.check is rejected by a later stock.reserve once
+      // another order took the units — the check held nothing"): Orders'
+      // own stock check (`stock-read.repository.ts`) is a NON-LOCKING read
+      // of the exact same `units - reserved_units` arithmetic the real,
+      // transactional reservation (`SELECT ... FOR UPDATE`,
+      // `order-stock-reservation.ts`) enforces — so two orders whose
+      // checks race BEFORE either has reserved anything can both pass,
+      // while only one can really win the reservation once the saga's own
+      // async `stock.reserve` command actually reaches Fulfillment.
+      //
+      // A dedicated, single-unit stock row — isolated from the shared
+      // COMPANY_CODE/PRODUCT_CODE row every other criterion in this suite
+      // reserves against, so this race is never entangled with their state
+      // and the winner/loser counters below are exact, not "before/after".
+      const RACE_PRODUCT_CODE = `PRD-RACE-${randomUUID().slice(0, 8)}`;
+      const now = mysqlDateTime(new Date());
+      const [{ id: currencyId }] = await ordersDb.query<{ id: string }>('SELECT id FROM currencies WHERE code = ?', [
+        CURRENCY,
+      ]);
+      await ordersDb.execute(
+        'INSERT INTO products (id, code, ean, name, description, price, currency_id, disabled_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)',
+        [randomUUID(), RACE_PRODUCT_CODE, '5901234123464', 'Widget (criterion 6, scarce)', 'A single-unit widget for the check-then-reserve race', 1_000, currencyId, now, now],
+      );
+      await fulfillmentDb.execute(
+        'INSERT INTO stock (id, company_code, product_code, units, reserved_units, low_stock_threshold, created_at, updated_at) VALUES (?, ?, ?, 1, 0, 1, ?, ?)',
+        [randomUUID(), COMPANY_CODE, RACE_PRODUCT_CODE, now, now],
+      );
+
+      const orderLines = [{ productCode: RACE_PRODUCT_CODE, quantity: 1, unitPrice: 1_000 }];
+      const [replyA, replyB] = await Promise.all([
+        natsRequestBare<OrdersCreateReplyPayload | RpcError>(rpcNats, 'orders.create', {
+          retailerCode: RETAILER_CODE,
+          companyCode: COMPANY_CODE,
+          currency: CURRENCY,
+          lines: orderLines,
+        }),
+        natsRequestBare<OrdersCreateReplyPayload | RpcError>(rpcNats, 'orders.create', {
+          retailerCode: RETAILER_CODE,
+          companyCode: COMPANY_CODE,
+          currency: CURRENCY,
+          lines: orderLines,
+        }),
+      ]);
+      // Both orders' OWN synchronous stock checks raced BEFORE either had
+      // reserved anything, so BOTH are expected to have been accepted at
+      // creation time — if either was refused here, the race premise above
+      // did not hold this run (a real regression worth seeing, not masking).
+      if (!('orderId' in replyA)) throw new Error(`criterion 6: order A was refused at creation: ${JSON.stringify(replyA)}`);
+      if (!('orderId' in replyB)) throw new Error(`criterion 6: order B was refused at creation: ${JSON.stringify(replyB)}`);
+
+      // Settle: exactly one of the two reaches `cancelled`, the other
+      // reaches at least `stock_reserved` — never a bare sleep, and never
+      // an assumption about WHICH one wins (the race is genuinely
+      // undetermined by design).
+      try {
+        await waitFor(async () => {
+          const [rowA, rowB] = await Promise.all([orderRow(replyA.orderId), orderRow(replyB.orderId)]);
+          const cancelledCount = [rowA, rowB].filter((r) => r?.status === 'cancelled').length;
+          const advancedCount = [rowA, rowB].filter((r) => r !== undefined && statusRank(r.status) >= statusRank('stock_reserved')).length;
+          return cancelledCount === 1 && advancedCount === 1;
+        }, 60_000);
+      } catch (error) {
+        throw new Error(
+          `${(error as Error).message}\n${await dumpOrderDiagnostics(replyA.orderId)}\n${await dumpOrderDiagnostics(replyB.orderId)}`,
+          { cause: error },
+        );
+      }
+
+      const [rowA, rowB] = await Promise.all([orderRow(replyA.orderId), orderRow(replyB.orderId)]);
+      const loser = rowA?.status === 'cancelled' ? rowA : rowB!;
+      const loserId = rowA?.status === 'cancelled' ? replyA.orderId : replyB.orderId;
+      const loserReference = rowA?.status === 'cancelled' ? replyA.orderReference : replyB.orderReference;
+      expect(loser.status).toBe('cancelled');
+      expect(loser.cancellation_reason).toBe('stock_rejected');
+
+      // Fulfillment's own outbox recorded the REAL rejection fact for the
+      // LOSER, directly from the real stock check (not fabricated) —
+      // `insufficient_stock`, not `unknown_product` (the product IS known;
+      // there just wasn't a second unit of it once the winner took the
+      // only one).
+      const fulfillmentRejectedRows = await fulfillmentDb.query<OutboxRow>(
+        'SELECT * FROM outbox WHERE correlation_id = ? AND event_type = ?',
+        [loserId, 'stock.rejected.v1'],
+      );
+      expect(fulfillmentRejectedRows).toHaveLength(1);
+      expect((fulfillmentRejectedRows[0].payload as { reason?: string }).reason).toBe('insufficient_stock');
+
+      // ── Structural proof: no release step ever fired for the LOSER
+      //    because nothing downstream of the stock check ever ran for it.
+      //    `saga-steps.ts`'s own table gives `stock.rejected.v1` NO
+      //    `commandAfter` at all (unlike every 'advance' step) — so
+      //    Orders' own durable saga_commands ledger for the loser's order
+      //    contains ONLY the `stock.reserve` command dispatched after
+      //    `order.placed.v1`, and NEITHER `credit.hold` (which criterion
+      //    2's credit_rejected path DOES reach) NOR `stock.release` (the
+      //    actual release step this criterion proves never fires). ───────
+      const commandRows = await ordersDb.query<{ command: string }>('SELECT command FROM saga_commands WHERE order_id = ?', [
+        loserId,
+      ]);
+      const commands = commandRows.map((row) => row.command);
+      expect(commands, `expected ONLY stock.reserve to have been dispatched for the loser, saw: ${JSON.stringify(commands)}`).toEqual([
+        'stock.reserve',
+      ]);
+      expect(commands).not.toContain('credit.hold');
+      expect(commands).not.toContain('stock.release');
+
+      // ── Behavioural proof: Fulfillment's own reservations table has NO
+      //    row at all for the LOSER's order (never reserved, so never
+      //    released either — a release call would be indistinguishable
+      //    from "correctly skipped" without this check, per the brief). ──
+      interface ReservationRow {
+        status: string;
+        units: number;
+      }
+      const reservationRows = await fulfillmentDb.query<ReservationRow>('SELECT * FROM reservations WHERE order_reference = ?', [
+        loserReference,
+      ]);
+      expect(reservationRows).toHaveLength(0);
+
+      // ── Behavioural proof: the WINNER — never the loser — is the ONLY
+      //    order that ever reserved the race product's single unit. Read
+      //    from the `reservations` table rather than the raw `stock`
+      //    counters: the winner's OWN order keeps advancing independently
+      //    in the background (this real fleet drives a healthy order
+      //    through despatch fast enough that, by the time this assertion
+      //    runs, `stock.units`/`reserved_units` can already reflect
+      //    `StockItem.consume()`'s OWN legitimate FURTHER decrement,
+      //    genuinely found live while building this criterion — 742ms
+      //    end to end, faster than expected) — a `reservations` row, once
+      //    written, is never deleted, so it is the stable evidence here,
+      //    together with the loser's own zero-row result already asserted
+      //    above. ────────────────────────────────────────────────────────
+      const winnerReference = rowA?.status === 'cancelled' ? replyB.orderReference : replyA.orderReference;
+      const winnerReservationRows = await fulfillmentDb.query<ReservationRow>('SELECT * FROM reservations WHERE order_reference = ?', [
+        winnerReference,
+      ]);
+      expect(winnerReservationRows).toHaveLength(1);
+      expect(winnerReservationRows[0].units).toBe(1);
     },
     120_000,
   );
