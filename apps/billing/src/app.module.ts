@@ -16,11 +16,15 @@
 // `AlwaysApproveCreditDecision` remains in the tree, still covered by its
 // own spec — nothing about this feature deletes it, only app.module.ts's
 // binding moves off it.
-import { Module } from '@nestjs/common';
+import { Module, type OnApplicationShutdown } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
+import type { NatsConnection } from 'nats';
+import type { Pool } from 'mysql2/promise';
 import { AppController } from './presentation/app.controller';
+import { HealthController } from './presentation/health.controller';
 import { CreditController } from './presentation/credit.controller';
 import { InvoiceController } from './presentation/invoice.controller';
+import { READINESS_CHECKS, type HealthCheck } from './application/ports/health-check.port';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import { BUYER_CREDIT_REPOSITORY } from './application/ports/buyer-credit-repository.port';
 import { CREDIT_DECISION } from './application/ports/credit-decision.port';
@@ -58,18 +62,60 @@ import { loadKafkaConfig } from './infrastructure/outbox/kafka.config';
 import { OutboxRelay } from './infrastructure/outbox/outbox-relay';
 import { loadOutboxRelayConfig, type OutboxRelayConfig } from './infrastructure/outbox/outbox-relay.config';
 import { OUTBOX_RELAY, OUTBOX_RELAY_CONFIG, OutboxRelayService } from './infrastructure/outbox/outbox-relay.service';
+import { createNatsConnection } from './infrastructure/messaging/nats-client';
+import { loadNatsConfig } from './infrastructure/messaging/nats.config';
+import { MysqlHealthCheck } from './infrastructure/health/mysql-health-check';
+import { NatsHealthCheck } from './infrastructure/health/nats-health-check';
 
+/** Module-local token — the raw `mysql2` `Pool` `BILLING_DB` is built from. Exposed as its own provider (A8) so `MysqlHealthCheck` (R60/OR6) can probe the SAME pool the app actually reads/writes through, without opening a second one. Not exported: nothing outside this module needs it. */
+const BILLING_DB_POOL = Symbol('BillingDbPool');
 /** Module-local token — the shared `BillingDb` connection every persistence provider below is built from. Not exported: nothing outside this module needs to depend on the raw Drizzle handle. */
 const BILLING_DB = Symbol('BillingDb');
+/** The ONE outbound `NatsConnection` this service opens — SOLELY for `NatsHealthCheck`'s R60/OR6 probe, same reasoning as `apps/fulfillment/src/app.module.ts`'s own copy: Billing issues no outbound RPC call of its own in this feature, only inbound `billing.credit.*` responders. Exported (A8) for the same reason those services export theirs: `health-probes.integration.spec.ts` overrides this with a real, pre-authenticated fixture connection. */
+export const NATS_CONNECTION = Symbol('NatsConnection');
+
+/** Closes the outbound NATS connection on shutdown — same lifecycle discipline as every other service's own `NatsConnectionCloser`. */
+class NatsConnectionCloser implements OnApplicationShutdown {
+  constructor(private readonly connection: NatsConnection) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.connection.close();
+  }
+}
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, CreditController, InvoiceController],
+  controllers: [AppController, CreditController, InvoiceController, HealthController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
+      provide: BILLING_DB_POOL,
+      useFactory: (): Pool => createBillingPool(loadBillingDbConfig()),
+    },
+    {
       provide: BILLING_DB,
-      useFactory: (): BillingDb => createBillingDb(createBillingPool(loadBillingDbConfig())),
+      useFactory: (pool: Pool): BillingDb => createBillingDb(pool),
+      inject: [BILLING_DB_POOL],
+    },
+    {
+      provide: NATS_CONNECTION,
+      useFactory: (): Promise<NatsConnection> => createNatsConnection(loadNatsConfig()),
+    },
+    {
+      provide: NatsConnectionCloser,
+      useFactory: (connection: NatsConnection): NatsConnectionCloser => new NatsConnectionCloser(connection),
+      inject: [NATS_CONNECTION],
+    },
+    {
+      // R60/OR6 (A8) — design.md §4.6's Billing row: write model (MySQL),
+      // RPC transport (NATS). No fact-stream check (this service consumes
+      // no fact in this feature).
+      provide: READINESS_CHECKS,
+      useFactory: (pool: Pool, connection: NatsConnection): readonly HealthCheck[] => [
+        new MysqlHealthCheck(pool),
+        new NatsHealthCheck(connection),
+      ],
+      inject: [BILLING_DB_POOL, NATS_CONNECTION],
     },
     {
       provide: UNIT_OF_WORK,

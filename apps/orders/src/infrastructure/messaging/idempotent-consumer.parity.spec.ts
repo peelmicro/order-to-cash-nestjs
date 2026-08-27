@@ -119,6 +119,46 @@ const CANONICAL_REPO_PATH = path.join(
 const CANONICAL_RETRY_DISPATCHER_PATH_LITERAL = 'apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts';
 const CANONICAL_RETRY_DISPATCHER_PATH = path.join(REPO_ROOT, CANONICAL_RETRY_DISPATCHER_PATH_LITERAL);
 
+/**
+ * R58 closeout (observability_reliability, design.md §4.4) — the dead-
+ * letter log line in `fact-retry-dispatcher.ts` (`'fact-retry-dispatcher:
+ * exhausted attempts, fact dead-lettered'`) now threads `correlationId`
+ * (from the envelope, always present) and `traceId` (`activeTraceId()`,
+ * omitted when no span is active) into its `meta` object — the single
+ * most valuable line in the system to have correlation on, since it is
+ * the failure-diagnostic path R29's own DLQ mechanism exists to make
+ * debuggable. This required importing `../observability/trace-context.js`,
+ * a module ONLY `apps/orders` owns today (neither `apps/projector` nor
+ * `apps/notifications` has grown its own `activeTraceId()` — A6/A6a's own
+ * pass deliberately stayed inside design.md §4.4's three named call
+ * sites, none of which live in either service).
+ *
+ * A7 (metrics, R59/OR5, design.md §4.5) widens the SAME exception rather
+ * than opening a second one: `otc_fact_processing_latency_ms` is recorded
+ * around this method's own entry-to-exit (design.md's own orientation
+ * names `dispatch`'s "entry/exit" as where consumer latency is measured),
+ * which required importing `../observability/metrics.js` — again a module
+ * ONLY `apps/orders` owns today (neither `apps/projector` nor
+ * `apps/notifications` has its own `Meter` bootstrap; A7's own bounded
+ * scope this pass was `apps/orders`/`apps/gateway` only).
+ *
+ * Copying either change verbatim into `apps/projector`'s/
+ * `apps/notifications`' own `fact-retry-dispatcher.ts` would either dangle
+ * on a module neither owns, or require inventing an observability helper
+ * neither pass built or tested — exactly the "silent sixth variant" shape
+ * this guard exists to prevent if done silently. Instead, `orders` is
+ * registered here as a DOCUMENTED, narrowly-scoped exception (same shape
+ * as `outbox-relay.parity.spec.ts`'s own `TRACE_DIVERGENT_FILES`, A5):
+ * `notifications`/`projector` must still be byte-identical to EACH OTHER
+ * (proving neither has independently drifted), and `orders`'s own copy
+ * must provably contain BOTH markers (a positive marker each), not merely
+ * "be allowed to differ arbitrarily." A future pass that gives
+ * `projector`/`notifications` their own `activeTraceId()`/`Meter` should
+ * backport these lines and retire the exception.
+ */
+const RETRY_DISPATCHER_TRACE_DIVERGENT_MARKER = '../observability/trace-context.js';
+const RETRY_DISPATCHER_METRICS_DIVERGENT_MARKER = '../observability/metrics.js';
+
 /** The whitelist design.md §6.4 fixes — satisfiable today because all three MySQL write models already export `processedEvents` from an identically-named, identically-pathed file, and the ports of group C are per-service files at identical paths. */
 const PORTABLE_IMPORT_WHITELIST = [
   '../../application/ports/unit-of-work.port',
@@ -144,6 +184,19 @@ const PORTABLE_IMPORT_WHITELIST = [
   '@otc/contracts',
   '../../application/ports/clock.port.js',
   '../../application/ports/consumer-name.js',
+  // R58 closeout (observability_reliability, design.md §4.4) — the
+  // dead-letter log's traceId/correlationId addition, genuinely portable
+  // (a relative sibling module any future adopting service would own its
+  // own copy of, the same convention `../persistence/schema/
+  // processed-events.schema` etc. already establish above) but currently
+  // only `orders` owns it — see `RETRY_DISPATCHER_TRACE_DIVERGENT_MARKER`'s
+  // own comment for why this is a documented exception, not silent drift.
+  '../observability/trace-context.js',
+  // A7 (metrics, R59/OR5, design.md §4.5) — the entry-to-exit
+  // `otc_fact_processing_latency_ms` recording, same portability/exception
+  // reasoning as the line above — see
+  // `RETRY_DISPATCHER_METRICS_DIVERGENT_MARKER`'s own comment.
+  '../observability/metrics.js',
 ];
 
 function stripBanner(text: string): string {
@@ -389,21 +442,52 @@ describe('idempotent-consumer.parity — OI12', () => {
     ).toEqual([]);
   });
 
-  it('holds every fact-consuming service\'s copy of the fact-retry-dispatcher pattern byte-identical to the canonical copy', () => {
-    const copies = listApps().filter(
-      (app) => hasEventPatternHandler(app) && existsSync(factRetryDispatcherPathOf(app)),
-    );
+  it(
+    'holds every fact-consuming service\'s copy of the fact-retry-dispatcher pattern byte-identical to the canonical copy — except R58\'s traceId/correlationId addition (orders-only today), where non-canonical copies must still match EACH OTHER',
+    () => {
+      const copies = listApps().filter(
+        (app) => hasEventPatternHandler(app) && existsSync(factRetryDispatcherPathOf(app)),
+      );
 
-    expect(copies).toContain('orders');
+      expect(copies).toContain('orders');
 
-    for (const app of copies) {
-      const body = stripBanner(readFileSync(factRetryDispatcherPathOf(app), 'utf8'));
+      const nonCanonicalCopies = copies.filter((app) => app !== 'orders').sort();
+      // Non-vacuity for the peer check below: there must be at least two
+      // non-canonical owners to compare against each other at all.
+      expect(nonCanonicalCopies.length).toBeGreaterThanOrEqual(2);
+
+      for (const app of copies) {
+        const body = stripBanner(readFileSync(factRetryDispatcherPathOf(app), 'utf8'));
+
+        if (app !== 'orders') {
+          const peerBody = stripBanner(readFileSync(factRetryDispatcherPathOf(nonCanonicalCopies[0]!), 'utf8'));
+          expect(
+            body,
+            `apps/${app}'s fact-retry-dispatcher.ts diverges from its peer copy (banner-stripped) — expected only \`orders\` to differ here (R58's documented traceId/correlationId exception)`,
+          ).toBe(peerBody);
+          continue;
+        }
+
+        expect(
+          body,
+          `apps/${app}'s fact-retry-dispatcher.ts diverges from itself — the canonical body was read from this same file`,
+        ).toBe(canonicalRetryDispatcherBody);
+      }
+
+      // The exception is provably ABOUT R58's traceId/correlationId
+      // addition and A7's fact-processing-latency recording, not silent
+      // unrelated drift: orders's own copy must contain BOTH imports
+      // every other copy (necessarily) lacks.
       expect(
-        body,
-        `apps/${app}'s fact-retry-dispatcher.ts diverges from the canonical copy (banner-stripped)`,
-      ).toBe(canonicalRetryDispatcherBody);
-    }
-  });
+        canonicalRetryDispatcherBody,
+        `apps/orders's fact-retry-dispatcher.ts was expected to contain "${RETRY_DISPATCHER_TRACE_DIVERGENT_MARKER}" (R58 closeout) — if it no longer does, this documented exception should be retired`,
+      ).toContain(RETRY_DISPATCHER_TRACE_DIVERGENT_MARKER);
+      expect(
+        canonicalRetryDispatcherBody,
+        `apps/orders's fact-retry-dispatcher.ts was expected to contain "${RETRY_DISPATCHER_METRICS_DIVERGENT_MARKER}" (A7) — if it no longer does, this documented exception should be retired`,
+      ).toContain(RETRY_DISPATCHER_METRICS_DIVERGENT_MARKER);
+    },
+  );
 
   it(
     "requires a documented divergence banner, naming an existing behavioural-conformance spec file, from a copy " +

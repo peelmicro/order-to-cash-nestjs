@@ -9,10 +9,13 @@
 // orders/fulfillment/billing already use.
 import { Module } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
+import type { Pool } from 'mysql2/promise';
 import { AppController } from './presentation/app.controller';
+import { HealthController } from './presentation/health.controller';
 import { NotificationFactsController } from './presentation/notification-facts.controller';
 import { NOTIFY_COMMAND_HANDLERS } from './application/commands/notify.command-handlers';
 import { NotificationDispatchService } from './application/notification-dispatch.service';
+import { READINESS_CHECKS, type HealthCheck } from './application/ports/health-check.port';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import { NOTIFICATION_SENDER, type NotificationSender } from './application/ports/notification-sender.port';
 import { UNIT_OF_WORK, type UnitOfWork } from './application/ports/unit-of-work.port';
@@ -34,7 +37,11 @@ import { createNotificationsDb, createNotificationsPool, type NotificationsDb } 
 import { loadNotificationsDbConfig } from './infrastructure/persistence/db-config';
 import { DrizzleUnitOfWork } from './infrastructure/persistence/drizzle-unit-of-work';
 import { SystemClock } from './infrastructure/system-clock';
+import { MysqlHealthCheck } from './infrastructure/health/mysql-health-check';
+import { createKafkaHealthClient, KafkaHealthCheck } from './infrastructure/health/kafka-health-check';
 
+/** Module-local token — the raw `mysql2` `Pool` `NOTIFICATIONS_DB` is built from. Exposed as its own provider (A8) so `MysqlHealthCheck` (R60/OR6) can probe the SAME pool the app actually reads/writes through, without opening a second one. Not exported: nothing outside this module needs it. */
+const NOTIFICATIONS_DB_POOL = Symbol('NotificationsDbPool');
 /** Module-local token — the shared `NotificationsDb` connection `UNIT_OF_WORK` is built from. Not exported: nothing outside this module needs the raw Drizzle handle (same "module-local, not exported" shape apps/fulfillment/apps/orders use for their own DB token). */
 const NOTIFICATIONS_DB = Symbol('NotificationsDb');
 /** Module-local token — the ONE `DlqPublisher` instance `FACT_RETRY_DISPATCHER` is built from (OR1/A4b) — same "module-local, not exported" shape apps/orders/src/app.module.ts uses for its own `DLQ_PUBLISHER`. */
@@ -42,16 +49,32 @@ const DLQ_PUBLISHER = Symbol('DlqPublisher');
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, NotificationFactsController],
+  controllers: [AppController, NotificationFactsController, HealthController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
+      provide: NOTIFICATIONS_DB_POOL,
+      useFactory: (): Pool => createNotificationsPool(loadNotificationsDbConfig()),
+    },
+    {
       provide: NOTIFICATIONS_DB,
-      useFactory: (): NotificationsDb => createNotificationsDb(createNotificationsPool(loadNotificationsDbConfig())),
+      useFactory: (pool: Pool): NotificationsDb => createNotificationsDb(pool),
+      inject: [NOTIFICATIONS_DB_POOL],
     },
     {
       provide: DLQ_PUBLISHER,
       useFactory: (): KafkaDlqPublisher => new KafkaDlqPublisher(createKafkaClient(loadKafkaConfig())),
+    },
+    {
+      // R60/OR6 (A8) — design.md §4.6's Notifications row: fact stream
+      // (Kafka), this service's own store (MySQL, `processed_events`). No
+      // RPC-transport check (this service issues no RPC).
+      provide: READINESS_CHECKS,
+      useFactory: (pool: Pool): readonly HealthCheck[] => [
+        new MysqlHealthCheck(pool),
+        new KafkaHealthCheck(createKafkaHealthClient(loadKafkaConfig())),
+      ],
+      inject: [NOTIFICATIONS_DB_POOL],
     },
     {
       provide: FACT_RETRY_DISPATCHER,

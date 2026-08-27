@@ -8,6 +8,7 @@ import type { Envelope } from '@otc/contracts';
 import { UniqueId } from '@otc/shared-kernel';
 import type { ConsumerName } from './ports/consumer-name.js';
 import type { OrderRepository } from './ports/order-repository.port.js';
+import { NOOP_SAGA_METRICS, type RecordsSagaMetrics } from './ports/saga-metrics.port.js';
 import type { SagaCommandStore } from './ports/saga-command-store.port.js';
 import type { TransactionContext } from './ports/unit-of-work.port.js';
 import { buildSagaCommandPayload } from './saga-command-payloads.js';
@@ -51,6 +52,11 @@ export class SagaFactHandler {
     private readonly orders: OrderRepository,
     private readonly commandStore: SagaCommandStore,
     private readonly ignoredFacts: RecordsIgnoredSagaFacts,
+    // A7 (metrics, R59/OR5) — opt-in, defaults to a no-op so every
+    // existing construction site/test stays unaffected, the same shape
+    // `SagaCommandDispatcher`'s `firstParkHandler` (OR3) already
+    // established.
+    private readonly sagaMetrics: RecordsSagaMetrics = NOOP_SAGA_METRICS,
   ) {}
 
   /** `sourceTopic` — the Kafka topic constant `SagaFactsController.route` already knows for this call, threaded through so `commandStore.enqueue` can capture it verbatim (R29's dead-letter clause / OR3, observability_reliability design.md §4.2). */
@@ -110,6 +116,7 @@ export class SagaFactHandler {
 
       if (step.kind === 'advance') {
         step.apply(order, ctx, envelope);
+        this.recordSagaCompletionIfClosed(order, ctx);
         await this.orders.save(order, tx);
         if (step.commandAfter) {
           const payload = buildSagaCommandPayload(step.commandAfter, order);
@@ -136,6 +143,7 @@ export class SagaFactHandler {
         const reason = step.reason(envelope);
         const compensationSteps = step.compensationSteps(envelope);
         order.cancel(reason, ctx, compensationSteps);
+        this.recordSagaCompletionIfClosed(order, ctx);
         await this.orders.save(order, tx);
       }
     });
@@ -147,5 +155,30 @@ export class SagaFactHandler {
       return { outcome: 'ignored' };
     }
     return { outcome: 'processed', enqueued };
+  }
+
+  /**
+   * A7 (metrics, R59/OR5, design.md §4.5) — `otc_saga_completion_ms`,
+   * recorded ONLY when this transition just moved `order` to `'completed'`
+   * or `'cancelled'` (the two statuses `Order.complete`/`Order.cancel`
+   * produce — every other `advance`/`cancel` step lands on a DIFFERENT
+   * status, so this check alone correctly distinguishes "the fact that
+   * closed the saga" from every other saga-step fact without hardcoding
+   * which of the ten fact types is the closing one). The duration is the
+   * REAL wall-clock span from the order's OWN `order.placed.v1` timestamp
+   * — `order.orderDate`, which `PlaceOrderHandler` sets from the EXACT
+   * same `clock.now()` value used to build `order.placed.v1`'s own
+   * `occurredAt` (verified by reading `place-order.handler.ts`) — to
+   * `ctx.occurredAt`, the CLOSING fact's own envelope timestamp. Never a
+   * newly-read clock value here: both ends are facts' own stamped
+   * instants, so the metric measures what actually happened in the
+   * domain, not how fast this handler itself ran.
+   */
+  private recordSagaCompletionIfClosed(order: { readonly status: string; readonly orderDate: Date }, ctx: { readonly occurredAt: Date }): void {
+    if (order.status !== 'completed' && order.status !== 'cancelled') {
+      return;
+    }
+    const durationMs = ctx.occurredAt.getTime() - order.orderDate.getTime();
+    this.sagaMetrics.recordSagaCompletion(durationMs, order.status);
   }
 }

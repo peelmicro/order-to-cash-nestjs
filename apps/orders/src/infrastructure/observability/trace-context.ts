@@ -99,3 +99,19 @@ export function startChildSpan(name: string, parentContext: Context, kind: SpanK
   const span = tracer().startSpan(name, { kind }, parentContext);
   return { span, spanContext: trace.setSpan(parentContext, span) };
 }
+
+/**
+ * R58 (design.md §4.4) — the ACTIVE span's own real `traceId`, or
+ * `undefined` if none is active. Every JSON structured-log call site this
+ * feature widens (`saga-facts.controller.ts`'s malformed-envelope log,
+ * `problem-json.filter.ts`'s error log — the Gateway's own copy of this
+ * function) calls this at the moment it logs, exactly the design note's
+ * own formula: `trace.getActiveSpan()?.spanContext().traceId`. Genuinely
+ * `undefined` when nothing is active (no OTel provider registered in a
+ * plain unit test, or a call site this pass's tracing work never reaches)
+ * — callers omit the `traceId` key entirely rather than serialise the
+ * literal string `"undefined"`.
+ */
+export function activeTraceId(): string | undefined {
+  return trace.getActiveSpan()?.spanContext().traceId;
+}

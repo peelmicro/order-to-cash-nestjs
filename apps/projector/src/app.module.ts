@@ -9,13 +9,17 @@ import { Module, type OnApplicationShutdown } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
 import type { NatsConnection } from 'nats';
 import { AppController } from './presentation/app.controller';
+import { HealthController } from './presentation/health.controller';
 import { ProjectorFactsController } from './presentation/projector-facts.controller';
 import { ProjectFactCommandHandler } from './application/commands/project-fact.command-handler';
 import { ProjectionApplyService } from './application/projection-apply.service';
+import { READINESS_CHECKS, type HealthCheck } from './application/ports/health-check.port';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import { READ_MODEL_WRITER, type ReadModelWriter } from './application/ports/read-model-writer.port';
 import { UPDATE_SIGNAL_PUBLISHER, type UpdateSignalPublisher } from './application/ports/update-signal.port';
 import { createKafkaClient } from './infrastructure/messaging/create-kafka-client';
+import { createKafkaHealthClient, KafkaHealthCheck } from './infrastructure/health/kafka-health-check';
+import { MongoHealthCheck } from './infrastructure/health/mongo-health-check';
 import {
   FACT_RETRY_DISPATCHER,
   FactRetryDispatcher,
@@ -32,7 +36,7 @@ import { createNatsConnection } from './infrastructure/signal/nats-client';
 import { loadNatsConfig } from './infrastructure/signal/nats.config';
 import { NatsUpdateSignalPublisher } from './infrastructure/signal/nats-update-signal.publisher';
 import { SystemClock } from './infrastructure/system-clock';
-import type { Collection } from 'mongodb';
+import type { Collection, Db } from 'mongodb';
 
 /** Module-local token — the outbound MongoDB connection handle. Exported (a plain symbol, not a domain port) so `main.ts` can retrieve the SAME connection via `app.get(MONGO_DB)` to run `ensureReadModelIndexes`/`backfillLegacyDocuments` BEFORE `startAllMicroservices()`, without opening a second client. */
 export const MONGO_DB = Symbol('MongoDb');
@@ -63,12 +67,23 @@ class NatsConnectionCloser implements OnApplicationShutdown {
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, ProjectorFactsController],
+  controllers: [AppController, ProjectorFactsController, HealthController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
       provide: MONGO_DB,
       useFactory: (): Promise<MongoHandle> => connectMongo(loadMongoConfig()),
+    },
+    {
+      // R60/OR6 (A8) — design.md §4.6's Projector row: fact stream
+      // (Kafka), this service's own store (MongoDB, `order_timeline`). No
+      // RPC-transport check (PR21 — this service issues no RPC).
+      provide: READINESS_CHECKS,
+      useFactory: (handle: MongoHandle): readonly HealthCheck[] => [
+        new MongoHealthCheck(handle.db as Db),
+        new KafkaHealthCheck(createKafkaHealthClient(loadKafkaConfig())),
+      ],
+      inject: [MONGO_DB],
     },
     {
       provide: READ_MODEL_COLLECTION,

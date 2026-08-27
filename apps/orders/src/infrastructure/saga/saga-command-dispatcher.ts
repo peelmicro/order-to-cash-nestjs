@@ -14,6 +14,7 @@
 // design.md §6.4), so raising these numbers lengthens the sweep cycle,
 // not the partition.
 import type { UniqueId } from '@otc/shared-kernel';
+import { activeTraceId } from '../observability/trace-context.js';
 import type { SagaCommandRecord, SagaCommandStore } from '../../application/ports/saga-command-store.port';
 import {
   SagaCommandTimeoutError,
@@ -150,8 +151,11 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
         await call(row.payload, meta);
         const sent = await this.store.markSent(row.id);
         if (sent) {
+          const sentTraceId = activeTraceId();
           this.logger.info('saga-command-dispatcher: command sent', {
             orderId: orderId.value,
+            correlationId: orderId.value,
+            ...(sentTraceId ? { traceId: sentTraceId } : {}),
             command,
             attempts: row.attempts + attemptsThisCycle,
           });
@@ -176,8 +180,11 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
     const nextAttemptAt = new Date(Date.now() + backoffMs);
 
     const wasParked = await this.store.park(row.id, totalAttempts, lastError, nextAttemptAt);
+    const parkedTraceId = activeTraceId();
     this.logger.error('saga-command-dispatcher: exhausted attempts, command parked', {
       orderId: orderId.value,
+      correlationId: orderId.value,
+      ...(parkedTraceId ? { traceId: parkedTraceId } : {}),
       command,
       attempts: totalAttempts,
       error: lastError,

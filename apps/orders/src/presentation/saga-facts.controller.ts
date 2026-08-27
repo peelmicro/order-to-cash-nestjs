@@ -28,7 +28,7 @@ import type { Envelope } from '@otc/contracts';
 import { factCommandFor } from '../application/commands/saga-fact.commands';
 import { BILLING_FACTS_TOPIC, FULFILLMENT_FACTS_TOPIC, ORDERS_FACTS_TOPIC } from '../infrastructure/outbox/kafka.config';
 import { FACT_RETRY_DISPATCHER, type DispatchesFactRetries } from '../infrastructure/messaging/fact-retry-dispatcher';
-import { extractKafkaTraceContext, startChildSpan, type KafkaHeaderCarrier } from '../infrastructure/observability/trace-context';
+import { activeTraceId, extractKafkaTraceContext, startChildSpan, type KafkaHeaderCarrier } from '../infrastructure/observability/trace-context';
 
 export class MalformedFactEnvelopeError extends Error {
   constructor(reason: string) {
@@ -86,7 +86,20 @@ export interface SagaFactsControllerLogger {
 }
 
 const CONSOLE_LOGGER: SagaFactsControllerLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  // A6a (R58, design.md §4.4) — alongside `message`/`meta`, read from the
+  // ACTIVE span, same formula as every other call site this pass touches
+  // (`trace.getActiveSpan()?.spanContext().traceId`). `route`'s
+  // malformed-envelope branch below now extracts-and-continues the
+  // inbound message's OWN trace context (if the message carried one)
+  // BEFORE this logger is ever called, so a producer bug in an otherwise
+  // well-traced fact still logs its real originating traceId; a message
+  // with no `traceparent` header (or no OTel provider registered at all,
+  // e.g. a plain unit test) yields `undefined` here, and the key is
+  // omitted entirely — never the literal string `"undefined"`.
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 @Controller()
@@ -120,6 +133,18 @@ export class SagaFactsController {
   }
 
   private async route(topic: string, payload: unknown, kafkaContext: KafkaContext): Promise<void> {
+    // OR4/R57 (design.md §4.3), widened for A6a (R58, design.md §4.4):
+    // extracted BEFORE `parseFactEnvelope` runs (not only after, as
+    // before A6a) — the inbound Kafka message's headers are readable
+    // regardless of whether ITS PAYLOAD parses, so a producer bug that
+    // still carried a real `traceparent` (every fact this service's own
+    // outbox relay ever publishes does) lets even the malformed-envelope
+    // log-and-ack branch below log its real originating traceId, rather
+    // than silently having none to log just because it runs before the
+    // fact-consume span is started.
+    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
+    const extracted = extractKafkaTraceContext(headers);
+
     let envelope: Envelope;
     try {
       envelope = parseFactEnvelope(payload);
@@ -127,9 +152,11 @@ export class SagaFactsController {
       // Log-and-ack (design.md §3.3): a malformed value cannot be deduped
       // or parked, and redelivery cannot fix a producer bug. Returning
       // normally lets the offset commit.
-      this.logger.error('saga-facts.controller: malformed fact envelope, acknowledged without processing', {
-        topic,
-        error: error instanceof Error ? error.message : String(error),
+      await otelContext.with(extracted, async () => {
+        this.logger.error('saga-facts.controller: malformed fact envelope, acknowledged without processing', {
+          topic,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
       return;
     }
@@ -144,15 +171,14 @@ export class SagaFactsController {
 
     // OR4/R57 (design.md §4.3) — the fact-consume entry point is the
     // SECOND of the two points this feature creates a manual span at.
-    // Extracts the `traceparent` the outbox relay injected
-    // (`outbox-relay.ts`) and wraps the WHOLE retry-then-DLQ dispatch
-    // below in it (`otelContext.with`), so every in-line retry attempt AND
-    // any eventual DLQ publish (`FactRetryDispatcher.dispatch`'s own call
-    // to `this.dlq.publish(...)`, which injects the then-active context —
-    // `kafka-dlq-publisher.ts`) share the SAME trace id as the fact that
-    // triggered them, never a fresh one.
-    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
-    const extracted = extractKafkaTraceContext(headers);
+    // Continues from the SAME `extracted` context above (the `traceparent`
+    // the outbox relay injected — `outbox-relay.ts`) and wraps the WHOLE
+    // retry-then-DLQ dispatch below in it (`otelContext.with`), so every
+    // in-line retry attempt AND any eventual DLQ publish
+    // (`FactRetryDispatcher.dispatch`'s own call to `this.dlq.publish(...)`,
+    // which injects the then-active context — `kafka-dlq-publisher.ts`)
+    // share the SAME trace id as the fact that triggered them, never a
+    // fresh one.
     const { span, spanContext } = startChildSpan(`saga.consume ${envelope.eventType}`, extracted, SpanKind.CONSUMER);
 
     // OR1/OR2 (observability_reliability design.md §4.1) — the retry-then-

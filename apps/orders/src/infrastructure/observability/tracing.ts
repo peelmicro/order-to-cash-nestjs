@@ -24,14 +24,28 @@
 // never triggers this side effect, so unit tests are unaffected; every
 // trace-propagation TEST registers its own `NodeTracerProvider` +
 // `InMemorySpanExporter` (design.md §8), never this OTLP-exporting one.
+//
+// A7 (metrics, R59/OR5, design.md §4.5) widens this SAME bootstrap to also
+// register a real, globally-visible `MeterProvider` — `metrics.ts`'s
+// `meter()` (`metrics.getMeter('orders')`) resolves against whatever
+// `MeterProvider` is currently registered, exactly the same "global proxy"
+// convention `tracer()` already establishes for spans above. No
+// per-service `/metrics` HTTP endpoint (design.md §4.5's own stated
+// choice) — `PeriodicExportingMetricReader` pushes over OTLP to the same
+// `otel-collector:4317` the trace exporter already targets.
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-grpc';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 
 const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4317';
 
 export const tracingSdk = new NodeSDK({
   serviceName: 'orders',
   traceExporter: new OTLPTraceExporter({ url: OTEL_EXPORTER_OTLP_ENDPOINT }),
+  metricReader: new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter({ url: OTEL_EXPORTER_OTLP_ENDPOINT }),
+  }),
   instrumentations: [],
 });
 

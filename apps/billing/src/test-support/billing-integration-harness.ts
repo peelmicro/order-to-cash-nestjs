@@ -21,7 +21,7 @@ import { MySqlContainer, type StartedMySqlContainer } from '@testcontainers/mysq
 import { drizzle } from 'drizzle-orm/mysql2';
 import mysql, { type Pool } from 'mysql2/promise';
 import type { RpcError } from '@otc/contracts';
-import { AppModule } from '../app.module';
+import { AppModule, NATS_CONNECTION } from '../app.module';
 import type { BillingDb } from '../infrastructure/persistence/client';
 import { runBillingMigrations } from '../infrastructure/persistence/migrator';
 import * as schema from '../infrastructure/persistence/schema';
@@ -178,7 +178,21 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
   process.env.OUTBOX_BATCH_SIZE = '100';
   process.env.OUTBOX_PUBLISH_TIMEOUT_MS = '5000';
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+  // A8 (R60/OR6) — `app.module.ts` now ALSO opens its own outbound
+  // `NATS_CONNECTION`, SOLELY for `NatsHealthCheck`'s readiness probe (this
+  // service issues no other outbound RPC call). Left to `loadNatsConfig()`'s
+  // env-var path, that provider would connect to whatever `NATS_URL`
+  // defaults to (`nats://localhost:4222`, no credentials), NOT this
+  // hermetic fixture (which requires `--user test --pass test`) — same
+  // finding recorded in `apps/fulfillment/src/test-support/stock-integration-harness.ts`'s
+  // own comment. Overridden here with a real, correctly-authenticated
+  // connection to the SAME fixture instead.
+  const testNatsConnection = await natsFixture.connect();
+
+  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+    .overrideProvider(NATS_CONNECTION)
+    .useValue(testNatsConnection)
+    .compile();
   const app = moduleRef.createNestApplication();
   app.connectMicroservice<MicroserviceOptions>({
     transport: Transport.NATS,
@@ -192,8 +206,6 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
   });
   await app.startAllMicroservices();
   await app.init();
-
-  const testNatsConnection = await natsFixture.connect();
 
   async function requestBare<TReply>(
     subject: string,
@@ -353,7 +365,10 @@ export async function startBillingIntegrationHarness(): Promise<BillingIntegrati
     issueRequest,
     paymentRequest,
     async teardown(): Promise<void> {
-      await testNatsConnection.close();
+      // `testNatsConnection` IS `app.module.ts`'s own `NATS_CONNECTION`
+      // now (overridden above, A8) — `app.close()` already closes it via
+      // `NatsConnectionCloser`'s shutdown hook, so no separate close call
+      // is needed here.
       await app.close();
       await probePool.end();
       await mysqlContainer.stop();

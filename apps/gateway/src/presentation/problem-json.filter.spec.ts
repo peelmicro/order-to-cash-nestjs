@@ -1,6 +1,11 @@
 import { BadRequestException, type ArgumentsHost } from '@nestjs/common';
 import { RpcError } from '@otc/contracts';
 import { describe, expect, it, vi } from 'vitest';
+import { context, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import { W3CTraceContextPropagator } from '@opentelemetry/core';
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { ProblemJsonExceptionFilter } from './problem-json.filter';
 import { InvalidCredentialsError } from '../application/commands/login.command';
 import { InvoiceNotFoundError, InvoiceScanBudgetExceededError, OrderNotYetProjectedError } from '../application/commands/register-payment.command';
@@ -137,5 +142,61 @@ describe('ProblemJsonExceptionFilter — R58 (every non-2xx is application/probl
     } finally {
       errorSpy.mockRestore();
     }
+  });
+
+  // A6a (R58, design.md §4.4) — alongside `correlationId`, the same log
+  // line gains a `traceId`, read from the ACTIVE span
+  // (`@opentelemetry/instrumentation-http` already leaves a real one
+  // active for the whole lifetime of an inbound HTTP request in
+  // production; here a real `NodeTracerProvider` is registered for the
+  // duration of these two cases only, never `sdk-node`'s own OTLP
+  // exporter, matching every other trace-proof file's own convention).
+  describe('traceId (A6a, R58, design.md §4.4)', () => {
+    it('carries the REAL active span\'s traceId, extracted via the exact trace.getActiveSpan() formula design.md §4.4 names', async () => {
+      const exporter = new InMemorySpanExporter();
+      const provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+      const contextManager = new AsyncLocalStorageContextManager();
+      provider.register({ contextManager, propagator: new W3CTraceContextPropagator() });
+
+      try {
+        const span = trace.getTracer('problem-json.filter.spec').startSpan('test-http-server-span');
+        const { traceId: originTraceId } = span.spanContext();
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+        context.with(trace.setSpan(context.active(), span), () => {
+          const filter = new ProblemJsonExceptionFilter(clock);
+          const { host } = fakeHost('22222222-2222-4222-8222-222222222222');
+          filter.catch(new Error('boom'), host);
+        });
+        span.end();
+
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+        const logged = JSON.parse(errorSpy.mock.calls[0]![0] as string) as Record<string, unknown>;
+        expect(logged.correlationId).toBe('22222222-2222-4222-8222-222222222222');
+        expect(logged.traceId).toBe(originTraceId);
+        expect(logged.traceId).toMatch(/^[0-9a-f]{32}$/);
+
+        errorSpy.mockRestore();
+      } finally {
+        contextManager.disable();
+        await provider.shutdown();
+      }
+    });
+
+    it('omits traceId entirely — never the literal string "undefined" — when no span is active', () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      const filter = new ProblemJsonExceptionFilter(clock);
+      const { host } = fakeHost('33333333-3333-4333-8333-333333333333');
+
+      filter.catch(new Error('boom'), host);
+
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      const rawLine = errorSpy.mock.calls[0]![0] as string;
+      expect(rawLine).not.toContain('undefined');
+      const logged = JSON.parse(rawLine) as Record<string, unknown>;
+      expect(Object.prototype.hasOwnProperty.call(logged, 'traceId')).toBe(false);
+
+      errorSpy.mockRestore();
+    });
   });
 });

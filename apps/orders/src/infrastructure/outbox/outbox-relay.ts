@@ -7,6 +7,7 @@ import { asc, inArray, isNull } from 'drizzle-orm';
 import type { Clock } from '../../application/ports/clock.port';
 import type { FactPublisher, PublishableFact } from '../../application/ports/fact-publisher.port';
 import { contextFromTraceParent, startChildSpan } from '../observability/trace-context';
+import { dlqDepthGauge, outboxLagGauge } from '../observability/metrics';
 import type { WriteModelDb } from '../persistence/client';
 import { outbox } from '../persistence/schema';
 import type { OutboxRelayConfig } from './outbox-relay.config';
@@ -49,12 +50,30 @@ const CONSOLE_LOGGER: OutboxRelayLogger = {
   error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
 };
 
+/**
+ * A7 (metrics, R59/OR5, design.md §4.5) — `otc_dlq_depth`'s own narrow
+ * port: "a broker admin-client partition-offset query against each `.dlq`
+ * topic." Optional on `OutboxRelayDeps` (defaults to recording nothing),
+ * the SAME "narrow, separately injected, no-op default" shape a couple of
+ * other observability collaborators elsewhere in this codebase already
+ * establish, so every EXISTING `OutboxRelay` construction site (unit
+ * tests, every other write model's unmodified copy of this file) keeps
+ * working unchanged.
+ */
+export interface DlqDepthPort {
+  /** Depth (message count) per topic, keyed by the exact string in `topics`. A topic this call could not resolve (e.g. not yet created) is simply absent from the returned map — the caller records 0 for it, never throws. */
+  fetchDepths(topics: readonly string[]): Promise<ReadonlyMap<string, number>>;
+}
+
 export interface OutboxRelayDeps {
   readonly db: WriteModelDb;
   readonly publisher: FactPublisher;
   readonly clock: Clock;
   readonly config: OutboxRelayConfig;
   readonly logger?: OutboxRelayLogger;
+  /** A7's DLQ-depth collaborator — the caller's own topic NAMES are never hardcoded in this canonical file (OB1's own "names no service" check), so both the port AND the topic list are supplied by the caller. */
+  readonly dlqDepth?: DlqDepthPort;
+  readonly dlqTopics?: readonly string[];
 }
 
 export class OutboxRelay {
@@ -63,6 +82,8 @@ export class OutboxRelay {
   private readonly clock: Clock;
   private readonly config: OutboxRelayConfig;
   private readonly logger: OutboxRelayLogger;
+  private readonly dlqDepth: DlqDepthPort | undefined;
+  private readonly dlqTopics: readonly string[];
 
   constructor(deps: OutboxRelayDeps) {
     this.db = deps.db;
@@ -70,6 +91,8 @@ export class OutboxRelay {
     this.clock = deps.clock;
     this.config = deps.config;
     this.logger = deps.logger ?? CONSOLE_LOGGER;
+    this.dlqDepth = deps.dlqDepth;
+    this.dlqTopics = deps.dlqTopics ?? [];
   }
 
   /**
@@ -81,6 +104,20 @@ export class OutboxRelay {
    * unchanged, on the next poll (OI8).
    */
   async runOnce(): Promise<OutboxRelayResult> {
+    // A7 (metrics, R59/OR5, design.md §4.5) — `otc_outbox_lag_ms`: the age
+    // of the OLDEST unpublished record, via a plain read (no row lock
+    // needed for a gauge) using `idx_outbox_published_occurred` (design.md
+    // §3.2/§4.5, the exact query this index was provisioned for — see
+    // `outbox.schema.ts`'s own column comment). Measured BEFORE the claim
+    // below so it reflects the backlog's age entering THIS poll cycle, not
+    // whatever remains after this cycle's own batch publishes. 0 when the
+    // outbox is fully caught up (never a negative value, never omitted).
+    await this.recordOutboxLag();
+    // A7 — `otc_dlq_depth`, "polled on the same interval as the outbox
+    // relay" (design.md §4.5), literally: this method IS that interval's
+    // own cycle body (`OutboxRelayService`'s self-scheduling loop).
+    await this.recordDlqDepth();
+
     return this.db.transaction(async (tx) => {
       const claimed = await tx
         .select()
@@ -130,13 +167,31 @@ export class OutboxRelay {
         // publish failure below (OI8: left unstamped, retried unchanged).
         await withPublishTimeout(this.publisher.publish(facts), this.config.publishTimeoutMs, claimed.length);
       } catch (error) {
-        for (const row of claimed) {
+        // A6a (R58, design.md §4.4) — read PER ROW from that row's OWN
+        // already-held span (`spans[index]`, built above), NOT the
+        // ambient `trace.getActiveSpan()` every other call site this pass
+        // touches uses: this loop logs one line per row in a single
+        // batch, and a batch can genuinely mix rows from DIFFERENT
+        // origin traces (or none at all, for a pre-feature-27/untraced
+        // row) — there is no single "the" active span for the whole
+        // catch block to read ambiently. Reading each span's own
+        // `spanContext().traceId` directly is the same real, OTel-
+        // generated id the ambient lookup would report if this loop
+        // logged one row per `otelContext.with(...)` block instead; it is
+        // simply the more correct read for a per-row loop. `undefined`
+        // (key omitted, never the literal string `"undefined"`) for a row
+        // whose `traceParent` was never stored (no span in `spans` at
+        // that index) — the same "no trace to log honestly" case as
+        // every other site.
+        claimed.forEach((row, index) => {
+          const traceId = spans[index]?.spanContext().traceId;
           this.logger.error('outbox-relay: publish failed, batch left unstamped for the next poll', {
             correlationId: row.correlationId,
             eventId: row.eventId,
             error: error instanceof Error ? error.message : String(error),
+            ...(traceId ? { traceId } : {}),
           });
-        }
+        });
         for (const span of spans) {
           span?.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
           span?.end();
@@ -165,5 +220,26 @@ export class OutboxRelay {
 
       return { claimed: claimed.length, published: claimed.length };
     });
+  }
+
+  private async recordOutboxLag(): Promise<void> {
+    const [oldest] = await this.db
+      .select({ occurredAt: outbox.occurredAt })
+      .from(outbox)
+      .where(isNull(outbox.publishedAt))
+      .orderBy(asc(outbox.occurredAt))
+      .limit(1);
+    const lagMs = oldest ? Math.max(0, this.clock.now().getTime() - oldest.occurredAt.getTime()) : 0;
+    outboxLagGauge().record(lagMs);
+  }
+
+  private async recordDlqDepth(): Promise<void> {
+    if (!this.dlqDepth || this.dlqTopics.length === 0) {
+      return;
+    }
+    const depths = await this.dlqDepth.fetchDepths(this.dlqTopics);
+    for (const topic of this.dlqTopics) {
+      dlqDepthGauge().record(depths.get(topic) ?? 0, { topic });
+    }
   }
 }

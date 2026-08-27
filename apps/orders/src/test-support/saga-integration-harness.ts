@@ -70,6 +70,7 @@ import {
   type SagaCommandDispatcherConfig,
 } from '../infrastructure/saga/saga-command-dispatcher';
 import { SagaFirstParkDeadLetterHandler } from '../infrastructure/saga/saga-first-park-dead-letter-handler';
+import { OtelSagaMetrics } from '../infrastructure/observability/otel-saga-metrics';
 import {
   SAGA_COMMAND_SWEEPER_CONFIG,
   SagaCommandSweeperService,
@@ -342,6 +343,7 @@ export async function startSagaAppFromFixtures(prepared: PreparedSagaFixtures): 
             orders,
             commandStore,
             new SagaIgnoredFactsRepository(clock),
+            new OtelSagaMetrics(),
           ),
       },
       {

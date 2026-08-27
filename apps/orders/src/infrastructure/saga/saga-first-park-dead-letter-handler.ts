@@ -14,6 +14,7 @@
 // mechanism (design.md §4.2's own framing) that never touches SO5's
 // underlying retry.
 import type { Envelope } from '@otc/contracts';
+import { activeTraceId } from '../observability/trace-context.js';
 import type { Clock } from '../../application/ports/clock.port.js';
 import type { OrderRepository } from '../../application/ports/order-repository.port.js';
 import type { SagaCommandRecord } from '../../application/ports/saga-command-store.port.js';
@@ -59,8 +60,11 @@ export class SagaFirstParkDeadLetterHandler implements HandlesFirstPark {
         // like SagaFactHandler's own SO8 case) — log and move on, never
         // throw: this hook must not turn a diagnostic side effect into a
         // reason the park transition itself fails.
+        const traceId = activeTraceId();
         this.logger.error('saga-first-park-dead-letter-handler: no order row for orderId, fact not recorded', {
           orderId: row.orderId.value,
+          correlationId: row.orderId.value,
+          ...(traceId ? { traceId } : {}),
           command: row.command,
         });
         return;

@@ -137,8 +137,10 @@ catalog:
   # the versions that were mutually current (and peer-dependency-compatible:
   # `sdk-node@0.221.0` requires `api` `>=1.3.0 <1.10.0`) on the day this
   # catalog entry was added. `exporter-metrics-otlp-grpc` is provisioned
-  # here per design.md §6's package table but not yet consumed by any
-  # service — A7 (metrics, out of this pass's scope) is its first caller.
+  # here per design.md §6's package table — A7 (metrics, R59/OR5) is its
+  # first real caller (`apps/orders`/`apps/gateway`'s `tracing.ts`
+  # bootstraps, widened to configure `NodeSDK`'s `metricReaders` alongside
+  # the existing trace exporter).
   "@opentelemetry/api": ^1.9.1
   "@opentelemetry/sdk-node": ^0.221.0
   "@opentelemetry/exporter-trace-otlp-grpc": ^0.221.0
@@ -155,3 +157,10 @@ catalog:
   "@opentelemetry/sdk-trace-node": ^2.10.0
   "@opentelemetry/context-async-hooks": ^2.10.0
   "@opentelemetry/core": ^2.10.0
+  # A7 (metrics, R59/OR5) — `MeterProvider`/`PeriodicExportingMetricReader`
+  # for production (paired with `exporter-metrics-otlp-grpc` above) AND
+  # `InMemoryMetricExporter` for every metrics test (design.md §8's same
+  # "no live collector needed" convention, mirrored from the trace SDKs
+  # above). Peer-compatible with `api@1.9.1` (`sdk-metrics@2.10.0` requires
+  # `api` `>=1.9.0 <1.10.0`), verified before pinning.
+  "@opentelemetry/sdk-metrics": ^2.10.0

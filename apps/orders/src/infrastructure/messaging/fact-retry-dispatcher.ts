@@ -30,6 +30,8 @@
 import type { Envelope } from '@otc/contracts';
 import type { Clock } from '../../application/ports/clock.port.js';
 import type { ConsumerName } from '../../application/ports/consumer-name.js';
+import { activeTraceId } from '../observability/trace-context.js';
+import { factProcessingLatencyHistogram } from '../observability/metrics.js';
 
 export interface FactRetryPolicy {
   readonly maxAttempts: number;
@@ -124,12 +126,20 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
     consumer: ConsumerName,
     process: (envelope: Envelope) => Promise<void>,
   ): Promise<void> {
-    const firstFailedAt = this.clock.now();
+    // A7 (metrics, R59/OR5, design.md §4.5) — `otc_fact_processing_latency_ms`,
+    // entry-to-exit of this WHOLE call (every in-line retry attempt AND
+    // any eventual DLQ publish), attributed by consumer. Uses the injected
+    // `Clock`, not a bare `Date.now()`, so a unit test's fake clock
+    // controls the recorded value exactly — the same discipline every
+    // other timestamp in this method already follows.
+    const enteredAt = this.clock.now();
+    const firstFailedAt = enteredAt;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.policy.maxAttempts; attempt += 1) {
       try {
         await process(envelope);
+        factProcessingLatencyHistogram().record(this.clock.now().getTime() - enteredAt.getTime(), { consumer });
         return;
       } catch (error) {
         lastError = error;
@@ -147,14 +157,18 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
       firstFailedAt,
       failedAt,
     });
+    const traceId = activeTraceId();
     this.logger.error('fact-retry-dispatcher: exhausted attempts, fact dead-lettered', {
       sourceTopic,
       consumer,
       eventType: envelope.eventType,
       eventId: envelope.eventId,
+      correlationId: envelope.correlationId,
+      ...(traceId ? { traceId } : {}),
       attempts: this.policy.maxAttempts,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });
+    factProcessingLatencyHistogram().record(this.clock.now().getTime() - enteredAt.getTime(), { consumer });
     // Deliberately NOT rethrown — see the class-level comment.
   }
 }

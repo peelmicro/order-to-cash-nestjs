@@ -65,6 +65,18 @@ const CANONICAL_APP = 'orders';
  * differ arbitrarily." A future pass that gives billing/fulfillment their
  * own OTel bootstrap should backport this wiring and retire this
  * exception.
+ *
+ * A7 (metrics, R59/OR5, design.md §4.5) widens `outbox-relay.ts`'s OWN
+ * divergence further (never touching `outbox-recorder.ts`, which A7 does
+ * not modify): `recordOutboxLag()`, the `otc_outbox_lag_ms` gauge, reads
+ * `../observability/metrics` — a module the SAME reasoning applies to
+ * (only `apps/orders` owns a `Meter` bootstrap this pass; `billing`/
+ * `fulfillment` are equally out of THIS pass's bounded scope). No new
+ * exception needed — `outbox-relay.ts` was already exempted from the
+ * strict canonical-only comparison above; this is simply more content
+ * inside an exception that already exists, still checked against the SAME
+ * positive marker (`OTEL_TRACING_MARKER`, unchanged and still present) and
+ * still required to leave `billing`/`fulfillment` matching each other.
  */
 const TRACE_DIVERGENT_FILES: ReadonlySet<(typeof FAMILY_FILES)[number]> = new Set(['outbox-relay.ts', 'outbox-recorder.ts']);
 // Present in BOTH trace-divergent files' import lines (`outbox-relay.ts`
@@ -99,6 +111,9 @@ const PORTABLE_IMPORT_WHITELIST = [
   // `../../application/ports/clock.port` etc. already establish above).
   '@opentelemetry/api',
   '../observability/trace-context',
+  // A7 (metrics, R59/OR5) — `otc_outbox_lag_ms`, same portability
+  // reasoning as the line above.
+  '../observability/metrics',
 ];
 
 function stripBanner(text: string): string {

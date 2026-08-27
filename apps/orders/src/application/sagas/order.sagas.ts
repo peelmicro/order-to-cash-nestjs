@@ -36,7 +36,25 @@ const CONSOLE_LOGGER: OrderSagasLogger = {
   error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
 };
 
-/** Wraps one already-mapped branch so an error thrown anywhere in it (typically inside `map`) resubscribes to the SAME piped source instead of letting the error propagate and unsubscribe the branch forever. */
+/**
+ * Wraps one already-mapped branch so an error thrown anywhere in it
+ * (typically inside `map`) resubscribes to the SAME piped source instead
+ * of letting the error propagate and unsubscribe the branch forever.
+ *
+ * R58 closeout (design.md §4.4) — deliberately NOT given a `correlationId`
+ * here, unlike every other structured log this pass touched: RxJS's
+ * `catchError` handler receives only the thrown error, not the source
+ * `IEvent` that produced it (that value is already lost by the time this
+ * runs — `map`'s own thrown error discards its input), so there is no
+ * order id or fact envelope to attach. Fixing this for real would mean
+ * restructuring each branch to catch INSIDE its own `map` (per-event,
+ * before the value is lost) rather than after `merge`, which is a genuine
+ * behavioural change to `@Saga()`'s own resubscription contract, not a
+ * threading exercise — out of this pass's scope, reported here rather
+ * than worked around silently (the durable `saga_commands` row the
+ * sweeper backstops with, per this function's own header, is what makes
+ * the missing correlation on this ONE diagnostic line non-fatal).
+ */
 function resilient<T>(branch: Observable<T>, label: string, logger: OrderSagasLogger): Observable<T> {
   return branch.pipe(
     catchError((error: unknown, caught) => {

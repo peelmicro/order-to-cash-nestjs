@@ -33,6 +33,9 @@ catalogs:
     '@opentelemetry/core':
       specifier: ^2.10.0
       version: 2.10.0
+    '@opentelemetry/exporter-metrics-otlp-grpc':
+      specifier: ^0.221.0
+      version: 0.221.0
     '@opentelemetry/exporter-trace-otlp-grpc':
       specifier: ^0.221.0
       version: 0.221.0
@@ -40,6 +43,9 @@ catalogs:
       specifier: ^0.221.0
       version: 0.221.0
     '@opentelemetry/resources':
+      specifier: ^2.10.0
+      version: 2.10.0
+    '@opentelemetry/sdk-metrics':
       specifier: ^2.10.0
       version: 2.10.0
     '@opentelemetry/sdk-node':
@@ -252,6 +258,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/supertest':
+        specifier: 'catalog:'
+        version: 6.0.3
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
@@ -261,6 +270,9 @@ importers:
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
+      supertest:
+        specifier: 'catalog:'
+        version: 7.2.2(supports-color@10.2.2)
       testcontainers:
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)
@@ -340,6 +352,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/supertest':
+        specifier: 'catalog:'
+        version: 6.0.3
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
@@ -349,6 +364,9 @@ importers:
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
+      supertest:
+        specifier: 'catalog:'
+        version: 7.2.2(supports-color@10.2.2)
       testcontainers:
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)
@@ -382,6 +400,9 @@ importers:
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
+      '@opentelemetry/exporter-metrics-otlp-grpc':
+        specifier: 'catalog:'
+        version: 0.221.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/exporter-trace-otlp-grpc':
         specifier: 'catalog:'
         version: 0.221.0(@opentelemetry/api@1.9.1)
@@ -389,6 +410,9 @@ importers:
         specifier: 'catalog:'
         version: 0.221.0(@opentelemetry/api@1.9.1)(supports-color@10.2.2)
       '@opentelemetry/resources':
+        specifier: 'catalog:'
+        version: 2.10.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-metrics':
         specifier: 'catalog:'
         version: 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-node':
@@ -582,6 +606,9 @@ importers:
       '@types/nodemailer':
         specifier: 'catalog:'
         version: 8.0.1
+      '@types/supertest':
+        specifier: 'catalog:'
+        version: 6.0.3
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
@@ -591,6 +618,9 @@ importers:
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
+      supertest:
+        specifier: 'catalog:'
+        version: 7.2.2(supports-color@10.2.2)
       testcontainers:
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)
@@ -627,10 +657,16 @@ importers:
       '@opentelemetry/api':
         specifier: 'catalog:'
         version: 1.9.1
+      '@opentelemetry/exporter-metrics-otlp-grpc':
+        specifier: 'catalog:'
+        version: 0.221.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/exporter-trace-otlp-grpc':
         specifier: 'catalog:'
         version: 0.221.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/resources':
+        specifier: 'catalog:'
+        version: 2.10.0(@opentelemetry/api@1.9.1)
+      '@opentelemetry/sdk-metrics':
         specifier: 'catalog:'
         version: 2.10.0(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-node':
@@ -697,6 +733,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/supertest':
+        specifier: 'catalog:'
+        version: 6.0.3
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
@@ -706,6 +745,9 @@ importers:
       drizzle-kit:
         specifier: 'catalog:'
         version: 0.31.10
+      supertest:
+        specifier: 'catalog:'
+        version: 7.2.2(supports-color@10.2.2)
       testcontainers:
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)
@@ -803,12 +845,18 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.3
+      '@types/supertest':
+        specifier: 'catalog:'
+        version: 6.0.3
       '@vitest/coverage-v8':
         specifier: 'catalog:'
         version: 4.1.11(vitest@4.1.11)
       dotenv-cli:
         specifier: 'catalog:'
         version: 10.0.0
+      supertest:
+        specifier: 'catalog:'
+        version: 7.2.2(supports-color@10.2.2)
       testcontainers:
         specifier: 'catalog:'
         version: 12.1.0(supports-color@10.2.2)

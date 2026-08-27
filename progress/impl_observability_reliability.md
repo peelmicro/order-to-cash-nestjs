@@ -603,3 +603,432 @@ A ninth, non-deletion finding recorded as its own comment in `http-instrumentati
 - Every one of the 8 armed deletions above is a genuine production-code removal, watched fail with the exact assertion shown, then restored and re-verified green — none was a text-matching guard (the binding rule this project has burned itself on six times already, per CLAUDE.md's own note).
 - The OB1 parity-guard conflict (outbox-relay family) is the one genuinely structural surprise this pass hit — read that section closely if reviewing the `outbox-relay.parity.spec.ts` diff; it is a real, deliberate, narrowly-scoped exception, not a hollowed-out check.
 - `apps/billing`, `apps/fulfillment`, `apps/seed`, `specs/`, `feature_list.json` were not touched, per the leader's own bounded-scope instruction for this pass.
+
+---
+
+# A6 pass — structured logging traceId (R58)
+
+**Scope for this pass, set by the leader: A6a and A6c only.** A6b/A6d (the Gateway correlationId defect fix) were already done in an earlier pass and are NOT redone here. A5 (trace propagation) is already landed and is what this pass's `activeTraceId()`/`trace.getActiveSpan()` reads have something real to read from. A7/A8 not touched.
+
+**Status: both A6a and A6c complete.** `pnpm quality` green. Three armed deletions, one per call site touched, all watched fail with a verbatim assertion and restored. `specs/shared/test-matrix.md`'s R58 row flipped to `DONE`.
+
+## Scope decision, stated explicitly
+
+design.md §4.4 names exactly three "already confirmed JSON-shaped" call sites: `problem-json.filter.ts` (Gateway), `SagaFactsController`'s own logger (Orders), and the outbox relay's failure log (Orders). By the time A0/A1/A3/A4 landed (earlier passes on this same feature), the codebase grew several MORE `console.log`/`console.error` JSON-shaped loggers sharing the identical `{ level, message, ...meta }` pattern — `SagaCommandDispatcher`'s info/error logger, `fact-retry-dispatcher.ts` (all three copies), `saga-first-park-dead-letter-handler.ts`, `order.sagas.ts`, and the projector's/notifications' own equivalents — none of which design.md's list (written before those passes) could have named. The brief instructed touching "the confirmed JSON-shaped" sites named in the design doc; I stayed strictly to the three literal, named sites and did not widen to the newer ones, even though doing so (specifically `SagaCommandDispatcher`'s happy-path "command sent" log) would have given a literal "request → command → fact" chain for A6c's test, closer to the test-matrix row's own placeholder wording. This is a deliberate, bounded-scope choice, not an oversight — recorded here so the reviewer can see the trade-off and widen it in a future pass if that's judged worth it.
+
+## What was built
+
+- `apps/orders/src/infrastructure/observability/trace-context.ts` — new `activeTraceId(): string | undefined`, exactly design.md §4.4's own formula (`trace.getActiveSpan()?.spanContext().traceId`).
+- `apps/gateway/src/infrastructure/observability/trace-context.ts` — the same `activeTraceId()`, Gateway's own copy (this file previously only had `injectNatsTraceContext`; gained the `trace` import).
+- `apps/gateway/src/presentation/problem-json.filter.ts` — the structured error log gains `traceId` alongside `correlationId` (spread-conditionally: `...(traceId ? { traceId } : {})`), sourced from `activeTraceId()`. `@opentelemetry/instrumentation-http` already leaves a real active span for the whole lifetime of an inbound HTTP request in production, so this is a genuine, non-degenerate read in the running system, not just in a test harness.
+- `apps/orders/src/presentation/saga-facts.controller.ts` — two changes:
+  1. `CONSOLE_LOGGER.error` gains `traceId` from `activeTraceId()`, same spread-conditional shape.
+  2. **A real, non-trivial widening, not just a field addition**: `route`'s Kafka-header trace extraction (`extractKafkaTraceContext`) is now performed BEFORE `parseFactEnvelope` runs, not only after (as A5 left it). Previously the malformed-envelope log-and-ack branch ran with NO active span at all (extraction happened later, only on the successful-parse path), so this call site could never have logged a real traceId even when the underlying Kafka message genuinely carried one — which every fact this service's own outbox relay ever publishes does. The malformed-envelope catch block now runs inside `otelContext.with(extracted, ...)`, so a producer bug in an otherwise well-traced fact logs its real originating traceId; a message with no `traceparent` header (or the "genuinely no trace" case generally) still logs sanely, with the key simply omitted.
+- `apps/orders/src/infrastructure/outbox/outbox-relay.ts` — the per-row publish-failure log gains `traceId`, but deliberately NOT via the ambient `trace.getActiveSpan()` formula every other site uses: this `catch` block logs ONE line per row in a single claimed batch, and a batch can genuinely mix rows from different origin traces (or none at all, for an untraced row) — there is no single "the" active span for the whole catch block to read. Each row's own already-held span (`spans[index]`, built earlier in `runOnce()` for rows that stored a `traceParent`) is read directly via `spans[index]?.spanContext().traceId` instead — the same real, OTel-generated id the ambient formula would report if this loop instead ran one `otelContext.with(...)` block per row; simply the more correct read for a per-row loop. A row with no stored `traceParent` (no span at that index) logs no `traceId` key, unchanged from the prior, pre-feature-27 behaviour for an untraced row.
+
+## Tests
+
+- `apps/orders/src/infrastructure/observability/log-correlation.integration.spec.ts` (NEW, Testcontainers real MySQL `mysql:8.4.11` + real Kafka `apache/kafka:4.3.1`) — R58's own named integration test (A6c), the point of this pass:
+  - *two real publish-retry failure log lines for the SAME still-unpublished fact carry the IDENTICAL real traceId — equality across lines, not merely field presence.* An order is placed inside a real, manually-started active span (`tracer().startSpan(...)`, `context.with(...)`) so the resulting `order.placed.v1` outbox row genuinely stores a `traceParent`. A `FlakyFactPublisher` (the same fake `outbox-relay.integration.spec.ts` already established as this repo's own precedent for injecting a controlled publish failure against an otherwise-real Kafka publisher) is forced to reject the first two calls before delegating to the real publisher on the third. Two real `console.error` calls are captured (`vi.spyOn`, never a fake logger substitute — this test exercises the actual `CONSOLE_LOGGER`), parsed as JSON, and asserted: both carry a `traceId`; both traceIds are EQUAL to each other (`new Set(traceIds).size === 1`); both equal the writer's own span's real `traceId`; the format is a real, non-degenerate 32-hex-digit id, never the all-zero placeholder shape. Independently cross-checked against the ACTUAL exported spans via `InMemorySpanExporter` (not a self-referential re-parse of the same JSON): two real, ended `outbox.publish order.placed.v1` spans, both on the writer's own trace, both ended with `SpanStatusCode.ERROR`. The third, real poll then succeeds and the fact is consumed for real over the wire, proving the retried fact is not lost.
+  - *a publish-failure log for a row written with NO active span carries no traceId at all — never the literal string "undefined" (sane behaviour with genuinely no trace).* The required negative-case proof: an order placed with no active span produces a `null` `traceParent` (unchanged, pre-existing behaviour); the resulting publish-failure log line, captured and parsed the same way, has no `traceId` key at all, and the raw JSON string never contains the substring `"undefined"`.
+- `apps/orders/src/presentation/saga-facts-log-trace-id.spec.ts` (NEW, pure unit — a real `NodeTracerProvider`/`InMemorySpanExporter`/`AsyncLocalStorageContextManager` registered for the file's duration, the same convention `trace-context.spec.ts`/`saga-facts-trace-continuity.spec.ts` already established) — proves the `SagaFactsController` site individually, exercising the REAL `CONSOLE_LOGGER` (not the fake-logger injection `saga-facts.controller.spec.ts`'s own pre-existing malformed-envelope case uses, which bypasses `CONSOLE_LOGGER` entirely and so could never have proven this):
+  - *logs the REAL traceId extracted from the inbound Kafka message headers, even though the value never parsed as an envelope* — a real span's context is injected into a plain headers object and handed to the controller alongside an unparseable payload; the captured `console.error` line's `traceId` equals the span's own real, 32-hex-digit `traceId`.
+  - *omits traceId entirely — never the literal string "undefined" — when the message carries no traceparent header at all.*
+- `apps/gateway/src/presentation/problem-json.filter.spec.ts` — widened with a new `traceId (A6a, R58, design.md §4.4)` block (2 cases), same real-provider convention:
+  - *carries the REAL active span's traceId, extracted via the exact `trace.getActiveSpan()` formula design.md §4.4 names* — `filter.catch(...)` invoked inside `context.with(trace.setSpan(...), ...)`; the captured `console.error` line's `traceId` equals the span's own real `traceId`, alongside the pre-existing `correlationId` proof (A6b/A6d, untouched).
+  - *omits traceId entirely — never the literal string "undefined" — when no span is active.*
+
+## Armed deletions — all three call sites touched, all watched fail, all restored
+
+1. **`saga-facts.controller.ts`'s `CONSOLE_LOGGER.error`** — reverted to the pre-A6a body (no `activeTraceId()` call, no `traceId` spread). Ran `saga-facts-log-trace-id.spec.ts`.
+   **Failing assertion (verbatim):**
+   ```
+   AssertionError: expected undefined to be '3a8c4b4b24964d6ca9e1cf6fd96952a8' // Object.is equality
+   ❯ src/presentation/saga-facts-log-trace-id.spec.ts:61:30
+       expect(logged.traceId).toBe(originTraceId);
+   ```
+   (The second case in the same file also failed, for a different, correct reason — `expect(errorSpy).toHaveBeenCalledTimes(1)` now saw `2`, an artifact of the FIRST case's own `console.error` spy scope; the meaningful failure is the first one, shown above.) Restored (`diff` confirmed byte-identical to the pre-deletion state); re-ran `saga-facts-log-trace-id.spec.ts` + `saga-facts.controller.spec.ts` + `saga-facts-trace-continuity.spec.ts` green (14/14).
+
+2. **`outbox-relay.ts`'s per-row `traceId` read** — reverted `claimed.forEach((row, index) => { const traceId = spans[index]?.spanContext().traceId; ... })` to the pre-A6a `claimed.forEach((row) => { ... })` with no `traceId` field at all. Ran `log-correlation.integration.spec.ts`.
+   **Failing assertion (verbatim):**
+   ```
+   AssertionError: expected false to be true // Object.is equality
+   ❯ src/infrastructure/observability/log-correlation.integration.spec.ts:157:60
+       expect(traceIds.every((id) => typeof id === 'string')).toBe(true);
+   ```
+   (The file's second test also failed afterward, but for an UNRELATED, expected reason: the first test's own assertion failure stopped it before reaching its final, real third `relay.runOnce()` call, leaving that test's outbox row stuck unpublished in the shared MySQL fixture for the rest of the suite's run — the second test's `batchSize: 10` relay then picked up BOTH the leftover row and its own, reporting `published: 2` instead of `1`. This is dirty shared-fixture state from an interrupted test run, not a second real bug; the first failure is the one that matters and is the one this deletion arms.) Restored (`diff` confirmed byte-identical); re-ran `log-correlation.integration.spec.ts` green (2/2, fresh fixtures).
+
+3. **`problem-json.filter.ts`'s `traceId` read** — reverted `const traceId = activeTraceId();` to `const traceId = undefined as string | undefined;`. Ran `problem-json.filter.spec.ts`.
+   **Failing assertion (verbatim):**
+   ```
+   AssertionError: expected undefined to be 'b448d89256893e18420d1141ab40337f' // Object.is equality
+   ❯ src/presentation/problem-json.filter.spec.ts:176:32
+       expect(logged.traceId).toBe(originTraceId);
+   ```
+   Restored (`diff` confirmed byte-identical); re-ran `problem-json.filter.spec.ts` green (12/12).
+
+## Self-verification
+
+- `pnpm quality` (root): **green** — lint clean, typecheck clean across all 10 workspace projects, unit tests green: `packages/shared-kernel` (69), `packages/contracts` (22), `apps/billing` (130), `apps/fulfillment` (75), `apps/gateway` (119, +2 from 117), `apps/notifications` (74), `apps/projector` (125), `apps/orders` (447, +2 from 445), `apps/seed` (119).
+- `apps/gateway`'s full `test:integration` suite (Testcontainers) re-run in full: **6 files, 35 tests, all green**, 62.35s.
+- `apps/orders`'s full `test:integration` suite (Testcontainers, real MySQL + Kafka + NATS) re-run in full after this pass's changes: **24 files, 72 tests, all green**, 532.92s (was 23/70 before this pass; +1 file/+2 tests, the new `log-correlation.integration.spec.ts`). The scattered `GroupCoordinator is not available` lines in the raw output are the same pre-existing, self-recovering single-node-KRaft-broker startup flake `kafka-test-fixture.ts`'s own header comment already documents (unchanged from every prior pass on this feature) — not a new failure mode, and every file still passed.
+- `./init.sh`: exits 0 (green across all 5 sections; 8 uncommitted changes reported as the expected `[WARN]`, not a failure).
+- Domain purity: no `domain/` file was touched this pass (`apps/orders/src/domain/*` untouched) — the existing ESLint `no-restricted-imports` rule, part of `pnpm lint`, still passed clean.
+- Bounded scope honoured: `apps/billing`, `apps/fulfillment`, `apps/seed` were not touched. `apps/projector`/`apps/notifications` were not touched either (design.md §4.4 names no confirmed JSON-shaped call site in either service, and neither was named in this pass's brief).
+
+## Traceability — requirements this pass closes
+
+| Req | Status after this pass |
+|---|---|
+| R58 | **DONE** (flipped from `TODO`) — A6a (traceId on all three of design.md §4.4's confirmed call sites) and A6c (the named integration test proving real trace-id equality across multiple log lines from one flow) both land this pass, on top of A5's already-landed mechanism and the earlier pass's A6b/A6d correlationId fix. `specs/shared/test-matrix.md`'s R58 row updated with the full, honest account, including the scope decision above. |
+
+## Files touched, this A6 pass only
+
+**New:** `apps/orders/src/infrastructure/observability/log-correlation.integration.spec.ts`, `apps/orders/src/presentation/saga-facts-log-trace-id.spec.ts`.
+
+**Modified:** `apps/orders/src/infrastructure/observability/trace-context.ts` (+ `activeTraceId()`), `apps/gateway/src/infrastructure/observability/trace-context.ts` (+ `activeTraceId()`), `apps/gateway/src/presentation/problem-json.filter.ts` (+ `.spec.ts`), `apps/orders/src/presentation/saga-facts.controller.ts`, `apps/orders/src/infrastructure/outbox/outbox-relay.ts`.
+
+**Docs:** `specs/shared/test-matrix.md` (R58 row only, per this pass's own bounded scope — `specs/observability_reliability/tasks.md`'s A6a/A6c checkboxes were NOT ticked in this edit pass; see "What remains" below).
+
+## What remains
+
+- `specs/observability_reliability/tasks.md`'s A6a/A6c checkboxes are still unticked (`[ ]`) — this pass's brief scoped edits to `specs/shared/test-matrix.md` only implicitly (via "close-out: update test-matrix.md's R58 row"); `tasks.md` itself was not named as in-scope for editing and was left untouched to avoid overreaching the brief. The reviewer/leader should tick A6a/A6c there once this pass is accepted.
+- The scope decision above (three named call sites only, not the newer JSON-shaped loggers `SagaCommandDispatcher`/`fact-retry-dispatcher.ts`/etc. gained during A0/A1/A3/A4) means those OTHER loggers still do not carry `traceId`, even though several of them (`SagaCommandDispatcher`'s "command sent" info log especially) would strengthen R58's "every log line" guarantee further and would have given A6c's test a literal request→command→fact shape. Left undone deliberately, per the brief's own bounded-scope wording — a future pass's call, not this one's, per the same "report honestly rather than widen silently" discipline this feature has followed throughout.
+- A7 (metrics) and A8 (health checks) untouched, as instructed.
+
+---
+
+# R58 closeout + A7 pass — metrics (R59, OR5)
+
+**Scope for this pass, set by the leader: two ordered parts. Part 1 — close R58's remaining gap (the two named call sites, plus whatever else a full `apps/orders/src` grep surfaces). Part 2 — A7, metrics (R59/OR5), `apps/orders`/`apps/gateway`. A8 (health checks) explicitly out of scope, untouched.**
+
+**Status: both parts complete.** `pnpm quality` green. R58's row flipped from `PARTIAL` back to `DONE`, genuinely this time (full-repo grep performed, every remaining JSON-shaped call site either fixed or explicitly documented as lacking a correlation id). R59's row flipped from `TODO` to `DONE` — all five instruments realised and proven, two (`otc_outbox_lag_ms`, `otc_dlq_depth`) against real Testcontainers infrastructure per the binding "not merely a value was recorded" standard. Read both prior sections above before this one; nothing in them was redone.
+
+## Part 1 — R58 closeout
+
+### What the leader's own correction named, and what this pass found beyond it
+
+The brief named two files/three call sites: `fact-retry-dispatcher.ts`'s dead-letter log, and `saga-command-dispatcher.ts`'s "command sent"/"exhausted attempts, command parked" pair. All three fixed — `correlationId` (the envelope's own, for the dead-letter log; the order id, already used as the RPC `meta.correlationId`, for the dispatcher's pair) and `traceId` (`activeTraceId()`, omitted — never the literal string `"undefined"` — when no span is active) threaded into each `meta` object, the exact pattern `trace-context.ts`'s own doc comment on `activeTraceId()` prescribes.
+
+**The brief's own instruction — "do not assume these two files were the last two" — was correct to include.** A full `grep -rn "console\.log\|console\.error\|console\.warn" apps/orders/src` (excluding `.spec.ts` and the `CONSOLE_LOGGER` definition lines themselves) surfaced two MORE untouched JSON-shaped structured loggers, built in earlier passes on this same feature, sharing the identical `{ level, message, ...meta }` pattern:
+
+- `saga-command-sweeper.service.ts`'s per-row `'saga-command-sweeper: dispatch of a claimed row threw'` log — the row's own `orderId` was already in scope (already logged as `orderId`); fixed the same way (`correlationId: row.orderId.value`, `traceId` via `activeTraceId()`).
+- `saga-first-park-dead-letter-handler.ts`'s SO8-style `'saga-first-park-dead-letter-handler: no order row for orderId, fact not recorded'` residue log — same treatment, same reasoning.
+
+Two more call sites were found and deliberately left WITHOUT ids, each documented in its own code comment rather than silently skipped (the brief's own "if these dispatchers don't currently have access to a correlation id at all, that is itself worth reporting precisely" instruction, applied honestly in both directions):
+
+- `saga-command-sweeper.service.ts`'s `'saga-command-sweeper: claim cycle failed'` log — this catch block runs BEFORE any row is claimed; there is no single order/fact this failure is "about," genuinely, not as an oversight.
+- `application/sagas/order.sagas.ts`'s `resilient()` branch-threw log — RxJS's `catchError` handler receives only the thrown `Error`, not the source `IEvent` that produced it (already lost by the time `map`'s own throw propagates to `catchError`, which sits AFTER `merge` in the pipe). Fixing this for real would mean restructuring each `@Saga()` branch's own resubscription contract — a genuine behavioural change, not a threading exercise, and out of this closeout's own scope. Documented in the function's own header comment.
+
+Also re-confirmed (not a gap, pre-existing by design): `saga-facts.controller.ts`'s malformed-envelope log already carries `traceId` (A6a) but deliberately no `correlationId` — a malformed envelope "has no trustworthy `eventId`/`correlationId`" per that file's own, pre-existing comment. Process-lifecycle logs (`main.ts`'s startup banner, `migrate-cli.ts`'s CLI output, `test-support/di-metadata-probe.ts`) are not request/command/fact-scoped and are outside R58's guarantee on that basis — not JSON-shaped structured logs about a specific business event at all.
+
+### `fact-retry-dispatcher.ts` — a parity-guard consequence, not a silent widening
+
+`fact-retry-dispatcher.ts` is one of OI12's byte-identical canonical-pair files (copied verbatim, after its own banner, into `apps/projector`/`apps/notifications`). Adding `activeTraceId()` (imported from `../observability/trace-context.js`, a module ONLY `apps/orders` owns — A6's own pass deliberately stayed inside design.md §4.4's three named call sites, none in either other service) would have silently broken OI12's strict byte-identity check the moment `pnpm quality` ran. Rather than let the guard go vacuous or fail for an undiagnosed reason, `idempotent-consumer.parity.spec.ts` gained a documented, narrowly-scoped exception for this ONE file — the exact same shape `outbox-relay.parity.spec.ts`'s own `TRACE_DIVERGENT_FILES` already established for A5's tracing work: `orders` is excluded from the strict "must equal canonical" comparison for `fact-retry-dispatcher.ts` alone; `notifications`/`projector` must still be byte-identical to EACH OTHER (proving neither drifted independently); `orders`'s own copy must provably contain the trace-context import (a positive marker), not merely "be allowed to differ arbitrarily." A7 (below) widens this SAME exception rather than opening a second one, for the identical reason (a `Meter` bootstrap neither other service owns).
+
+### Tests
+
+- `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher-log-trace-id.spec.ts` (new) — exercises the REAL default `CONSOLE_LOGGER` (not a fake logger's `meta` object): the dead-letter log's `traceId` equals a real, `InMemorySpanExporter`-observed span's own `traceId` (32-hex-digit, never `"undefined"` when no span is active), and `correlationId` equals the envelope's own.
+- `apps/orders/src/infrastructure/saga/saga-command-dispatcher-log-trace-id.spec.ts` (new) — same standard, both the "command sent" and "exhausted attempts, command parked" lines, plus the no-active-span negative case for both.
+- `apps/orders/src/infrastructure/saga/saga-command-sweeper-log-trace-id.spec.ts` (new) — same standard for the per-row log. REAL timers, deliberately NOT `vi.useFakeTimers()`: `@sinonjs/fake-timers` stores and directly invokes callbacks rather than scheduling a genuine libuv timer, which does not preserve `AsyncLocalStorage` continuation the way a real `setTimeout` scheduled inside `context.with(...)` does — discovered while writing this file, recorded in its own header comment.
+- `apps/orders/src/infrastructure/saga/saga-first-park-dead-letter-handler-log-trace-id.spec.ts` (new) — same standard; no prior unit spec existed for this class at all (its behaviour was previously proven only end-to-end via `saga-command-dead-letter.integration.spec.ts`), so this file proves the ONE call site in isolation for the first time.
+
+### Armed deletions — four, one per fixed call site, each watched fail and restored
+
+1. **`fact-retry-dispatcher.ts`'s `correlationId`/`traceId` addition** — removed. Ran `fact-retry-dispatcher-log-trace-id.spec.ts`.
+   **Failing assertions (verbatim, both cases):**
+   ```
+   AssertionError: expected undefined to be '964cf7ddff6206fe5da7d869b1053627' // Object.is equality
+    ❯ src/infrastructure/messaging/fact-retry-dispatcher-log-trace-id.spec.ts:72:30
+        expect(logged.traceId).toBe(originTraceId);
+
+   AssertionError: expected "error" to be called 1 times, but got 2 times
+    ❯ src/infrastructure/messaging/fact-retry-dispatcher-log-trace-id.spec.ts:101:24
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+   ```
+   Restored; re-ran this file + `fact-retry-dispatcher.spec.ts` + `idempotent-consumer.parity.spec.ts` green (20/20).
+
+2. **`saga-command-dispatcher.ts`'s `correlationId`/`traceId` addition, both call sites** — removed. Ran `saga-command-dispatcher-log-trace-id.spec.ts`.
+   **Failing assertions (verbatim, both cases):**
+   ```
+   AssertionError: expected undefined to be '83cf16f6ddf48345e21591783a166227' // Object.is equality
+    ❯ src/infrastructure/saga/saga-command-dispatcher-log-trace-id.spec.ts:121:30
+        expect(logged.traceId).toBe(originTraceId);
+
+   AssertionError: expected undefined to be 'e18a4ae9e750ed7f909c292cac624db7' // Object.is equality
+    ❯ src/infrastructure/saga/saga-command-dispatcher-log-trace-id.spec.ts:156:30
+        expect(logged.traceId).toBe(originTraceId);
+   ```
+   Restored; re-ran this file + `saga-command-dispatcher.spec.ts` green (14/14).
+
+3. **`saga-command-sweeper.service.ts`'s per-row `correlationId`/`traceId` addition** — removed. Ran `saga-command-sweeper-log-trace-id.spec.ts`.
+   **Failing assertions (verbatim, both cases):**
+   ```
+   AssertionError: expected undefined to be '7f7241828719acfb2dd7c5ab666ae599' // Object.is equality
+    ❯ src/infrastructure/saga/saga-command-sweeper-log-trace-id.spec.ts:133:30
+        expect(logged.traceId).toBe(originTraceId);
+
+   AssertionError: expected undefined to be 'b41e26d5-8656-48b3-a478-550c6fa514e8' // Object.is equality
+    ❯ src/infrastructure/saga/saga-command-sweeper-log-trace-id.spec.ts:184:36
+        expect(logged.correlationId).toBe(claimed[0]!.orderId.value);
+   ```
+   Restored; re-ran this file + `saga-command-sweeper.spec.ts` green (8/8).
+
+4. **`saga-first-park-dead-letter-handler.ts`'s `correlationId`/`traceId` addition** — removed. Ran `saga-first-park-dead-letter-handler-log-trace-id.spec.ts`.
+   **Failing assertions (verbatim, both cases):**
+   ```
+   AssertionError: expected undefined to be '3a8b13feaa7d8c980c4241398680f641' // Object.is equality
+    ❯ src/infrastructure/saga/saga-first-park-dead-letter-handler-log-trace-id.spec.ts:108:32
+        expect(logged.traceId).toBe(originTraceId);
+
+   AssertionError: expected "error" to be called 1 times, but got 2 times
+    ❯ src/infrastructure/saga/saga-first-park-dead-letter-handler-log-trace-id.spec.ts:132:26
+        expect(errorSpy).toHaveBeenCalledTimes(1);
+   ```
+   Restored; re-ran this file green (2/2).
+
+### R58's true final state
+
+**DONE, genuinely.** Every JSON-shaped structured log call site in `apps/orders/src` (the row's own test-matrix scope) was enumerated by direct grep, not assumed complete from the two named files — six call sites now carry both ids where a correlation id is genuinely available; two are documented, honest exceptions (a batch-level failure with no single row, and an RxJS handler that has lost the source event by the time it runs); one pre-existing exception (the malformed-envelope log) was re-confirmed as by-design, not a gap; process-lifecycle logs are out of scope on their own terms. `specs/shared/test-matrix.md`'s R58 row updated in full, with the prior `PARTIAL` note kept (collapsed into a `<details>` block) for the record rather than deleted.
+
+## Part 2 — A7, metrics (R59, OR5)
+
+### Packages added (report for the eventual commit message)
+
+Added to `pnpm-workspace.yaml`'s catalog: `@opentelemetry/sdk-metrics` (`^2.10.0`, new — `MeterProvider`/`PeriodicExportingMetricReader` for production, `InMemoryMetricExporter` for every metrics test; peer-compatible with the already-pinned `api@1.9.1`, verified via `npm view` before pinning). `@opentelemetry/exporter-metrics-otlp-grpc` was already catalogued (provisioned, unused, in A5) — this pass is its first real consumer, added to `apps/orders`'s and `apps/gateway`'s own `package.json` dependencies alongside `@opentelemetry/sdk-metrics`.
+
+### What was built, per instrument
+
+- **`otc_request_latency_ms`** (Gateway only, histogram, per endpoint) — `apps/gateway/src/presentation/request-latency.interceptor.ts` (new), a global `NestInterceptor` (`APP_INTERCEPTOR`, alongside the existing `APP_GUARD`/`APP_FILTER`), not a middleware: the "per endpoint" label needs `ExecutionContext`'s controller/handler names (`OrdersController.create`, not a raw URL like `/orders/123`, which would mint one attribute-set PER ORDER ID — the exact cardinality mistake design.md's own wording exists to avoid). Records on BOTH the success and error paths (a slow failing request is exactly as latency-relevant as a slow successful one) — deliberately carries no `statusCode` attribute: at the point either callback fires, an error has not yet reached `ProblemJsonExceptionFilter` (interceptors wrap the handler, filters run after), so Express's `response.statusCode` would still read its pre-error default, a misleading attribute being worse than an absent one.
+- **`otc_fact_processing_latency_ms`** (per consumer, histogram) — `FactRetryDispatcher.dispatch`'s own entry-to-exit (design.md's own orientation names this method's "entry/exit"), recorded on BOTH the success return and the exhausted-retry/DLQ path (the WHOLE call, not only the happy path) — via the injected `Clock`, never a bare `Date.now()`, the same discipline every other timestamp in this method already follows. Lives in `fact-retry-dispatcher.ts`, the OI12 canonical file — see Part 1's own note on why this widens the SAME parity exception R58's closeout already opened, rather than a second one.
+- **`otc_saga_completion_ms`** (Orders only, histogram) — a new, narrow port (`application/ports/saga-metrics.port.ts`, `RecordsSagaMetrics`, the SAME "narrow, separately injected, no-op default" shape `HandlesFirstPark` (OR3) already established, so `SagaFactHandler`'s existing tests/call sites stay unaffected), wired as the 5th, optional `SagaFactHandler` constructor parameter. `SagaFactHandler.handle`'s private `recordSagaCompletionIfClosed` fires ONLY when a transition just moved the order to `'completed'`/`'cancelled'` — checked by reading `order.status` AFTER `step.apply`/`order.cancel` runs, which correctly and generically distinguishes "the fact that closed the saga" from every other saga-step fact without hardcoding which of the ten fact types is the closing one (every OTHER `advance`/`cancel` step lands on a DIFFERENT status by construction). The duration is `ctx.occurredAt.getTime() - order.orderDate.getTime()` — verified by reading `place-order.handler.ts` that `order.orderDate` and `order.placed.v1`'s own `occurredAt` are built from the IDENTICAL `clock.now()` value at placement time, so this is genuinely "measured from the real order.placed.v1 timestamp," not a coincidentally-close approximation. `OtelSagaMetrics` (new) is the real OTel adapter; wired into both `app.module.ts` and `test-support/saga-integration-harness.ts` (the harness's own construction now matches production wiring exactly, per this feature's established discipline).
+- **`otc_outbox_lag_ms`** (gauge) — `OutboxRelay.recordOutboxLag()` (new private method), a plain `SELECT occurred_at ... WHERE published_at IS NULL ORDER BY occurred_at ASC LIMIT 1` (no row lock needed for a gauge), run at the very top of `runOnce()`, BEFORE the claim — so it reports the age of the backlog ENTERING this cycle, not whatever remains after this cycle's own batch publishes. Uses `idx_outbox_published_occurred`, the index `outbox.schema.ts`'s own column comment already named as "kept for the outbox-lag metric feature 27 needs (R59)."
+- **`otc_dlq_depth`** (gauge, per topic) — a new, optional `DlqDepthPort` on `OutboxRelayDeps` (`fetchDepths(topics): Promise<ReadonlyMap<string, number>>`, defaults to recording nothing — every EXISTING `OutboxRelay` construction site, including every other write model's unmodified copy of this file, keeps working unchanged), polled from INSIDE `OutboxRelay.runOnce()` itself — literally "the same interval as the outbox relay," since this method IS that interval's own cycle body. `KafkaDlqDepth` (new, `apps/orders/src/infrastructure/observability/kafka-dlq-depth.ts`) is the real adapter: a genuine kafkajs `admin.fetchTopicOffsets(topic)` call per topic, `Σ(high − low)` across partitions (the actual current message count, accounting for retention eviction — not merely "everything ever produced"); a topic that does not exist yet is caught and reported as depth 0, never thrown. Wired in `app.module.ts` with a real, once-connected Kafka admin client and the three fact topics' own `.dlq` siblings (`ORDERS_FACTS_TOPIC`/`FULFILLMENT_FACTS_TOPIC`/`BILLING_FACTS_TOPIC` + `.dlq`) — topic NAMES are never hardcoded inside `outbox-relay.ts` itself (OB1's own "names no service" check), so both the port and the topic list are supplied by the caller.
+
+### Production wiring
+
+`apps/orders`'s and `apps/gateway`'s own `tracing.ts` (A5's existing OTel SDK bootstrap) widened with `NodeSDK`'s `metricReaders: [new PeriodicExportingMetricReader({ exporter: new OTLPMetricExporter({ url: OTEL_EXPORTER_OTLP_ENDPOINT }) })]` — the SAME `otel-collector:4317` endpoint the trace exporter already targets, no per-service `/metrics` HTTP endpoint (design.md §4.5's own stated choice). `metrics.ts` (new, per service) exposes `meter()` (`metrics.getMeter('<service>')`, resolved fresh via the global API proxy on every call) and one function per instrument — the SAME "global proxy, resolved fresh per call" convention `trace-context.ts`'s `tracer()` already established, which is exactly what lets each test's own freshly-registered `MeterProvider` observe recordings without any production code needing to know a new provider was swapped in.
+
+### A structural fix found while writing the integration test: `findMetric`'s search order
+
+`apps/orders/src/test-support/metrics-test-provider.ts` (new) — the shared harness every metrics spec in this feature uses (`InMemoryMetricExporter` + `MeterProvider`, registered/torn down exactly like every trace test's `NodeTracerProvider`). Its first version's `findMetric` helper searched collected batches FORWARD, returning the FIRST match — correct for a single `collect()` call, but genuinely wrong for a test that calls `collect()` MORE THAN ONCE to observe a gauge's value CHANGE between two poll cycles: `InMemoryMetricExporter` only ACCUMULATES across `export()` calls (never replaces or merges), so `getMetrics()` after a second `collect()` returns BOTH batches, and a forward search kept returning the FIRST (stale) reading. Found for real, not anticipated: `metrics-exposure.integration.spec.ts`'s own `otc_outbox_lag_ms` test failed with `expected 300000 to be 0` (the SECOND collection still reported the first cycle's value) and its `otc_dlq_depth` test failed the opposite way (`expected 0 to be 3`, same root cause). Fixed by searching batches from the MOST RECENT backward; re-ran, both assertions passed for the right reason. `apps/gateway/src/test-support/metrics-test-provider.ts` (new, this service's own copy — not OI12/OB1-guarded, plain test-support code) carries the same fix from the start, backported once the orders-side bug was found.
+
+### Tests, mapped to R59
+
+| Level | Test file › case |
+|---|---|
+| Unit, fact-processing latency | `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher-metrics.spec.ts` — exact recorded duration (fake `Clock`), on BOTH the success path and the exhausted-retry/DLQ path, attributed by `consumer`. |
+| Unit, saga-completion business logic | `apps/orders/src/application/saga-fact-handler-saga-completion-metrics.spec.ts` — 5 cases against a fake `RecordsSagaMetrics`: the closing `credit.released.v1` fires exactly once with the EXACT duration from `order.orderDate` to that fact's own `occurredAt`; a direct cancel (`stock.rejected.v1`) does the same; the compensation-completing cancel (`stock.released.v1`) fires exactly once, NOT twice, even though `credit.rejected.v1` already advanced the saga once in the same run; a non-closing advance (`order.placed.v1` itself) records nothing; an ignored (precondition-unmet) fact records nothing. |
+| Unit, saga-completion OTel wiring | `apps/orders/src/infrastructure/observability/otel-saga-metrics.spec.ts` — `OtelSagaMetrics.recordSagaCompletion` genuinely reaches `otc_saga_completion_ms` with the exact value and `outcome` attribute, against a real `InMemoryMetricExporter`. |
+| Unit, DLQ-depth arithmetic | `apps/orders/src/infrastructure/observability/kafka-dlq-depth.spec.ts` — `Σ(high − low)` across partitions; depth 0 (never throws) for a topic that does not exist; independent per-topic resolution (one missing topic does not suppress another's real depth). |
+| Unit, request latency | `apps/gateway/src/presentation/request-latency.interceptor.spec.ts` — exact recorded duration (fake `Clock`), attributed by `endpoint`/`method`, on BOTH a successful response and an error response. |
+| Integration (Testcontainers: real MySQL + Kafka), lightweight fixture | `apps/orders/src/infrastructure/observability/metrics-exposure.integration.spec.ts`, first `describe` block — *otc_outbox_lag_ms tracks a genuinely aged unpublished row, then drops once the backlog is actually caught up* (ages a REAL row 5 real minutes via a `FakeClock`, asserts the gauge reads EXACTLY `300000`, then EXACTLY `0` after the SAME row publishes); *otc_dlq_depth reflects the REAL broker-reported message count of a .dlq topic, tracking a genuine increase, not a locally-tracked tally* (0 on a freshly created topic; EXACTLY `3` after 3 real messages are produced to it via a raw kafkajs producer, queried back via a real admin client). |
+| Integration (Testcontainers: real MySQL + Kafka + NATS), full saga harness | Same file, second `describe` block — *otc_fact_processing_latency_ms is recorded by the REAL FactRetryDispatcher processing a REAL, Kafka-delivered order.placed.v1 fact* (waits for a real `saga_commands` row — genuine, terminal evidence of consumption, never a bare sleep); *otc_saga_completion_ms is measured end to end from the REAL order.placed.v1 timestamp to the REAL closing fact's own timestamp — an exact, independently-verifiable value* (`stock.rejected.v1` published with an explicit, controlled `occurredAt` +47 minutes from the order's own `orderDate`; asserts the histogram's `sum` equals EXACTLY `closingOccurredAt.getTime() - order.orderDate.getTime()`, computed independently from the same real, stored values — not merely "a positive number was recorded"). |
+
+### Armed deletion — A7c
+
+Removed `outboxLagGauge().record(lagMs)` from `OutboxRelay.recordOutboxLag()` (kept the computation, discarded only the recording call — `void lagMs;`). Ran the integration file's `otc_outbox_lag_ms` case.
+
+**Failing assertion (verbatim):**
+```
+AssertionError: expected undefined to be defined
+ ❯ src/infrastructure/observability/metrics-exposure.integration.spec.ts:101:27
+     expect(firstMetric).toBeDefined();
+```
+(The instrument was never observed at all — not merely reporting a wrong value — confirming the removed call is what makes the instrument exist in the exported data in the first place.) Restored; `diff` confirmed byte-identical to the pre-deletion state; re-ran the full integration file green (4/4).
+
+### Self-verification
+
+- `pnpm quality` (root): **green**, exit 0 — lint clean (0 problems after fixing 3 unused-import warnings surfaced while first running it: `DEFAULT_FACT_RETRY_POLICY` in `fact-retry-dispatcher-log-trace-id.spec.ts`, `afterEach`/`MetricsTestHarness` in `metrics-exposure.integration.spec.ts`, and a genuine type-only import bug in the Gateway's own interceptor spec — `CallHandler`/`ExecutionContext` are `@nestjs/common` types, not `rxjs` exports, caught by `apps/gateway`'s own `pnpm typecheck`), typecheck clean across all 10 workspace projects, unit tests green: `packages/shared-kernel` (69), `packages/contracts` (22), `apps/billing` (130), `apps/fulfillment` (75), `apps/gateway` (121, +2 from 119), `apps/notifications` (74), `apps/projector` (125), `apps/orders` (468, +21 from 447), `apps/seed` (119).
+- `apps/orders`'s FULL `test:integration` suite (Testcontainers, real MySQL + Kafka + NATS) re-run in full: **25 files, 76 tests, all green**, 727.6s (was 24/72 before this pass; +1 file/+4 tests, the new `metrics-exposure.integration.spec.ts`). The scattered `GroupCoordinator is not available`/`coordinator is loading` lines are the SAME pre-existing, self-recovering single-node-KRaft-broker startup flake `kafka-test-fixture.ts`'s own header comment already documents (unchanged from every prior pass on this feature) — not a new failure mode, every file still passed.
+- `apps/gateway`'s FULL `test:integration` suite (Testcontainers) re-run in full: **6 files, 35 tests, all green**, 75.0s.
+- `apps/orders` coverage (`vitest run --coverage`): domain layer **98.52% statements / 91.25% branches** (gate ≥80%, unchanged — no domain-layer file was touched this pass); overall **91.68% statements / 83.13% branches** (gate ≥60%) — both clear.
+- `./init.sh`: exits 0 (green across all 5 sections; 45 uncommitted changes reported as the expected `[WARN]`, not a failure).
+- Domain purity: no `domain/` file was touched this pass (`apps/orders/src/domain/*` untouched) — the existing ESLint `no-restricted-imports` rule, part of `pnpm lint`, still passed clean.
+- Bounded scope honoured: `apps/billing`, `apps/fulfillment`, `apps/seed` were not touched. `apps/projector`/`apps/notifications` were not touched either (R58's grep swept `apps/orders/src` only, per the row's own named test's service; A7's `otc_fact_processing_latency_ms` widened the ALREADY-existing OI12 exception for `fact-retry-dispatcher.ts` rather than copying new code into either service). A8 (health checks) was not attempted, as instructed.
+
+## Traceability — requirements this pass closes
+
+| Req | Status after this pass |
+|---|---|
+| R58 | **DONE**, genuinely — flipped from the leader's own `PARTIAL` correction. Every JSON-shaped structured log call site in `apps/orders/src` accounted for: six sites now carry both ids, two documented exceptions (batch-level failure, RxJS handler with no source event), one pre-existing by-design exception re-confirmed, process-lifecycle logs out of scope on their own terms. Four armed deletions, each watched fail with its verbatim assertion and restored. |
+| R59 | **DONE** — all five instruments realised and named exactly per design.md §4.5, with the two gauges (`otc_outbox_lag_ms`, `otc_dlq_depth`) proven against REAL Testcontainers infrastructure (a genuinely aged row; a real broker's own partition-offset count), not synthesised values, satisfying the binding "not merely a value was recorded" standard explicitly named for this pass. One armed deletion, watched fail and restored. |
+| OR5 | Same mechanism as R59 — this feature's own local id. |
+
+## Files touched, this pass only
+
+**Part 1 (R58 closeout) — new:** `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher-log-trace-id.spec.ts`, `apps/orders/src/infrastructure/saga/saga-command-dispatcher-log-trace-id.spec.ts`, `apps/orders/src/infrastructure/saga/saga-command-sweeper-log-trace-id.spec.ts`, `apps/orders/src/infrastructure/saga/saga-first-park-dead-letter-handler-log-trace-id.spec.ts`.
+
+**Part 1 — modified:** `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts`, `apps/orders/src/infrastructure/messaging/idempotent-consumer.parity.spec.ts`, `apps/orders/src/infrastructure/saga/saga-command-dispatcher.ts`, `apps/orders/src/infrastructure/saga/saga-command-sweeper.service.ts`, `apps/orders/src/infrastructure/saga/saga-first-park-dead-letter-handler.ts`, `apps/orders/src/application/sagas/order.sagas.ts` (comment only, no behavioural change).
+
+**Part 2 (A7) — new:** `apps/orders/src/infrastructure/observability/{metrics,otel-saga-metrics,otel-saga-metrics.spec,kafka-dlq-depth,kafka-dlq-depth.spec,metrics-exposure.integration.spec}.ts`, `apps/orders/src/application/ports/saga-metrics.port.ts`, `apps/orders/src/application/saga-fact-handler-saga-completion-metrics.spec.ts`, `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher-metrics.spec.ts`, `apps/orders/src/test-support/metrics-test-provider.ts`, `apps/gateway/src/infrastructure/observability/metrics.ts`, `apps/gateway/src/presentation/{request-latency.interceptor,request-latency.interceptor.spec}.ts`, `apps/gateway/src/test-support/metrics-test-provider.ts`.
+
+**Part 2 — modified:** `pnpm-workspace.yaml`, `apps/orders/package.json`, `apps/gateway/package.json`, `apps/orders/src/infrastructure/observability/tracing.ts`, `apps/gateway/src/infrastructure/observability/tracing.ts`, `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts` (shared with Part 1's own edit — the metrics import/recording calls), `apps/orders/src/infrastructure/messaging/idempotent-consumer.parity.spec.ts` (widened the SAME exception further), `apps/orders/src/application/saga-fact-handler.ts`, `apps/orders/src/infrastructure/outbox/outbox-relay.ts`, `apps/orders/src/infrastructure/outbox/outbox-relay.parity.spec.ts`, `apps/orders/src/app.module.ts`, `apps/orders/src/test-support/saga-integration-harness.ts`, `apps/gateway/src/app.module.ts`.
+
+**Docs:** `specs/shared/test-matrix.md` (R58, R59 rows), `specs/observability_reliability/tasks.md` (A7a/A7b/A7c ticked).
+
+## For the reviewer
+
+- `feature_list.json` was **not** touched (status stays `spec_ready`; the reviewer moves it — unchanged across every pass on this feature).
+- Every armed deletion in both parts (4 for R58's closeout, 1 for A7c) is a genuine production-code removal, watched fail with the exact assertion shown, then restored and re-verified byte-identical/green — none was a text-matching guard.
+- The `findMetric` search-order bug (Part 2) is the one genuine, non-anticipated defect this pass found in its OWN new test-support code, not in production code — recorded in full above since it is exactly the kind of "a guard nobody watched fail is not evidence" lesson this project keeps re-learning, this time in a harness rather than a feature.
+- A8 (health checks, R60/OR6) remains entirely untouched, as instructed — no work started on it this pass.
+
+---
+
+# A8 pass — liveness and readiness (R60, OR6)
+
+**Status: DONE. All five remaining services (Orders, Fulfillment, Billing, Notifications, Projector) have a genuine `HealthController` (`GET /health/live` always 200, `GET /health/ready` 503 on any failing check), a per-service check set matching design.md §4.6's table exactly, a unit suite per service, and a real-Testcontainers `health-probes.integration.spec.ts` per service that pauses/unpauses a real dependency container via the Docker API. `pnpm quality` green. Five armed deletions, one per service, all watched fail with a verbatim, real assertion and restored.** The Gateway's own pre-existing `HealthCheck`/`READINESS_CHECKS`/`HealthController` (design.md §4.6's reference shape) was read but not touched, per the brief's hard rule.
+
+## Read before starting, per the brief
+
+`progress/impl_observability_reliability.md`'s five prior sections above (none redone), `specs/observability_reliability/tasks.md`'s A8 group, `specs/observability_reliability/design.md` §4.6, `specs/shared/requirements.md`'s R60, `specs/shared/test-matrix.md`'s R60 row, and `apps/gateway/src/infrastructure/health/*.ts` + `apps/gateway/src/infrastructure/health/health-checks.spec.ts` (the reference shape).
+
+## A real gap discovered in the brief's own guessed test location
+
+`test-matrix.md`'s R60 row (written at spec time, before any implementation) said the named test is `apps/gateway/src/health-probes.integration.spec.ts`, "driving the OTHER services' health endpoints from there." This is not mechanically possible in this monorepo: every service is a separate NestJS project with its own `package.json`/`tsconfig.json`, and nothing in this codebase imports one app's `src/` from another app's `src/` (only `packages/shared-kernel`/`packages/contracts` cross that boundary). The proof therefore had to live **per service**, in that service's own directory, exercising that service's own real production `HealthController`/check classes against that service's own real Testcontainers fixtures — the same "test lives beside the service it proves" convention every other integration spec in this repo already follows (`saga-command-dead-letter.integration.spec.ts`, `notification-dead-letter.integration.spec.ts`, etc.). `test-matrix.md`'s R60 row is updated to say this plainly rather than silently deviate from the guessed path.
+
+## What was built, per service
+
+Each service gained (all new files unless noted):
+
+- `application/ports/health-check.port.ts` — copy of the Gateway's own `HealthCheckResult`/`HealthCheck`/`READINESS_CHECKS` shape, header comment adapted to that service's own design.md §4.6 row.
+- `presentation/health.controller.ts` — copy of the Gateway's own `HealthController` (`GET /health/live` always 200; `GET /health/ready` aggregates every injected check, `503` if any is down). **Not** the Gateway's generated `HealthResponse` type (that comes from `specs/shared/openapi.yaml`, which documents only the Gateway's own REST surface — these five services' HTTP ports exist purely for health/metrics, per each `main.ts`'s own comment) — a small local `HealthResponse` interface instead. **Not** `express`'s own `Response` type either (only the Gateway carries an `@types/express`/`@nestjs/platform-express`-with-types dependency) — a minimal structural `ResponseLike { status(code): void }` instead, since `status()` is the only method `ready()` needs.
+- `presentation/health.controller.spec.ts` (A8b) — readiness aggregation logic with faked `HealthCheck`s: live() always up; ready() reports up with no status override when every check is up; ready() reports down + sets 503 naming the failing check when any single check is down. Check names adapted per service (no `rpcTransport` for Notifications/Projector; no `factStream` for Fulfillment/Billing; `readModel` not `writeModel` for Projector).
+- `infrastructure/health/*.ts` + `infrastructure/health/health-checks.spec.ts` (A8b) — the concrete check classes, per service:
+
+| Service | Checks (design.md §4.6) | Files |
+|---|---|---|
+| Orders | write model (MySQL), fact stream (Kafka), RPC transport (NATS) | `mysql-health-check.ts`, `kafka-health-check.ts`, `nats-health-check.ts` |
+| Fulfillment | write model (MySQL), RPC transport (NATS) | `mysql-health-check.ts`, `nats-health-check.ts` |
+| Billing | write model (MySQL), RPC transport (NATS) | `mysql-health-check.ts`, `nats-health-check.ts` |
+| Notifications | fact stream (Kafka), own store (MySQL) | `mysql-health-check.ts`, `kafka-health-check.ts` |
+| Projector | fact stream (Kafka), own store (MongoDB) | `mongo-health-check.ts` (byte-copy of the Gateway's own), `kafka-health-check.ts` |
+
+Every check's `up`/`down` is a **real, bounded, never-cached** reachability probe, issued fresh on every `check()` call:
+
+- **MySQL** (`MysqlHealthCheck`, `name = 'writeModel'`): `pool.query({ sql: 'SELECT 1', timeout: 2000 })` against the SAME `mysql2` `Pool` the app's own Drizzle connection is built from (see "A necessary refactor" below) — mysql2's own `timeout` option destroys the connection and rejects if the query has not completed within the window, bounding both connection-acquisition and execution, not just execution.
+- **Kafka** (`KafkaHealthCheck`, `name = 'factStream'`): `admin.connect()` + `admin.describeCluster()` against a **dedicated**, short-timeout, no-retry `Kafka` client (`createKafkaHealthClient`, `connectionTimeout: 2000`, `requestTimeout: 2000`, `retry: { retries: 0 }`) — deliberately **not** the long-lived outbox/DLQ producer each service already owns, whose kafkajs default retry/backoff (5 attempts, exponential, ~9s cumulative) would make a single "down" observation take many seconds. A fresh `Admin` per check, connected and disconnected every time.
+- **NATS** (`NatsHealthCheck`, `name = 'rpcTransport'`): copy of the Gateway's own shape (`isClosed()` short-circuit, then `connection.rtt()`), **widened with an explicit `withTimeout(2000ms)` wrapper the Gateway's own copy does not have** — see "A real bug found" below.
+- **MongoDB** (`MongoHealthCheck`, `name = 'readModel'`): byte-identical copy of the Gateway's own (`db.command({ ping: 1 })`) — the MongoDB driver's own default `serverSelectionTimeoutMS` (30s) already bounds it adequately; observed directly in the Projector's own A8c run (readiness took ~30s to observe the paused container, well inside the 45s poll budget).
+
+## A necessary, non-obvious refactor: exposing the raw `Pool`
+
+Every write-model service's `app.module.ts` previously built its Drizzle `OrdersDb`/`FulfillmentDb`/`BillingDb`/`NotificationsDb` in ONE `useFactory` step (`createXDb(createXPool(config))`), with the raw `mysql2` `Pool` never exposed as its own provider. `MysqlHealthCheck` needs the raw `Pool` (for its per-query `timeout` option, which Drizzle's own `.execute(sql...)` does not expose). Each of the four write-model services' `app.module.ts` now splits this into two chained providers — a new, module-local `<SERVICE>_DB_POOL` token providing the `Pool`, then the existing `<SERVICE>_DB` token built `inject: [<SERVICE>_DB_POOL]` — so the health check probes the **exact same pool** the app's own repositories read/write through, not a second one. Behaviourally a no-op (still exactly one pool instance per process); confirmed by every pre-existing unit/integration spec in each of the four services staying green.
+
+## A real architectural gap found and closed: Fulfillment/Billing had no outbound NATS connection at all
+
+Design.md §4.6 requires an RPC-transport check for Fulfillment and Billing, but neither service opens an outbound `NatsConnection` anywhere — each only registers an **inbound** NATS microservice transport (`app.connectMicroservice`, for the `fulfillment.stock.*`/`billing.credit.*` responders) via `@nestjs/microservices`, whose underlying connection object Nest does not expose through the DI container. Both `app.module.ts`s gained a new `NATS_CONNECTION` provider (`createNatsConnection(loadNatsConfig())`, opened **solely** for `NatsHealthCheck`'s probe — stated explicitly in both files' own new comments) plus the matching `NatsConnectionCloser` `OnApplicationShutdown` hook, exported the same "plain symbol, not a domain port" way `apps/orders`/`apps/projector` already export theirs. New `apps/fulfillment/src/infrastructure/messaging/nats-client.ts` and `apps/billing/src/infrastructure/messaging/nats-client.ts` (both "COPY OF" `apps/orders`'s own `nats-client.ts`) — neither service owned this file before, since neither previously had any reason to open an outbound NATS connection.
+
+**Consequence found and fixed, not anticipated:** both services' own pre-existing integration harnesses (`apps/fulfillment/src/test-support/stock-integration-harness.ts`, `apps/billing/src/test-support/billing-integration-harness.ts`) boot the REAL `AppModule` via `Test.createTestingModule({ imports: [AppModule] })`, and Nest eagerly resolves every provider — including a `Promise`-returning `useFactory` like the new `NATS_CONNECTION` — during `moduleRef.compile()`. Left un-overridden, that factory read `loadNatsConfig()`'s env-var default (`nats://localhost:4222`, no credentials) rather than the harness's own disposable `@testcontainers/nats` fixture (which requires `--user test --pass test`, `NatsContainer`'s own hard-coded default). On THIS machine, that connection attempt **silently succeeded anyway** — the ambient, long-running dev `docker-compose.infra.yml` stack's own unauthenticated `otc-nats` container happens to be listening on that exact host port — masking the defect entirely; `pnpm --filter @otc/fulfillment test:integration` passed green on the first try. This is precisely the "ambient environment coupling" these harnesses' whole design (point env vars at disposable fixtures, never the host's own services) exists to prevent: on a machine without that dev stack running, `moduleRef.compile()` would instead hang/retry against a closed port indefinitely. Fixed in both harnesses: `testNatsConnection` is now created (`natsFixture.connect()`) **before** `moduleRef.compile()` and the module is built with `.overrideProvider(NATS_CONNECTION).useValue(testNatsConnection)` — the same real, correctly-authenticated connection is now shared between the app's own health probe and the harness's own direct `requestBare` calls, and each harness's `teardown()` no longer double-closes it (the app's own `NatsConnectionCloser` shutdown hook now owns that). Confirmed: `apps/fulfillment`'s full `test:integration` suite (13 files, 46 tests) and `apps/billing`'s full `test:integration` suite (19 files, 66 tests; one pre-existing, documented resource-contention flake in `payment-register.integration.spec.ts` reproduced ONLY under the full-suite's concurrent-container load, confirmed to pass in isolation, unrelated to this pass — see `apps/orders/src/infrastructure/outbox/test-support/kafka-test-fixture.ts`'s own header comment for the exact documented flake class) both re-run green after the fix.
+
+## A real bug found in the reference shape's own NATS check (not fixed in the Gateway, per the bounded-scope instruction)
+
+`NatsHealthCheck.check()`'s `connection.rtt()` call has **no built-in timeout** in nats.js core — against a `docker pause`d-but-still-TCP-connected broker (pausing freezes the container's userspace, not the OS's already-established TCP socket, so `isClosed()` stays `false` and the outbound PING write succeeds; no PONG ever arrives), `rtt()` simply never settles. nats.js's own stale-connection detection (`pingInterval`/`maxPingOut`) defaults to minutes, far too slow for a readiness probe. Found live while writing `apps/fulfillment/src/health-probes.integration.spec.ts` — without a bound, the readiness endpoint hung past the test's own 45s poll window instead of reporting `503`. Every one of this pass's THREE `NatsHealthCheck` copies (Orders, Fulfillment, Billing) wraps `rtt()` in an explicit `withTimeout(2000ms)` helper the Gateway's own reference copy does not have. **The Gateway's own file was read but deliberately NOT touched**, per the brief's hard rule ("already correct, reference-only, do not touch") — this gap is recorded here, in `test-matrix.md`'s R60 row, and flagged plainly in this section for a future pass to close, rather than silently worked around by touching a file outside this pass's bounded scope.
+
+## A real environment quirk found and worked around: "two Docker daemons"
+
+`README.md` already documents this ("two-daemon quirk"): Testcontainers reads `DOCKER_HOST`, falling back to `/var/run/docker.sock`; the `docker` CLI instead follows its active **context** (`desktop-linux` on this machine, a different socket). A bare `docker pause <id>` against a Testcontainers-started container therefore failed with `Error response from daemon: No such container` on the very first attempt — the container was real, just invisible to that socket. Every one of this pass's five `health-probes.integration.spec.ts` files pins `DOCKER_HOST` explicitly (`process.env.DOCKER_HOST ?? 'unix:///var/run/docker.sock'`) before shelling out to `docker pause`/`docker unpause`, exactly the fix `README.md` itself already prescribes.
+
+## Approach: a small, hand-built Nest module per spec, not the full `AppModule`
+
+Each `health-probes.integration.spec.ts` composes the REAL production `HealthController` and the REAL production check classes directly (`Test.createTestingModule({ controllers: [HealthController], providers: [{ provide: READINESS_CHECKS, useValue: checks }] })`), where `checks` is built from real, already-connected fixture handles (`mysqlFixture.pool`, a real `Kafka` health client pointed at the fixture's brokers, a real fixture `NatsConnection`, a real fixture `Db`) — the SAME "compose the real production classes directly, skip the rest of `AppModule`'s unrelated DI graph" shape `orders-acceptance.integration.spec.ts`/`saga-integration-harness.ts` already establish in this codebase. Booting the FULL `AppModule` was deliberately avoided: it would also eagerly connect `DLQ_DEPTH_PORT`'s admin client and start `OutboxRelayService`'s background poll loop at `app.init()` time (Orders) — real behaviour with no bearing on the readiness mechanism itself, and only additional failure surface for a test about something else.
+
+## Tests, mapped to R60
+
+| Service | Test file | Dependency paused |
+|---|---|---|
+| Orders | `apps/orders/src/health-probes.integration.spec.ts` (Testcontainers: mysql:8.4.11 + apache/kafka:4.3.1 + nats:2.14.5-alpine) | MySQL (write model) |
+| Fulfillment | `apps/fulfillment/src/health-probes.integration.spec.ts` (Testcontainers: mysql:8.4.11 + nats:2.14.5-alpine) | NATS (RPC transport) |
+| Billing | `apps/billing/src/health-probes.integration.spec.ts` (Testcontainers: mysql:8.4.11 + nats:2.14.5-alpine) | MySQL (write model) |
+| Notifications | `apps/notifications/src/health-probes.integration.spec.ts` (Testcontainers: mysql:8.4.11 + apache/kafka:4.3.1) | Kafka (fact stream) |
+| Projector | `apps/projector/src/health-probes.integration.spec.ts` (Testcontainers: mongo:8.3.8 + apache/kafka:4.3.1) | MongoDB (own store) |
+
+Each file carries two cases: *reports ready (200, every check up) when every dependency is reachable*, and *pausing the REAL `<dependency>` container makes readiness report 503/down for `<check>` ONLY, while liveness stays 200/up throughout, and readiness recovers once the container is unpaused* — asserting, in order: liveness is 200 **before** the pause; the container is paused via a genuine `docker pause` (Docker CLI, pinned to the same socket Testcontainers itself resolved to); readiness is polled (never a bare sleep — a real poll-until-condition loop, 500ms interval, 45s budget) until it observes `503` + `status: 'down'` + the specific failing check's own `status: 'down'`; the OTHER check(s) on that same response are asserted to still read `up` (proving the aggregation is genuinely per-check, not a blanket failure); liveness is re-checked and asserted `200`/`{ status: 'up' }` **while readiness is still down** (both halves of R60's own claim proven, not just the readiness-fails half); the container is unpaused (in a `finally`, so a failed assertion never leaves a container stuck paused); readiness is polled again until it recovers to `200`/`up`.
+
+## Armed deletions — A8d, one per service, all five run
+
+Each: the paused-dependency's own check's `check()` method was made to unconditionally `return { status: 'up' };` as its first line (the real probe code left in place below it, now unreachable) — the exact same shape every prior pass on this feature has used for its own armed deletions. The corresponding service's own A8c "pausing..." case was run in isolation, watched fail, then the file was restored and re-run green.
+
+**1. Orders — `mysql-health-check.ts`:**
+```
+Error: readiness observes the paused write model: condition not met within 45000ms
+ ❯ waitFor src/health-probes.integration.spec.ts:64:9
+ ❯ src/health-probes.integration.spec.ts:125:9
+```
+Restored; re-ran green (2/2).
+
+**2. Fulfillment — `nats-health-check.ts`:**
+```
+Error: readiness observes the paused RPC transport: condition not met within 45000ms
+ ❯ waitFor src/health-probes.integration.spec.ts:56:9
+ ❯ src/health-probes.integration.spec.ts:107:9
+```
+Restored; re-ran green (2/2).
+
+**3. Billing — `mysql-health-check.ts`:**
+```
+Error: readiness observes the paused write model: condition not met within 45000ms
+ ❯ waitFor src/health-probes.integration.spec.ts:49:9
+ ❯ src/health-probes.integration.spec.ts:100:9
+```
+Restored; re-ran green (2/2).
+
+**4. Notifications — `kafka-health-check.ts`:**
+```
+Error: readiness observes the paused fact stream: condition not met within 45000ms
+ ❯ waitFor src/health-probes.integration.spec.ts:51:9
+ ❯ src/health-probes.integration.spec.ts:102:9
+```
+Restored; re-ran green (2/2).
+
+**5. Projector — `mongo-health-check.ts`:**
+```
+Error: readiness observes the paused store: condition not met within 45000ms
+ ❯ waitFor src/health-probes.integration.spec.ts:49:9
+ ❯ src/health-probes.integration.spec.ts:102:9
+```
+Restored; re-ran green (2/2).
+
+In every case the `waitFor` timeout firing is itself the proof: with the check hard-coded `up`, `/health/ready` kept answering `200`/`up` throughout the real container pause, so the poll loop that is supposed to observe `503`/`down` never did, and the test correctly failed by timing out rather than by a false assertion — exactly the shape "the guard fails when the emission/behaviour is deleted" requires.
+
+## Packages added (report for the eventual commit message)
+
+`supertest` + `@types/supertest` (both already in `pnpm-workspace.yaml`'s catalog from the Gateway's own use) added as devDependencies to `apps/orders`, `apps/fulfillment`, `apps/billing`, `apps/notifications`, `apps/projector` — none of the five had ever needed an HTTP test client before this pass (every prior integration spec in these services drives NATS/Kafka directly, never `GET`/`POST` over HTTP).
+
+## Self-verification
+
+- `pnpm quality` (root: `lint && typecheck && test`) — **green**, exit 0 at every stage:
+  - `pnpm run lint`: clean (`eslint .`, no output, exit 0).
+  - `pnpm run typecheck`: clean across all 10 workspace projects (`packages/shared-kernel`, `packages/contracts`, `apps/web`, `apps/billing`, `apps/fulfillment`, `apps/gateway`, `apps/notifications`, `apps/orders`, `apps/projector`, `apps/seed`).
+  - `pnpm run test`: green — `packages/shared-kernel` 69, `packages/contracts` 22, `apps/gateway` 121, `apps/notifications` 82, `apps/fulfillment` 83, `apps/billing` 138, `apps/projector` 133, `apps/orders` 479, `apps/seed` 119. (Total unit tests across the monorepo: 1246.)
+- Every new/touched integration spec re-run individually, green: all five `health-probes.integration.spec.ts` files (2/2 each, including the real container-pause case).
+- Full `test:integration` suite re-run per touched service, all green: `apps/orders` (re-run of the full suite, all files including `health-probes.integration.spec.ts`), `apps/fulfillment` (13 files, 46 tests), `apps/billing` (19 files, 66 tests — one documented, pre-existing resource-contention flake under full-suite concurrent-container load, confirmed to pass in isolation, unrelated to this pass's changes), `apps/notifications` (3 files, 5 tests), `apps/projector` (12 files, 31 tests).
+- Domain purity: no `domain/` file in any of the five services was touched this pass — the existing ESLint `no-restricted-imports` rule (part of `pnpm lint`, which passed clean) still enforces it. None of this pass's new code lives under `domain/` in any service (it is all `application/ports`, `infrastructure/health`, `presentation`).
+- `./init.sh`: not re-run at the very end of this specific append (the environment/compose/database sections are unaffected by this pass's changes — application code + specs only); the repository-state section already reports uncommitted changes mid-session, as expected.
+
+## Traceability — requirements this pass closes
+
+| Req | Status after this pass |
+|---|---|
+| R60 | **DONE** — flipped from `TODO`. Realised per service (five `HealthController`s + five real-Testcontainers `health-probes.integration.spec.ts` files), `specs/shared/test-matrix.md`'s row updated with the full account, including the guessed-test-location correction. |
+| OR6 | Same as R60 — this feature's own local id for the same mechanism. |
+
+## Files touched, this A8 pass only
+
+**New, per service (×5 — Orders, Fulfillment, Billing, Notifications, Projector):** `application/ports/health-check.port.ts`, `presentation/health.controller.ts` (+ `.spec.ts`), `infrastructure/health/*.ts` (+ `health-checks.spec.ts`), `health-probes.integration.spec.ts`.
+
+**New, Fulfillment/Billing only:** `infrastructure/messaging/nats-client.ts` (neither service owned an outbound NATS client file before this pass).
+
+**Modified:** `apps/{orders,fulfillment,billing,notifications,projector}/src/app.module.ts` (READINESS_CHECKS wiring; `<SERVICE>_DB_POOL` split for the four write-model services; new `NATS_CONNECTION`/`NatsConnectionCloser` for Fulfillment/Billing); `apps/{orders,fulfillment,billing,notifications,projector}/package.json` (+`supertest`/`@types/supertest`); `apps/fulfillment/src/test-support/stock-integration-harness.ts` and `apps/billing/src/test-support/billing-integration-harness.ts` (`NATS_CONNECTION` override fix, see above).
+
+**Docs:** `specs/observability_reliability/tasks.md` (A8 group ticked), `specs/shared/test-matrix.md` (R60 row only).
+
+## Final honest sweep of `specs/observability_reliability/tasks.md` — every `[ ]` still unchecked, across all six passes on this feature
+
+Grepped directly (`grep -n "^\- \[ \]"`) rather than trusted from memory. Two groups remain unchecked, for two different, genuine reasons — neither ticked by this pass, per the brief's own instruction not to silently tick anything outside A8:
+
+1. **A5a–A5e (trace propagation, R57/OR4) — genuinely, honestly incomplete, correctly left unticked.** The "A5 pass" section above (this same file) explicitly bounded its own scope to Gateway/Orders/Projector/Notifications, excluding Fulfillment/Billing entirely. `specs/shared/test-matrix.md`'s own R57 row still reads `TODO (feature 27) — realised as...`, not `DONE` — confirming the mechanism is real but partial (NATS RPC extraction in Fulfillment's/Billing's own `@MessagePattern` responders, and Kafka outbox tracing for either service's own outbox, are both named "Not done" in that pass's own "What remains" table). This is accurate, not a missed tick.
+2. **A6a, A6c (structured logging `traceId`, R58) — appear "NOT done" in `tasks.md`'s own prose, but are actually genuinely COMPLETE.** The "A6 pass — structured logging traceId (R58)" section above (this same file) reports both done, with real tests (`log-correlation.integration.spec.ts`, `saga-facts-log-trace-id.spec.ts`, `problem-json.filter.spec.ts`'s new block) and three armed, watched-fail-and-restored deletions — and `specs/shared/test-matrix.md`'s own R58 row independently confirms `DONE`. That pass's own "What remains" note says explicitly: *"`specs/observability_reliability/tasks.md`'s A6a/A6c checkboxes are still unticked (`[ ]`) — this pass's brief scoped edits to `specs/shared/test-matrix.md` only implicitly... `tasks.md` itself was not named as in-scope for editing and was left untouched to avoid overreaching the brief. The reviewer/leader should tick A6a/A6c there once this pass is accepted."* This pass's own brief scoped edits to A8 only, so — per the SAME discipline — these two boxes are named here rather than silently flipped. **A6a/A6c's own `[ ]` lines in `tasks.md` (lines 61 and 63) are a genuine stale-tick defect, not a real gap in the work.**
+
+No other `[ ]` remains anywhere in `tasks.md` — every other task group (A0–A4, A6b/A6d, A7, A9, A10a–e, Group B's B1–B8) is already ticked `[x]`.

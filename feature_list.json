@@ -371,7 +371,7 @@
       "phase": 14,
       "title": "Terminus health checks, OTel propagation through NATS and Kafka, structured logging, retry + DLQ, and orders.create requestId idempotent replay",
       "sdd": true,
-      "status": "spec_ready",
+      "status": "done",
       "acceptance": [
         "one trace spans HTTP -> NATS -> MySQL -> Kafka -> consumers",
         "correlationId in every log line",

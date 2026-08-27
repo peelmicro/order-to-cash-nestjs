@@ -10,8 +10,19 @@
 // imported as `main.ts`'s literal first line: the instrumentation must
 // patch `http` before `@nestjs/platform-express`/`http` itself is
 // `require`d anywhere else in the module graph, or the patch never takes.
+//
+// A7 (metrics, R59/OR5, design.md §4.5) widens this SAME bootstrap to also
+// register a real, globally-visible `MeterProvider` — `metrics.ts`'s
+// `meter()` resolves against whatever `MeterProvider` is currently
+// registered, the SAME "global proxy" convention `tracer()` already
+// establishes above for spans. No per-service `/metrics` HTTP endpoint
+// (design.md §4.5's own stated choice) — `PeriodicExportingMetricReader`
+// pushes over OTLP to the same `otel-collector:4317` the trace exporter
+// already targets.
 import { NodeSDK } from '@opentelemetry/sdk-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-grpc';
+import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { HttpInstrumentation } from '@opentelemetry/instrumentation-http';
 
 const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4317';
@@ -19,6 +30,9 @@ const OTEL_EXPORTER_OTLP_ENDPOINT = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? '
 export const tracingSdk = new NodeSDK({
   serviceName: 'gateway',
   traceExporter: new OTLPTraceExporter({ url: OTEL_EXPORTER_OTLP_ENDPOINT }),
+  metricReader: new PeriodicExportingMetricReader({
+    exporter: new OTLPMetricExporter({ url: OTEL_EXPORTER_OTLP_ENDPOINT }),
+  }),
   instrumentations: [new HttpInstrumentation()],
 });
 

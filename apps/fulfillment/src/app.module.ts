@@ -1,14 +1,20 @@
 // design.md §6, §12: `CqrsModule.forRoot()`, the five `@nestjs/cqrs`
 // handlers as CLASS providers (decorator discovery needs the class),
 // everything else wired with `useFactory` + `inject: [...]` — the same
-// shape `apps/orders/src/app.module.ts` established. `NatsConnection` is
-// NOT needed here: Fulfillment makes no outbound RPC call (design.md §5.1)
-// — its only outbound integration is the outbox relay's Kafka producer.
-import { Module } from '@nestjs/common';
+// shape `apps/orders/src/app.module.ts` established. Fulfillment makes no
+// outbound RPC CALL of its own (design.md §5.1) — its only outbound
+// integration is the outbox relay's Kafka producer — but R60/OR6 (A8) still
+// needs a live outbound `NatsConnection` to probe the RPC transport's
+// reachability, so one is opened below SOLELY for that readiness check.
+import { Module, type OnApplicationShutdown } from '@nestjs/common';
 import { CqrsModule } from '@nestjs/cqrs';
+import type { NatsConnection } from 'nats';
+import type { Pool } from 'mysql2/promise';
 import { AppController } from './presentation/app.controller';
+import { HealthController } from './presentation/health.controller';
 import { StockController } from './presentation/stock.controller';
 import { DespatchController } from './presentation/despatch.controller';
+import { READINESS_CHECKS, type HealthCheck } from './application/ports/health-check.port';
 import { CLOCK, type Clock } from './application/ports/clock.port';
 import {
   DESPATCH_NUMBER_ALLOCATOR,
@@ -52,19 +58,60 @@ import {
   OUTBOX_RELAY_CONFIG,
   OutboxRelayService,
 } from './infrastructure/outbox/outbox-relay.service';
+import { createNatsConnection } from './infrastructure/messaging/nats-client';
+import { loadNatsConfig } from './infrastructure/messaging/nats.config';
+import { MysqlHealthCheck } from './infrastructure/health/mysql-health-check';
+import { NatsHealthCheck } from './infrastructure/health/nats-health-check';
 
+/** Module-local token — the raw `mysql2` `Pool` `FULFILLMENT_DB` is built from. Exposed as its own provider (A8) so `MysqlHealthCheck` (R60/OR6) can probe the SAME pool the app actually reads/writes through, without opening a second one. Not exported: nothing outside this module needs it. */
+const FULFILLMENT_DB_POOL = Symbol('FulfillmentDbPool');
 /** Module-local token — the shared `FulfillmentDb` connection every persistence provider below is built from. Not exported: nothing outside this module needs to depend on the raw Drizzle handle. */
 const FULFILLMENT_DB = Symbol('FulfillmentDb');
+/** The ONE outbound `NatsConnection` this service opens — SOLELY for `NatsHealthCheck`'s R60/OR6 probe (see the header comment above: Fulfillment issues no RPC call of its own). Exported (A8) — same "a plain symbol, not a domain port" shape `apps/orders/src/app.module.ts`/`apps/projector/src/app.module.ts` already export their own `NATS_CONNECTION` for: `health-probes.integration.spec.ts` overrides this with a real, pre-authenticated fixture connection (the `@testcontainers/nats` image requires `--user test --pass test`, which a bare `NATS_URL` env var cannot carry). */
+export const NATS_CONNECTION = Symbol('NatsConnection');
+
+/** Closes the outbound NATS connection on shutdown — the same lifecycle discipline `apps/orders/src/app.module.ts`'s own `NatsConnectionCloser` gives its RPC connection. */
+class NatsConnectionCloser implements OnApplicationShutdown {
+  constructor(private readonly connection: NatsConnection) {}
+
+  async onApplicationShutdown(): Promise<void> {
+    await this.connection.close();
+  }
+}
 
 @Module({
   imports: [CqrsModule.forRoot()],
-  controllers: [AppController, StockController, DespatchController],
+  controllers: [AppController, StockController, DespatchController, HealthController],
   providers: [
     { provide: CLOCK, useClass: SystemClock },
     {
+      provide: FULFILLMENT_DB_POOL,
+      useFactory: (): Pool => createFulfillmentPool(loadFulfillmentDbConfig()),
+    },
+    {
       provide: FULFILLMENT_DB,
-      useFactory: (): FulfillmentDb =>
-        createFulfillmentDb(createFulfillmentPool(loadFulfillmentDbConfig())),
+      useFactory: (pool: Pool): FulfillmentDb => createFulfillmentDb(pool),
+      inject: [FULFILLMENT_DB_POOL],
+    },
+    {
+      provide: NATS_CONNECTION,
+      useFactory: (): Promise<NatsConnection> => createNatsConnection(loadNatsConfig()),
+    },
+    {
+      provide: NatsConnectionCloser,
+      useFactory: (connection: NatsConnection): NatsConnectionCloser => new NatsConnectionCloser(connection),
+      inject: [NATS_CONNECTION],
+    },
+    {
+      // R60/OR6 (A8) — design.md §4.6's Fulfillment row: write model
+      // (MySQL), RPC transport (NATS). No fact-stream check (this service
+      // consumes no fact in this feature).
+      provide: READINESS_CHECKS,
+      useFactory: (pool: Pool, connection: NatsConnection): readonly HealthCheck[] => [
+        new MysqlHealthCheck(pool),
+        new NatsHealthCheck(connection),
+      ],
+      inject: [FULFILLMENT_DB_POOL, NATS_CONNECTION],
     },
     {
       provide: UNIT_OF_WORK,

@@ -14,7 +14,8 @@
 import { type MiddlewareConsumer, Module, type NestModule, type OnApplicationShutdown } from '@nestjs/common';
 import { CorrelationIdMiddleware } from './presentation/correlation-id.middleware';
 import { CqrsModule } from '@nestjs/cqrs';
-import { APP_FILTER, APP_GUARD } from '@nestjs/core';
+import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { RequestLatencyInterceptor } from './presentation/request-latency.interceptor';
 import type { Collection, Db } from 'mongodb';
 import type { NatsConnection } from 'nats';
 import { GetCurrentUserHandler } from './application/queries/get-current-user.query';
@@ -187,6 +188,8 @@ class StreamSignalCloser implements OnApplicationShutdown {
     },
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_FILTER, useClass: ProblemJsonExceptionFilter },
+    // A7 (metrics, R59/OR5) — `otc_request_latency_ms`, every route.
+    { provide: APP_INTERCEPTOR, useClass: RequestLatencyInterceptor },
     LoginHandler,
     GetCurrentUserHandler,
     PlaceOrderHandler,

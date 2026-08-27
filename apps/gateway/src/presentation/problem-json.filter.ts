@@ -10,6 +10,7 @@ import type { Response } from 'express';
 import { UniqueId } from '@otc/shared-kernel';
 import type { RequestWithCorrelationId } from './correlation-id.middleware';
 import { classifyRpcError } from '../domain/problem/rpc-error-mapping';
+import { activeTraceId } from '../infrastructure/observability/trace-context';
 import { CLOCK, type Clock } from '../application/ports/clock.port';
 import { InvalidCredentialsError } from '../application/commands/login.command';
 import { UnknownOperatorError } from '../application/queries/get-current-user.query';
@@ -45,9 +46,15 @@ export class ProblemJsonExceptionFilter implements ExceptionFilter {
     // this middleware never ran for.
     const correlationId = request?.correlationId ?? UniqueId.generate().value;
     const occurredAt = this.clock.now().toISOString();
+    // A6a (R58, design.md §4.4) — alongside `correlationId`, read from the
+    // ACTIVE span (`@opentelemetry/instrumentation-http` already leaves a
+    // real one active for the request's whole lifetime). `undefined` when
+    // genuinely none is active (no OTel provider registered) — omitted
+    // entirely rather than logged as the literal string `"undefined"`.
+    const traceId = activeTraceId();
 
     console.error(
-      JSON.stringify({ level: 'error', correlationId, code, status, message: detail, occurredAt }),
+      JSON.stringify({ level: 'error', correlationId, ...(traceId ? { traceId } : {}), code, status, message: detail, occurredAt }),
     );
 
     const body: ProblemBody = {

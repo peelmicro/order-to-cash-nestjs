@@ -8,6 +8,7 @@
 // `CommandBus` (design.md §5.5: "the sweeper is the durability backstop
 // and must not depend on the in-memory layer").
 import { Inject, Injectable, Optional, type OnApplicationBootstrap, type OnApplicationShutdown } from '@nestjs/common';
+import { activeTraceId } from '../observability/trace-context.js';
 import { CLOCK, type Clock } from '../../application/ports/clock.port';
 import { SAGA_COMMAND_STORE, type SagaCommandStore } from '../../application/ports/saga-command-store.port';
 import { UNIT_OF_WORK, type UnitOfWork } from '../../application/ports/unit-of-work.port';
@@ -93,14 +94,22 @@ export class SagaCommandSweeperService implements OnApplicationBootstrap, OnAppl
         try {
           await this.dispatcher.dispatch(row.orderId, row.command);
         } catch (error) {
+          const rowTraceId = activeTraceId();
           this.logger.error('saga-command-sweeper: dispatch of a claimed row threw', {
             orderId: row.orderId.value,
+            correlationId: row.orderId.value,
+            ...(rowTraceId ? { traceId: rowTraceId } : {}),
             command: row.command,
             error: error instanceof Error ? error.message : String(error),
           });
         }
       }
     } catch (error) {
+      // No single row is known yet at this point (the claim itself
+      // failed) — genuinely no correlationId to attach, unlike the
+      // per-row catch above. R58 closeout (design.md §4.4): documented,
+      // not silently omitted — a batch-level infrastructure failure has
+      // no one order/fact it is "about."
       this.logger.error('saga-command-sweeper: claim cycle failed', {
         error: error instanceof Error ? error.message : String(error),
       });
