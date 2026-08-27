@@ -19,12 +19,15 @@
 import { Controller, Inject } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { Ctx, MessagePattern, Payload, Transport, type NatsContext } from '@nestjs/microservices';
+import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import type { MsgHdrs } from 'nats';
 import type { InvoiceIssueReplyPayload, InvoiceListReplyPayload, PaymentRegisterReplyPayload, RpcError } from '@otc/contracts';
 import { IssueInvoiceCommand } from '../application/commands/invoice.commands';
 import { RegisterPaymentCommand } from '../application/commands/payment.commands';
 import { ListInvoicesQuery } from '../application/queries/invoice.queries';
+import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
 import { InvoiceIssueRequestDto, InvoiceListRequestDto } from './dto/invoice.dto';
 import { PaymentRegisterRequestDto } from './dto/payment.dto';
 import { missingHeadersRpcError, parseRpcMeta } from './rpc-meta';
@@ -48,8 +51,19 @@ export class InvoiceController {
     @Inject(CommandBus) private readonly commands: CommandBus,
   ) {}
 
+  // `@Ctx()` + `extractNatsTraceContext`/`otelContext.with(...)` (A5b, R57,
+  // mirrors `orders-create.controller.ts`'s own pattern) on EVERY handler
+  // below, including `list` (which reads no `x-correlation-id`/
+  // `x-request-id` headers): extraction is a no-op when the caller sent no
+  // `traceparent` header, so wrapping it costs nothing on a call that
+  // carries none.
   @MessagePattern(INVOICE_ISSUE_SUBJECT, Transport.NATS)
   async issue(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<InvoiceIssueReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleIssue(payload, ctx));
+  }
+
+  private async handleIssue(payload: unknown, ctx: NatsContext): Promise<InvoiceIssueReplyPayload | RpcError> {
     const dto = plainToInstance(InvoiceIssueRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -70,9 +84,13 @@ export class InvoiceController {
     }
   }
 
-  /** `list` reads no headers, exactly as `credit.list` does not. */
   @MessagePattern(INVOICE_LIST_SUBJECT, Transport.NATS)
-  async list(@Payload() payload: unknown): Promise<InvoiceListReplyPayload | RpcError> {
+  async list(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<InvoiceListReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleList(payload));
+  }
+
+  private async handleList(payload: unknown): Promise<InvoiceListReplyPayload | RpcError> {
     const dto = plainToInstance(InvoiceListRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -93,6 +111,11 @@ export class InvoiceController {
    */
   @MessagePattern(PAYMENT_REGISTER_SUBJECT, Transport.NATS)
   async registerPayment(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<PaymentRegisterReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleRegisterPayment(payload, ctx));
+  }
+
+  private async handleRegisterPayment(payload: unknown, ctx: NatsContext): Promise<PaymentRegisterReplyPayload | RpcError> {
     const dto = plainToInstance(PaymentRegisterRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {

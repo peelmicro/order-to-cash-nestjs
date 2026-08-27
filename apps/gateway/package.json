@@ -45,6 +45,7 @@
     "@opentelemetry/sdk-trace-base": "catalog:",
     "@opentelemetry/sdk-trace-node": "catalog:",
     "@testcontainers/mongodb": "catalog:",
+    "@testcontainers/mysql": "catalog:",
     "@testcontainers/nats": "catalog:",
     "@types/express": "catalog:",
     "@types/jsonwebtoken": "catalog:",

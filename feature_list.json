@@ -389,13 +389,15 @@
       "phase": 15,
       "title": "End-to-end saga verification before any frontend work",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "happy path reaches completed",
         ".99 order compensates visibly",
         "redelivery causes no corruption",
-        "a poisoned message reaches the DLQ"
-      ]
+        "a poisoned message reaches the DLQ",
+        "R56's composed-stack trace observation: one trace id spans the inbound request, every command, every write-model transaction and every fact publication/consumption for one order, across the real running services"
+      ],
+      "notes": "Widened by the leader, 2026-08-26: specs/shared/test-matrix.md's R56 row explicitly ratifies this feature as the owner of the composed-stack trace observation (\"the mechanism is proven at feature 27 via R57; the composed-stack observation is saga_e2e_verification's\"), which was not reflected in this feature's own acceptance list. Two disclosed gaps from feature 27 are prerequisites for that observation and should be closed here: apps/gateway/src/infrastructure/health/nats-health-check.ts still lacks the timeout wrapper its three siblings have (trivial, one line); apps/fulfillment and apps/billing's own @MessagePattern responders do not yet extract inbound trace context (specs/observability_reliability/tasks.md's honestly-unticked A5a-A5e), so a trace currently breaks at those two hops and a genuine composed-stack observation cannot be made until they extract."
     },
     {
       "id": 29,

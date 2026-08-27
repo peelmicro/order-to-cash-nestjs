@@ -100,8 +100,12 @@ export class OutboxRelay {
           'content-type': 'application/json',
         };
         // traceparent only if the stored/ambient context supplies one
-        // (design.md §3.3) — this feature writes trace_parent NULL, so the
-        // header is omitted until feature 27 populates the column.
+        // (design.md §3.3) — forwarded verbatim, a raw copy of the row's
+        // own `trace_parent` (no manual "publish" span here, unlike
+        // apps/orders' own relay). `outbox-recorder.ts` now populates this
+        // column from the active OTel context (saga_e2e_verification, Pass
+        // 1, A5c) instead of always writing NULL; the header is simply
+        // omitted for a row with no active trace at write time.
         if (row.traceParent) {
           headers.traceparent = row.traceParent;
         }

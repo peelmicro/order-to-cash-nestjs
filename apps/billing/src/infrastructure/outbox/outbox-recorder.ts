@@ -8,6 +8,7 @@ import type { DomainEventEnvelope } from '@otc/shared-kernel';
 import { UniqueId } from '@otc/shared-kernel';
 import type { Clock } from '../../application/ports/clock.port';
 import type { TransactionContext } from '../../application/ports/unit-of-work.port';
+import { activeTraceParent } from '../observability/trace-context';
 import { asDrizzleTx } from '../persistence/drizzle-unit-of-work';
 import { outbox } from '../persistence/schema';
 
@@ -28,6 +29,18 @@ export class OutboxRecorder {
 
     const db = asDrizzleTx(tx);
     const createdAt = this.clock.now();
+    // A5c (design.md §4.3, R57) — captured ONCE per call, from the active
+    // OTel trace context of the command handler that produced these
+    // events (extracted-and-continued upstream by the `@MessagePattern`
+    // responder that triggered this write, `trace-context.ts`'s
+    // `extractNatsTraceContext`) — `null` if no trace context is active (a
+    // caller that never extracted one, or a test that never registered a
+    // `TracerProvider`). Previously always `null` here (a pre-existing gap
+    // this pass closes, `outbox-relay.ts`'s own "until feature 27
+    // populates the column" comment); `outbox-relay.ts` itself already
+    // forwards a non-null `row.traceParent` verbatim as the outbound Kafka
+    // `traceparent` header and needs no change.
+    const traceParent = activeTraceParent();
 
     await db.insert(outbox).values(
       events.map((event) => ({
@@ -41,7 +54,7 @@ export class OutboxRecorder {
         occurredAt: event.occurredAt,
         publishedAt: null,
         createdAt,
-        traceParent: null,
+        traceParent,
       })),
     );
   }

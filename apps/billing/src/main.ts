@@ -1,3 +1,7 @@
+// A5a (observability_reliability design.md §4.3/§6): OTel bootstrap FIRST,
+// before every other import (mirrors the `reflect-metadata`-first
+// convention below) — see that file's own header comment for why.
+import './infrastructure/observability/tracing';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { Transport, type MicroserviceOptions } from '@nestjs/microservices';

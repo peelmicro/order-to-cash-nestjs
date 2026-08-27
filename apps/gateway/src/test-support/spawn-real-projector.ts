@@ -32,36 +32,23 @@
 // the identical "env-var driven, single source of truth" contract every
 // service in this repo's own test harnesses rely on. No file under
 // `apps/projector` is patched; its `src/` is read only by ITS OWN `tsc`.
+//
+// Pass 1's own Part 3 (saga_e2e_verification) generalized this file's
+// build-then-spawn discipline into `spawn-real-service.ts` — a function
+// any test can call for ANY named service, not only the projector. This
+// file is now a thin, projector-specific WRAPPER over that generic
+// function: same exported `spawnRealProjector`/`RealProjectorOptions`/
+// `RealProjectorProcess` shape, so `stream-projector-e2e.integration.spec.ts`
+// (feature 26, group E), its only caller, needed no change. The projector
+// needs its own wrapper rather than a bare `spawnRealService` call at the
+// call site because its readiness signal is NOT a stdout log line (like
+// every other service's `[service] listening on port ...`) — `ServerKafka`
+// never logs a line for "consumer group joined" — so this wrapper supplies
+// the `'custom'` readiness strategy (`waitForConsumerGroupReady`) the
+// generic function's `ServiceReadiness` union exists to support.
 import { randomUUID } from 'node:crypto';
-import { type ChildProcessByStdio, spawn, spawnSync } from 'node:child_process';
-import { createServer } from 'node:net';
-import path from 'node:path';
-import type { Readable } from 'node:stream';
 import { waitForConsumerGroupReady } from './kafka-test-fixture';
-
-const PROJECTOR_DIR = path.resolve(__dirname, '../../../projector');
-const TSC_BIN = path.join(PROJECTOR_DIR, 'node_modules', '.bin', 'tsc');
-const PROJECTOR_MAIN = path.join(PROJECTOR_DIR, 'dist', 'main.js');
-
-/**
- * Builds `apps/projector` with its own `tsc`, exactly as `pnpm --filter
- * @otc/projector build` (and, transitively, `tsc-watch --onSuccess`) does —
- * so `spawnRealProjector` starts the same `dist/main.js` production runs.
- * Throws with the captured compiler output if the build fails, rather than
- * spawning a stale or absent `dist/main.js`.
- */
-function buildProjector(): void {
-  const result = spawnSync(TSC_BIN, ['-p', 'tsconfig.build.json'], {
-    cwd: PROJECTOR_DIR,
-    encoding: 'utf8',
-  });
-  if (result.status !== 0) {
-    throw new Error(
-      `spawnRealProjector: building apps/projector (tsc -p tsconfig.build.json) failed with exit code ${result.status}.\n` +
-        `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-    );
-  }
-}
+import { getFreePort, spawnRealService } from './spawn-real-service';
 
 export interface RealProjectorOptions {
   readonly mongoHost: string;
@@ -76,23 +63,6 @@ export interface RealProjectorProcess {
   stop(): Promise<void>;
 }
 
-/** A free TCP port on the loopback interface, for the projector's own (unused by this test) HTTP health listener — picked fresh per boot so parallel/sequential runs never collide on the repo's default `3006`. */
-async function getFreePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      if (address === null || typeof address === 'string') {
-        reject(new Error('getFreePort: no address assigned'));
-        return;
-      }
-      const { port } = address;
-      server.close((closeError) => (closeError ? reject(closeError) : resolve(port)));
-    });
-  });
-}
-
 /**
  * Spawns the real projector, waits until its Kafka consumer group is
  * `Stable` with a joined member (`ServerKafka` appends `-server` to the
@@ -100,16 +70,14 @@ async function getFreePort(): Promise<number> {
  * `test-support/projector-app-test-harness.ts` records for the in-process
  * boot) — never a fixed `sleep`. Captured stdout/stderr are surfaced in the
  * rejection/failure message if the process exits before becoming ready, so a
- * broken boot is diagnosable rather than a bare timeout.
+ * broken boot is diagnosable rather than a bare timeout. Delegates the
+ * actual build-then-spawn work to `spawnRealService` (Pass 1, Part 3).
  */
 export async function spawnRealProjector(options: RealProjectorOptions): Promise<RealProjectorProcess> {
-  buildProjector();
-
   const groupId = `gateway-e2e-projector-${randomUUID().slice(0, 8)}`;
   const port = await getFreePort();
 
   const env: NodeJS.ProcessEnv = {
-    ...process.env,
     MONGO_HOST: options.mongoHost,
     MONGO_HOST_PORT: String(options.mongoPort),
     MONGO_DB_READMODEL: options.mongoDatabase,
@@ -120,53 +88,14 @@ export async function spawnRealProjector(options: RealProjectorOptions): Promise
     NATS_URL: options.natsUrl,
   };
 
-  const child: ChildProcessByStdio<null, Readable, Readable> = spawn(process.execPath, [PROJECTOR_MAIN], {
-    cwd: PROJECTOR_DIR,
+  const process_ = await spawnRealService({
+    serviceName: 'projector',
     env,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    readiness: { type: 'custom', check: () => waitForConsumerGroupReady(options.kafkaBrokers, `${groupId}-server`, 90_000, 300) },
   });
-
-  const output: string[] = [];
-  child.stdout.on('data', (chunk: Buffer) => output.push(chunk.toString('utf8')));
-  child.stderr.on('data', (chunk: Buffer) => output.push(chunk.toString('utf8')));
-
-  let exited = false;
-  let exitInfo = '';
-  child.once('exit', (code, signal) => {
-    exited = true;
-    exitInfo = `exit code=${code} signal=${signal}`;
-  });
-
-  try {
-    await Promise.race([
-      waitForConsumerGroupReady(options.kafkaBrokers, `${groupId}-server`, 90_000, 300),
-      new Promise((_resolve, reject) => {
-        const check = setInterval(() => {
-          if (exited) {
-            clearInterval(check);
-            reject(new Error(`spawnRealProjector: process exited before becoming ready (${exitInfo}). Output:\n${output.join('')}`));
-          }
-        }, 200);
-      }),
-    ]);
-  } catch (error) {
-    child.kill('SIGKILL');
-    throw error instanceof Error
-      ? new Error(`${error.message}\nOutput so far:\n${output.join('')}`)
-      : error;
-  }
 
   return {
     groupId,
-    async stop(): Promise<void> {
-      if (exited) return;
-      await new Promise<void>((resolve) => {
-        child.once('exit', () => resolve());
-        child.kill('SIGTERM');
-        setTimeout(() => {
-          if (!exited) child.kill('SIGKILL');
-        }, 5_000);
-      });
-    },
+    stop: process_.stop,
   };
 }

@@ -10,11 +10,14 @@
 import { Controller, Inject } from '@nestjs/common';
 import { CommandBus } from '@nestjs/cqrs';
 import { Ctx, MessagePattern, Payload, Transport, type NatsContext } from '@nestjs/microservices';
+import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import type { MsgHdrs } from 'nats';
 import { UniqueId } from '@otc/shared-kernel';
 import type { DespatchCreateReplyPayload, RpcError } from '@otc/contracts';
 import { CreateDespatchCommand } from '../application/commands/despatch.commands';
+import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
 import { DespatchCreateRequestDto } from './dto/despatch.dto';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
 
@@ -56,11 +59,18 @@ function missingHeadersRpcError(): RpcError {
 export class DespatchController {
   constructor(@Inject(CommandBus) private readonly commands: CommandBus) {}
 
+  // `@Ctx()` + `extractNatsTraceContext`/`otelContext.with(...)` (A5b, R57,
+  // mirrors `orders-create.controller.ts`'s own pattern).
   @MessagePattern(DESPATCH_CREATE_SUBJECT, Transport.NATS)
   async create(
     @Payload() payload: unknown,
     @Ctx() ctx: NatsContext,
   ): Promise<DespatchCreateReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleCreate(payload, ctx));
+  }
+
+  private async handleCreate(payload: unknown, ctx: NatsContext): Promise<DespatchCreateReplyPayload | RpcError> {
     const dto = plainToInstance(DespatchCreateRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {

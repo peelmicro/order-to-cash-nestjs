@@ -8,11 +8,14 @@
 import { Controller, Inject } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { Ctx, MessagePattern, Payload, Transport, type NatsContext } from '@nestjs/microservices';
+import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import type { MsgHdrs } from 'nats';
 import type { CreditHoldReplyPayload, CreditListReplyPayload, RpcError } from '@otc/contracts';
 import { HoldCreditCommand } from '../application/commands/credit.commands';
 import { ListCreditQuery } from '../application/queries/credit.queries';
+import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
 import { CreditHoldRequestDto, CreditListRequestDto } from './dto/credit.dto';
 import { missingHeadersRpcError, parseRpcMeta } from './rpc-meta';
 import { toRpcError, validationRpcError } from './rpc-error-mapper';
@@ -27,8 +30,19 @@ export class CreditController {
     @Inject(CommandBus) private readonly commands: CommandBus,
   ) {}
 
+  // `@Ctx()` + `extractNatsTraceContext`/`otelContext.with(...)` (A5b, R57,
+  // mirrors `orders-create.controller.ts`'s own pattern) on BOTH handlers,
+  // not only `hold` (which already reads `x-correlation-id`/`x-request-id`
+  // via `parseRpcMeta`): extraction is a no-op when the caller sent no
+  // `traceparent` header, so wrapping `list` costs nothing on a call that
+  // carries none.
   @MessagePattern(CREDIT_HOLD_SUBJECT, Transport.NATS)
   async hold(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<CreditHoldReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleHold(payload, ctx));
+  }
+
+  private async handleHold(payload: unknown, ctx: NatsContext): Promise<CreditHoldReplyPayload | RpcError> {
     const dto = plainToInstance(CreditHoldRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -50,7 +64,12 @@ export class CreditController {
   }
 
   @MessagePattern(CREDIT_LIST_SUBJECT, Transport.NATS)
-  async list(@Payload() payload: unknown): Promise<CreditListReplyPayload | RpcError> {
+  async list(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<CreditListReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleList(payload));
+  }
+
+  private async handleList(payload: unknown): Promise<CreditListReplyPayload | RpcError> {
     const dto = plainToInstance(CreditListRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {

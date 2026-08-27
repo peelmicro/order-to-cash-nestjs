@@ -114,7 +114,7 @@ describe('StockController — validation and error mapping, never throws', () =>
     const { queries, commands, queryExecute } = buses();
     const controller = new StockController(queries, commands);
 
-    const result = await controller.check({ companyCode: 'COM-0001', lines: [] });
+    const result = await controller.check({ companyCode: 'COM-0001', lines: [] }, fakeContext());
 
     expect(result).toMatchObject({ code: 'VALIDATION_FAILED' });
     expect(queryExecute).not.toHaveBeenCalled();
@@ -125,7 +125,7 @@ describe('StockController — validation and error mapping, never throws', () =>
     queryExecute.mockRejectedValue(new Error('boom'));
     const controller = new StockController(queries, commands);
 
-    const result = await controller.check({ companyCode: 'COM-0001', lines: [{ productCode: 'PRD-0001', quantity: 1 }] });
+    const result = await controller.check({ companyCode: 'COM-0001', lines: [{ productCode: 'PRD-0001', quantity: 1 }] }, fakeContext());
 
     expect(result).toMatchObject({ code: 'INTERNAL_ERROR' });
   });
@@ -135,7 +135,7 @@ describe('StockController — validation and error mapping, never throws', () =>
     commandExecute.mockRejectedValue(new NoKnownStockItemError('ORD-000001'));
     const controller = new StockController(queries, commands);
 
-    const result = await controller.replenish({ companyCode: 'COM-0001', lines: [{ productCode: 'PRD-0001', units: 1 }] });
+    const result = await controller.replenish({ companyCode: 'COM-0001', lines: [{ productCode: 'PRD-0001', units: 1 }] }, fakeContext());
 
     expect(result).toMatchObject({ code: 'NOT_FOUND' });
   });

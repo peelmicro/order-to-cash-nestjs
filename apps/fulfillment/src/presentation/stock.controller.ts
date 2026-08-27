@@ -9,8 +9,10 @@
 import { Controller, Inject } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
 import { Ctx, MessagePattern, Payload, Transport, type NatsContext } from '@nestjs/microservices';
+import { context as otelContext } from '@opentelemetry/api';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import type { MsgHdrs } from 'nats';
 import { UniqueId } from '@otc/shared-kernel';
 import type {
   RpcError,
@@ -22,6 +24,7 @@ import type {
 } from '@otc/contracts';
 import { ReleaseStockCommand, ReplenishStockCommand, ReserveStockCommand } from '../application/commands/stock.commands';
 import { CheckStockQuery, ListStockQuery } from '../application/queries/stock.queries';
+import { extractNatsTraceContext } from '../infrastructure/observability/trace-context';
 import {
   StockCheckRequestDto,
   StockListRequestDto,
@@ -75,8 +78,22 @@ export class StockController {
     @Inject(CommandBus) private readonly commands: CommandBus,
   ) {}
 
+  // `@Ctx()` + `extractNatsTraceContext`/`otelContext.with(...)` (A5b, R57,
+  // mirrors `orders-create.controller.ts`'s own pattern) on EVERY handler
+  // below, not only the ones that also read `x-correlation-id`/
+  // `x-request-id` via `parseRpcMeta`: extraction is a no-op when the
+  // caller sent no `traceparent` header (`extractNatsTraceContext` returns
+  // the ambient context unchanged), so wrapping `check`/`list`/`replenish`
+  // costs nothing on a call that carries none, while continuing the trace
+  // on any call that does (every saga-command/Gateway caller now injects
+  // one).
   @MessagePattern(STOCK_CHECK_SUBJECT, Transport.NATS)
-  async check(@Payload() payload: unknown): Promise<StockCheckReplyPayload | RpcError> {
+  async check(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<StockCheckReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleCheck(payload));
+  }
+
+  private async handleCheck(payload: unknown): Promise<StockCheckReplyPayload | RpcError> {
     const dto = plainToInstance(StockCheckRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -92,6 +109,11 @@ export class StockController {
 
   @MessagePattern(STOCK_RESERVE_SUBJECT, Transport.NATS)
   async reserve(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<StockReserveReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleReserve(payload, ctx));
+  }
+
+  private async handleReserve(payload: unknown, ctx: NatsContext): Promise<StockReserveReplyPayload | RpcError> {
     const dto = plainToInstance(StockReserveRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -114,6 +136,11 @@ export class StockController {
 
   @MessagePattern(STOCK_RELEASE_SUBJECT, Transport.NATS)
   async release(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<StockReleaseReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleRelease(payload, ctx));
+  }
+
+  private async handleRelease(payload: unknown, ctx: NatsContext): Promise<StockReleaseReplyPayload | RpcError> {
     const dto = plainToInstance(StockReleaseRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -135,7 +162,12 @@ export class StockController {
   }
 
   @MessagePattern(STOCK_LIST_SUBJECT, Transport.NATS)
-  async list(@Payload() payload: unknown): Promise<StockListReplyPayload | RpcError> {
+  async list(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<StockListReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleList(payload));
+  }
+
+  private async handleList(payload: unknown): Promise<StockListReplyPayload | RpcError> {
     const dto = plainToInstance(StockListRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {
@@ -150,7 +182,12 @@ export class StockController {
   }
 
   @MessagePattern(STOCK_REPLENISH_SUBJECT, Transport.NATS)
-  async replenish(@Payload() payload: unknown): Promise<StockReplenishReplyPayload | RpcError> {
+  async replenish(@Payload() payload: unknown, @Ctx() ctx: NatsContext): Promise<StockReplenishReplyPayload | RpcError> {
+    const extracted = extractNatsTraceContext(ctx.getHeaders() as MsgHdrs | undefined);
+    return otelContext.with(extracted, () => this.handleReplenish(payload));
+  }
+
+  private async handleReplenish(payload: unknown): Promise<StockReplenishReplyPayload | RpcError> {
     const dto = plainToInstance(StockReplenishRequestDto, payload ?? {});
     const violations = await validate(dto, { whitelist: true });
     if (violations.length > 0) {

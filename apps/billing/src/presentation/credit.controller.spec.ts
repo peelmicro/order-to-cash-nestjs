@@ -101,7 +101,7 @@ describe('CreditController — validation and error mapping, never throws', () =
     const { queries, commands, queryExecute } = buses();
     const controller = new CreditController(queries, commands);
 
-    const result = await controller.list({ page: 0 });
+    const result = await controller.list({ page: 0 }, fakeContext());
 
     expect(result).toMatchObject({ code: 'VALIDATION_FAILED' });
     expect(queryExecute).not.toHaveBeenCalled();
@@ -125,7 +125,7 @@ describe('CreditController — validation and error mapping, never throws', () =
     queryExecute.mockRejectedValue(new Error('boom'));
     const controller = new CreditController(queries, commands);
 
-    const result = await controller.list({ page: 1, pageSize: 25 });
+    const result = await controller.list({ page: 1, pageSize: 25 }, fakeContext());
 
     expect(result).toMatchObject({ code: 'INTERNAL_ERROR' });
   });
