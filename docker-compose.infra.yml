@@ -61,7 +61,16 @@ services:
     networks:
       - otc-net
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      # MUST be a TCP ping, never `-h localhost` (which the MySQL client
+      # resolves to the Unix socket). On a first boot with an empty data
+      # directory the entrypoint runs a *temporary* server that listens on the
+      # socket ONLY while it executes /docker-entrypoint-initdb.d, then stops
+      # it and starts the real server on TCP 3306. A socket ping therefore
+      # reports healthy during that init window, Compose releases everything
+      # gated on `service_healthy`, and the four *-migrate jobs — which connect
+      # over TCP to mysql:3306 — die with ECONNREFUSED. Forcing --protocol=TCP
+      # makes the check unsatisfiable until the real network listener accepts.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3306 --protocol=TCP -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 5s
       timeout: 5s
       retries: 20
