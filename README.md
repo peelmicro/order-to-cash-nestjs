@@ -198,8 +198,8 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 13 | Gateway / BFF | ✅ 18 REST paths, JWT, NATS RPC, SSE stream (reconnect-safe heartbeat), Swagger at `/docs` |
 | 14 | Health checks, OTel propagation, retry + DLQ | ✅ requestId dedup, dead-letter (3 services), tracing, log correlation, metrics, health checks |
 | 15 | End-to-end saga verification | ✅ happy path, `.99`/`stock_rejected` compensation, redelivery, poison-to-DLQ, composed trace — all proven against real spawned services |
-| 16 | Nuxt 4 web app | 🚧 auth, place-order, order-list, and order-detail/SSE (live saga timeline, reconnect-safe) all working and reviewed; stock, billing views and the error-handling sweep open |
-| 17 | Web component tests | ⬜ |
+| 16 | Nuxt 4 web app | ✅ auth (JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline, billing (invoices, credits, Register payment) and stock (on-hand/reserved, delta replenish) — plus an error sweep so every failure shows the server's real reason |
+| 17 | Web component tests | ✅ 59 tests / 14 files, written inside each feature loop rather than as a separate phase; SSE covered against a real `EventSource` over real HTTP. Coverage 85.8% statements, 87.0% lines |
 | 18 | API tests through the Gateway | ⬜ |
 | 19 | Playwright end-to-end tests | ⬜ |
 | 20 | n8n demo workflows | ⬜ |
