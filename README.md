@@ -102,6 +102,40 @@ With the infrastructure up, `pnpm seed` loads the demo data: master data (3 curr
 
 > **Deviation from the task document:** MongoDB is 8.3.8 rather than the mandated 7.x — version 7 was current when the task was written; nothing in the specification depends on 7-only behaviour, and the deviation is deliberate.
 
+## Running the full stack in Docker
+
+Everything above runs the application services from the CLI (`pnpm dev:*`) against a compose stack that provides only infrastructure. Phase 23 adds application containers on top of the same infrastructure file — build once, then every service (including the Nuxt 4 web app) runs as a container reachable on the same ports as the CLI path:
+
+```bash
+pnpm dc:up:apps    # docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml up -d
+                    # brings up infra (if not already up) + 4 one-shot Drizzle
+                    # migration jobs + 6 NestJS services + the web app
+```
+
+Always pass **both** compose files together (`dc:up:apps` already does) — `docker-compose.apps.yml`'s own network is declared `external: true`, so starting it alone fails loudly ("network otc-net not found") instead of silently creating a second, disconnected network. `docker compose ... down` tears down both layers together the same way.
+
+| App | URL | Depends on (startup order) |
+|---|---|---|
+| Gateway (REST + Swagger) | http://localhost:3001/docs | MongoDB, NATS |
+| Orders | http://localhost:3002/health/ready | its own `orders-migrate` job, Kafka topics, NATS |
+| Fulfillment | http://localhost:3003/health/ready | its own `fulfillment-migrate` job, Kafka topics, NATS |
+| Billing | http://localhost:3004/health/ready | its own `billing-migrate` job, Kafka topics, NATS |
+| Notifications | http://localhost:3005/health/ready | its own `notifications-migrate` job, Kafka topics |
+| Projector | http://localhost:3006/health/ready | MongoDB, Kafka topics, NATS |
+| Web (Nuxt 4) | http://localhost:3000 | Gateway |
+
+Each of the four MySQL-backed services (orders/fulfillment/billing/notifications) gets its own one-shot `<service>-migrate` job — `restart: "no"`, `depends_on: mysql: condition: service_healthy`, and the app container itself only starts once its migration job has exited `0` (`depends_on: <service>-migrate: condition: service_completed_successfully`). Projector needs no such job — it bootstraps its own MongoDB indexes/backfill on every boot, in `main.ts` (same as the CLI path).
+
+`apps/seed` is a one-off CLI, not a server — it stays behind the `seed` compose profile so `up -d` never starts it:
+
+```bash
+pnpm dc:seed       # docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml --profile seed run --rm seed
+```
+
+Other `dc:*:apps` scripts mirror the `dc:*:infra` ones already in use: `dc:down:apps`, `dc:ps:apps`, `dc:logs:apps`, `dc:clean:apps` (adds `-v`), `dc:build:apps`.
+
+Every app image is built **locally** (`pull_policy: build`, same discipline as `docker-compose.infra.yml`'s `otel-collector`/`kafka-init`) — none of these are published anywhere. Build context is always the **repo root** (`context: .`, never `apps/<service>`): pnpm workspaces need the full lockfile plus every `packages/*/package.json` to install correctly. Every NestJS service's Dockerfile ([`infra/docker/service/Dockerfile`](infra/docker/service/Dockerfile), shared across all six via a `SERVICE` build ARG) runs the real build — `tsc -p tsconfig.build.json`, never `tsx`/esbuild — for exactly the reason CLAUDE.md's DI-tokens rule exists: `emitDecoratorMetadata` only survives a real `tsc` compile, and this is the one place a wrong choice here would silently break every constructor-injected provider. `apps/web` ([`infra/docker/web/Dockerfile`](infra/docker/web/Dockerfile)) is a different shape — Nitro's `node-server` preset produces a self-contained `.output/` needing no monorepo `node_modules` at runtime — and `apps/seed` ([`infra/docker/seed/Dockerfile`](infra/docker/seed/Dockerfile)) keeps its own `tsx`-based script unchanged, per CLAUDE.md's explicit carve-out for that one app.
+
 ## How this is being built
 
 > **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. What follows is the short version.
@@ -169,7 +203,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 20 | n8n demo workflows | ⬜ |
 | 21 | SonarQube + coverage gates | ⬜ |
 | 22 | Prometheus, Grafana, Jaeger verification | ⬜ |
-| 23 | Full Docker Compose | ⬜ |
+| 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), verified healthy against the live infra stack |
 | 24 | Documentation + demo recording | ⬜ |
 | 25 | Final checkpoint | ⬜ |
 

@@ -1,0 +1,380 @@
+# Order-To-Cash — application containers (phase 23).
+#
+# Adds the six NestJS services + the Nuxt 4 web app + four one-shot Drizzle
+# migration jobs + the optional seed job on top of docker-compose.infra.yml,
+# which brings up ONLY infrastructure (MySQL, MongoDB, Kafka, NATS,
+# observability) and explicitly defers application containers to this file
+# (see its own header comment: "NO application containers here — those
+# arrive in phase 23").
+#
+# Always run together with the infra file — this file's `otc-net` is
+# declared `external: true` on purpose, so starting this file alone fails
+# loudly ("network otc-net not found") instead of silently creating a
+# second, disconnected network:
+#
+#   pnpm dc:up:apps     # docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml up -d
+#
+# Every image is built locally (`pull_policy: build`, same discipline as
+# docker-compose.infra.yml's otel-collector/kafka-init) — none of these are
+# published anywhere. Build context is the REPO ROOT for every service here
+# (`context: .`), never `apps/<service>` — pnpm workspaces need the full
+# lockfile + every packages/*/package.json to install correctly (see the
+# Dockerfiles under infra/docker/ for the full workspace-build rationale).
+#
+# Networking overrides below exist ONLY because every service's own config
+# defaults to `localhost`/host-network values on purpose, for `pnpm dev:*`
+# run outside a container (see .env.example) — inside this compose stack,
+# each service reaches its dependencies by container/service name instead.
+# Everything else (DB credentials, JWT secret, Mailtrap SMTP creds, saga
+# retry tuning, gateway operator identity, ...) is read straight from `.env`
+# via `env_file:` — never hardcoded here, never duplicated.
+
+services:
+  # ── orders — MySQL (otc_orders), Kafka (outbox relay + saga consumer),
+  #    NATS (orders.create responder + fulfillment.stock.check caller) ─────
+  orders-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: migrate
+      args:
+        SERVICE: orders
+    image: otc-orders-migrate:local
+    pull_policy: build
+    container_name: otc-orders-migrate
+    restart: "no"
+    env_file: [.env]
+    environment:
+      ORDERS_DB_HOST: mysql
+    networks:
+      - otc-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  orders:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: orders
+        PORT_ENV_VAR: ORDERS_PORT
+        DEFAULT_PORT: "3002"
+    image: otc-orders:local
+    pull_policy: build
+    container_name: otc-orders
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      ORDERS_DB_HOST: mysql
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${ORDERS_PORT:-3002}:${ORDERS_PORT:-3002}"
+    networks:
+      - otc-net
+    depends_on:
+      orders-migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  # ── fulfillment — MySQL (otc_fulfillment), Kafka (outbox relay), NATS
+  #    (fulfillment.stock.* responders) ─────────────────────────────────────
+  fulfillment-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: migrate
+      args:
+        SERVICE: fulfillment
+    image: otc-fulfillment-migrate:local
+    pull_policy: build
+    container_name: otc-fulfillment-migrate
+    restart: "no"
+    env_file: [.env]
+    environment:
+      FULFILLMENT_DB_HOST: mysql
+    networks:
+      - otc-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  fulfillment:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: fulfillment
+        PORT_ENV_VAR: FULFILLMENT_PORT
+        DEFAULT_PORT: "3003"
+    image: otc-fulfillment:local
+    pull_policy: build
+    container_name: otc-fulfillment
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      FULFILLMENT_DB_HOST: mysql
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${FULFILLMENT_PORT:-3003}:${FULFILLMENT_PORT:-3003}"
+    networks:
+      - otc-net
+    depends_on:
+      fulfillment-migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  # ── billing — MySQL (otc_billing), Kafka (outbox relay), NATS
+  #    (billing.credit.* responders) ────────────────────────────────────────
+  billing-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: migrate
+      args:
+        SERVICE: billing
+    image: otc-billing-migrate:local
+    pull_policy: build
+    container_name: otc-billing-migrate
+    restart: "no"
+    env_file: [.env]
+    environment:
+      BILLING_DB_HOST: mysql
+    networks:
+      - otc-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  billing:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: billing
+        PORT_ENV_VAR: BILLING_PORT
+        DEFAULT_PORT: "3004"
+    image: otc-billing:local
+    pull_policy: build
+    container_name: otc-billing
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      BILLING_DB_HOST: mysql
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${BILLING_PORT:-3004}:${BILLING_PORT:-3004}"
+    networks:
+      - otc-net
+    depends_on:
+      billing-migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  # ── notifications — MySQL (otc_notifications, durable processed_events
+  #    ledger), Kafka consumer only (3 fact topics) — NO NATS transport
+  #    (main.ts answers no RPC; see apps/notifications/src/main.ts). ────────
+  notifications-migrate:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: migrate
+      args:
+        SERVICE: notifications
+    image: otc-notifications-migrate:local
+    pull_policy: build
+    container_name: otc-notifications-migrate
+    restart: "no"
+    env_file: [.env]
+    environment:
+      NOTIFICATIONS_DB_HOST: mysql
+    networks:
+      - otc-net
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  notifications:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: notifications
+        PORT_ENV_VAR: NOTIFICATIONS_PORT
+        DEFAULT_PORT: "3005"
+    image: otc-notifications:local
+    pull_policy: build
+    container_name: otc-notifications
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      NOTIFICATIONS_DB_HOST: mysql
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${NOTIFICATIONS_PORT:-3005}:${NOTIFICATIONS_PORT:-3005}"
+    networks:
+      - otc-net
+    depends_on:
+      notifications-migrate:
+        condition: service_completed_successfully
+      kafka-init:
+        condition: service_completed_successfully
+
+  # ── projector — MongoDB read model, Kafka consumer (fromBeginning: true),
+  #    outbound NATS (publish-only stream-update signal). Bootstraps its OWN
+  #    Mongo indexes/backfill in main.ts on every boot — NO migration job. ──
+  projector:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: projector
+        PORT_ENV_VAR: PROJECTOR_PORT
+        DEFAULT_PORT: "3006"
+    image: otc-projector:local
+    pull_policy: build
+    container_name: otc-projector
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MONGO_HOST: mongodb
+      KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${PROJECTOR_PORT:-3006}:${PROJECTOR_PORT:-3006}"
+    networks:
+      - otc-net
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      nats:
+        condition: service_healthy
+
+  # ── gateway — MongoDB (read-only order_timeline), NATS (RPC client + SSE
+  #    stream-signal subscriber). NO MySQL (owns no database), NO Kafka in
+  #    production (kafkajs is a devDependency only — test-only). ───────────
+  gateway:
+    build:
+      context: .
+      dockerfile: infra/docker/service/Dockerfile
+      target: runtime
+      args:
+        SERVICE: gateway
+        PORT_ENV_VAR: GATEWAY_PORT
+        DEFAULT_PORT: "3001"
+    image: otc-gateway:local
+    pull_policy: build
+    container_name: otc-gateway
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      MONGO_HOST: mongodb
+      NATS_URL: nats://nats:4222
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    ports:
+      - "${GATEWAY_PORT:-3001}:${GATEWAY_PORT:-3001}"
+    networks:
+      - otc-net
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  # ── web — Nuxt 4 BFF. Talks ONLY to the Gateway (never to a database or
+  #    broker directly — same "REST-only against the Gateway" discipline
+  #    n8n follows, see specs/shared/n8n-workflows.md). ─────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web/Dockerfile
+    image: otc-web:local
+    pull_policy: build
+    container_name: otc-web
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      PORT: "${WEB_PORT:-3000}"
+      HOST: 0.0.0.0
+      # Nitro's runtime-config env override convention: NUXT_<KEY> for
+      # runtimeConfig.<key> (apps/web/nuxt.config.ts — gatewayBaseUrl /
+      # sessionPassword). This is what actually takes effect at container
+      # start, independent of whatever GATEWAY_BASE_URL baked in as the
+      # build-time default (see infra/docker/web/Dockerfile).
+      NUXT_GATEWAY_BASE_URL: "http://gateway:${GATEWAY_PORT:-3001}"
+      # `:-` default matches apps/web/nuxt.config.ts's own fallback exactly —
+      # this repo's committed .env.example carries NUXT_SESSION_PASSWORD, but
+      # an older local .env predating web_app (feature 16) may not, and an
+      # env_file value that is simply ABSENT must not be forced to an empty
+      # string here (that would defeat the app's own safe default).
+      NUXT_SESSION_PASSWORD: "${NUXT_SESSION_PASSWORD:-otc_web_dev_session_password_change_me_32ch}"
+    ports:
+      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+    networks:
+      - otc-net
+    depends_on:
+      gateway:
+        condition: service_healthy
+
+  # ── seed — one-off demo-data CLI (apps/seed), NOT a server. Behind the
+  #    `seed` profile so it is never started by `up -d`; run explicitly with:
+  #      docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml \
+  #        --profile seed run --rm seed
+  #    Runs its own migrations for orders/fulfillment/billing internally
+  #    (apps/seed/src/writers/*.writer.ts) on top of whatever this file's own
+  #    *-migrate jobs already applied — deterministic and idempotent either
+  #    way (README.md "Running the infrastructure"). ─────────────────────────
+  seed:
+    build:
+      context: .
+      dockerfile: infra/docker/seed/Dockerfile
+    image: otc-seed:local
+    pull_policy: build
+    container_name: otc-seed
+    restart: "no"
+    profiles: ["seed"]
+    env_file: [.env]
+    environment:
+      ORDERS_DB_HOST: mysql
+      FULFILLMENT_DB_HOST: mysql
+      BILLING_DB_HOST: mysql
+      MONGO_HOST: mongodb
+    networks:
+      - otc-net
+    depends_on:
+      orders-migrate:
+        condition: service_completed_successfully
+      fulfillment-migrate:
+        condition: service_completed_successfully
+      billing-migrate:
+        condition: service_completed_successfully
+      mongodb:
+        condition: service_healthy
+
+networks:
+  otc-net:
+    external: true
