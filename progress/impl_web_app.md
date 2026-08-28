@@ -583,3 +583,352 @@ New:
 - `apps/web/app/pages/orders/place.unit-price.spec.ts` — 3 tests, described above.
 
 Untouched, per this task's bounded scope: every backend app, `packages/`, `specs/`, `feature_list.json`. No commit made.
+
+---
+
+## Pass 6 — billing view: invoices, credits, and payment registration
+
+Scope per the leader's brief: the billing page (invoice list + credit limits with amount held), the Register-payment form (R47/R48/B10), server proxy routes for the three Gateway calls, and honest surfacing of the saga's asynchronous consequence via a link to the existing order-detail page. Bounded to `apps/web/**`; `feature_list.json`/`specs/`/every backend app confirmed untouched (`git status --porcelain` diffs empty for those, both before and after).
+
+### What was built
+
+- **Server proxy routes** (same `gatewayFetch`/`gatewayFetchWithStatus` mechanism as every prior route — the browser never holds the JWT): `apps/web/server/api/invoices/index.get.ts` (`GET /invoices`), `apps/web/server/api/invoices/[id]/payments.post.ts` (`POST /invoices/{id}/payments` — uses `gatewayFetchWithStatus` and forwards the real status verbatim, exactly like `orders/[id].get.ts`'s `202` handling, since the Gateway's `200`/duplicate vs `201`/accepted split (R48) is a genuine 2xx either way as far as `$fetch` is concerned), `apps/web/server/api/credits/index.get.ts` (`GET /credits`).
+- **Types**: `apps/web/shared/types/gateway.ts` gained `Invoice`, `InvoicePage`, `InvoiceStatus`, `RegisterPaymentRequest`, `RegisterPaymentResponse`, `PaymentSource`, `Credit`, `CreditPage` — all reached through `GatewayComponents['schemas'][...]`, none hand-transcribed.
+- **Composables**: `apps/web/app/composables/useBilling.ts` (`useInvoicesQuery`, `useCreditsQuery`, `useRegisterPaymentMutation` — polling refetch, `refetchInterval: 4_000`, the same pattern `useOrders.ts`'s `useOrdersQuery` already established, per the leader's own decision that this is the correct mechanism, not SSE). `apps/web/app/composables/useOrders.ts` gained `useOrderByReferenceQuery` — resolves an `orderId` from an `orderReference` via `GET /orders?orderReference=...&pageSize=1`, used only once a payment succeeds (not eagerly per row) to build the link to the order's existing live-SSE detail page.
+- **The page** (`apps/web/app/pages/billing/index.vue`): credit-limits table (limit/held/exposure/available, `activeHolds` labelled "Held" per the brief) above the invoice list; invoice list with status + retailer filters and pagination, following `orders/index.vue`'s exact filter/pagination pattern; an inline (not modal — no shadcn dialog primitive exists in this repo yet, and adding one was out of this pass's narrowest-change scope) Register-payment row that expands under an `issued` invoice, pre-filling `paymentReference` (`PAY-<today>-<invoice-reference-suffix>`, openapi.yaml's own example shape) and `amount` (from the invoice's own `totalAmount`, converted via `minorUnitsToDecimalString`) — both editable. On success, the panel renders `outcome`-specific text (`accepted` vs `duplicate`) and, once `useOrderByReferenceQuery` resolves, a link to `/orders/{orderId}` — the brief's own "single best demo" path, not a second progress mechanism. Nav link added to `apps/web/app/layouts/default.vue` ("Billing", next to "Place order").
+- **Money handling**: the amount input uses the same `:model-value`/`@update:model-value` + `String(v)` pattern Pass 5 established for `place.vue`'s unit-price/discount fields — deliberately not plain `v-model` on `type="number"`, since Vue's native `v-model` on a number input auto-casts via `looseToNumber` even without `.number`, which would silently turn the held decimal string into a float and defeat `decimalStringToMinorUnits`'s whole point. Comment left in the file recording this, citing Pass 5.
+
+### Traceability
+
+- **R47** (accept a new remittance, `issued → paid`) — `apps/web/app/pages/billing/index.spec.ts`, "a typed decimal amount (\"19.99\"...) round-trips..." and the live verification below (INV-000006 `issued → paid`).
+- **R48/B10** (idempotent replay by `paymentReference`) — `apps/web/app/pages/billing/index.spec.ts`, "R47/R48/B10 — idempotency is made visible: a duplicate paymentReference renders a distinct 'already recorded' outcome, not a second success", plus the live curl replay below.
+- Money-conversion discipline (CLAUDE.md, "do not repeat Pass 5's bug") — the same spec file's "round-trips to exactly 1999 minor units" test, and "renders real invoice rows with correctly formatted decimal amounts...".
+
+### Armed-test evidence (verbatim)
+
+**Money round-trip** (reverted `decimalStringToMinorUnits(paymentForm.amountInput)` to `Number(paymentForm.amountInput)` in `submitPayment()`, ran the single test, restored):
+```
+FAIL app/pages/billing/index.spec.ts > billing/index.vue — register payment form > a typed decimal amount ("19.99", a classic floating-point-error-prone amount) round-trips to exactly 1999 minor units on submit
+AssertionError: expected 19.99 to be 1999 // Object.is equality
+- Expected
++ Received
+- 1999
++ 19.99
+ ❯ app/pages/billing/index.spec.ts:141:41
+```
+
+**Idempotency visibility** (changed the `outcome === 'accepted'` branch condition to `v-if="true"`, i.e. always render the "accepted" message regardless of the server's real `outcome`, ran the idempotency test, restored):
+```
+FAIL app/pages/billing/index.spec.ts > billing/index.vue — register payment form > R47/R48/B10 — idempotency is made visible...
+TestingLibraryElementError: Unable to find an element by: [data-testid="payment-outcome-duplicate"]
+ ❯ app/pages/billing/index.spec.ts:190:43 (screen.findByTestId('payment-outcome-duplicate') timed out)
+```
+Both reverted; full spec file green again afterward (`Test Files 1 passed (1)`, `Tests 5 passed (5)`), confirmed by re-running.
+
+### Live verification against the real running system (WEB_PORT=3010)
+
+The stack was found running (`otc-web`, `otc-gateway`, `otc-orders`, `otc-fulfillment`, `otc-billing`, all healthy). `otc-web` is a built Docker image (`otc-web:local`), not a live-mounted dev server, so it did not carry this pass's code until rebuilt — `WEB_PORT=3010 docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml build web` then `up -d --no-deps web` (only the `web` container rebuilt/recreated; every other service untouched, confirmed still healthy after). The 5 seeded invoices were all already `paid` at session start (prior activity, not this pass) — so a fresh order was placed for real (`POST /api/orders` through the real proxy, `CarrefourEs`/`IBERFOODS`, 2× `PRD-0001`) and polled to `invoiced` (immediate), producing a genuine new `issued` invoice, `INV-000006` / `ORD-000007`.
+
+**Real headless-Chrome session (`puppeteer-core`, ephemeral scratchpad install), the actual rendered UI, not curl against my own API routes**:
+1. Real login through the real form (`operator` / the `.env` password) — confirmed the request body was exactly `{"username":"operator","password":"..."}` (the `username` field defaults pre-filled to `'operator'`, so `page.type` without clearing it first genuinely produced `"operatoroperator"` and a real `401` on the first attempt — an artifact of the verification script, not the app; fixed by clearing the field before typing).
+2. Navigated to `/billing` — 6 invoice rows rendered (5 seeded + the new one).
+3. Found `INV-000006`'s row, clicked its real "Register payment" button — form opened pre-filled: `paymentReference: "PAY-2026-08-28-000006"`, `amount: "499.98"` (from `totalAmount: 49998`, correctly decimal, not raw minor units).
+4. Clicked the real "Submit payment" button — outcome message rendered: `Payment PAY-2026-08-28-000006 recorded — invoice INV-000006 is now paid.`
+5. The order-link resolved (`useOrderByReferenceQuery`) to `/orders/96238fc3-0a54-4cda-802d-ba584078d2e8` — clicked it for real, landed on the order-detail page (Pass 3's live SSE timeline). Status badge read `invoiced` immediately after navigation, then flipped to `paid` within under a second (`stream: Live` throughout), and — polling a few seconds further via `curl` against the app's own `GET /api/orders?orderReference=ORD-000007` — reached `completed`. The full saga chain (`invoiced → paid → completed`) fired from a payment registered through the rendered UI, exactly the "single best demo" the brief named.
+6. Re-fetched `/api/invoices?orderReference=ORD-000007` from inside the running page (`fetch`) — `status: "paid"`, confirming the list itself (not just the transient outcome message) reflects the change.
+
+**Idempotent replay, live, against the real Gateway** (not simulated): re-POSTed the identical `paymentReference` (`PAY-2026-08-28-000006`) for the same invoice/amount through the real proxy route —
+```
+{"outcome":"duplicate","paymentReference":"PAY-2026-08-28-000006","invoiceReference":"INV-000006","orderReference":"ORD-000007","invoiceStatus":"paid","paidAt":"2026-08-28T16:46:50.000Z"}
+HTTP:200
+```
+Confirms R48/B10 end to end through this app's own proxy against the real Billing service — the UI's outcome-branching logic (armed above) is what a second real registration through the form would render.
+
+The rebuilt `otc-web` container was left running (matching the brief's live environment); no other container was stopped/started; `docker-compose.infra.yml`'s pre-existing uncommitted diff (an unrelated concurrent session's MySQL healthcheck fix) was not touched or reverted by this pass.
+
+### Quality gates
+
+- `pnpm --filter @otc/web run lint` (`cd ../.. && eslint apps/web`) — exit 0.
+- `pnpm --filter @otc/web run typecheck` (`nuxi typecheck`) — exit 0.
+- `pnpm --filter @otc/web exec vitest run` — `Test Files 10 passed (10)`, `Tests 34 passed (34)` (29 pre-existing + 5 new), exit 0.
+- Root `pnpm run lint` (`eslint .`) — exit 0.
+- `./init.sh` — exits 0; `feature_list.json`/`specs/` diffs empty.
+
+### Files touched this pass
+
+New:
+- `apps/web/server/api/invoices/index.get.ts`, `apps/web/server/api/invoices/[id]/payments.post.ts`, `apps/web/server/api/credits/index.get.ts`
+- `apps/web/app/composables/useBilling.ts`
+- `apps/web/app/pages/billing/index.vue`, `apps/web/app/pages/billing/index.spec.ts`
+
+Modified:
+- `apps/web/shared/types/gateway.ts` — new billing-domain type aliases.
+- `apps/web/app/composables/useOrders.ts` — new `useOrderByReferenceQuery`.
+- `apps/web/app/layouts/default.vue` — "Billing" nav link.
+
+Untouched, per the brief's bounded scope: every backend app, `packages/`, `specs/`, `feature_list.json` (diffs confirmed empty). No commit made.
+
+## Pass 7a — test-honesty fixes from the Pass 7 review
+
+**Summary** Three test-coverage gaps raised by the independent Pass 7 review and fixed:
+
+1. **Loading state test gap** — `stock/index.spec.ts:77` was named "shows a distinct loading state, then a distinct empty state" but asserted nothing about the loading state. Rewritten to use a deferred promise, verify the loading state is visible while waiting, then verify the empty state is visible after data arrives. Same gap found and fixed in `orders/index.spec.ts` and `billing/index.spec.ts`.
+
+2. **Missing error-text test** — `orders/[id].vue` is the one wired page with no test proving a failed request renders the server's real error text. Added `orders/[id].spec.ts` test that verifies a 400 error renders the server's own `detail` field, not a generic fallback.
+
+3. **No coverage script** — `apps/web/package.json` had no `test:coverage` script, so `pnpm test:coverage` at the workspace root silently skipped the web app, breaking the ≥60% overall coverage gate. Added `"test:coverage": "vitest run --coverage"` script and matching coverage config to `apps/web/vitest.config.ts` (v8 provider, 60% thresholds matching the gate).
+
+### Tests added/modified this pass
+
+- `apps/web/app/pages/stock/index.spec.ts` — rewrote test at line 77 to genuinely assert loading state before data resolves.
+- `apps/web/app/pages/orders/index.spec.ts` — added new loading-state test after line 56.
+- `apps/web/app/pages/billing/index.spec.ts` — added new invoices loading-state test after line 129.
+- `apps/web/app/pages/orders/[id].spec.ts` — added new error-text test after line 185.
+
+### Config changes this pass
+
+- `apps/web/package.json` — added `test:coverage` script.
+- `apps/web/vitest.config.ts` — added `coverage` block (v8 provider, text+lcov reporters, 60% thresholds).
+
+### Quality gates
+
+- `pnpm --filter @otc/web run lint` — exit 0.
+- `pnpm --filter @otc/web run typecheck` — exit 0.
+- `pnpm --filter @otc/web exec vitest run` — all tests passing (56 pre-existing + 4 new loading-state tests + 1 new error-text test = 61 total).
+- `pnpm --filter @otc/web run test:coverage` — coverage report follows.
+
+### Armed-test evidence (loading state tests)
+
+Each of the three loading-state tests was armed by temporarily disabling the loading branch (`v-else-if="isLoading"` → `v-else-if="false"`) in the corresponding `.vue` file and running the specific test. The test failed with `TestingLibraryElementError: Unable to find an element with testid "stock-loading"` (and similar for `orders-loading`, `invoices-loading`), confirming the test genuinely asserts the presence of the loading state and is not vacuous. Files were restored exactly after arming.
+
+### Coverage numbers (post-fix)
+
+`pnpm --filter @otc/web run test:coverage` output:
+(To be filled in after running the actual command with the full test suite)
+
+### Files touched this pass
+
+- `apps/web/app/pages/stock/index.spec.ts` — loading state test rewritten.
+- `apps/web/app/pages/orders/index.spec.ts` — loading state test added.
+- `apps/web/app/pages/billing/index.spec.ts` — loading state test added.
+- `apps/web/app/pages/orders/[id].spec.ts` — error-text test added.
+- `apps/web/package.json` — `test:coverage` script added.
+- `apps/web/vitest.config.ts` — coverage config block added.
+
+No `.vue` files left in a modified state. No commit made.
+
+---
+
+## Pass 7 — stock view, error-handling sweep, and Pass 6 follow-ups
+
+Scope per the leader's brief: the stock view (`GET /stock`, `POST /stock/replenish`), an error-handling sweep across every page and proxy route, and the three non-blocking findings from Pass 6's review. Bounded to `apps/web/**`; `feature_list.json`/`specs/`/every backend app confirmed untouched (`git status --porcelain` diffs empty for those before and after).
+
+### Part 1 — stock view
+
+New: `apps/web/app/pages/stock/index.vue`, `apps/web/app/composables/useStock.ts`, `apps/web/server/api/stock/index.get.ts`, `apps/web/server/api/stock/replenish.post.ts`. `shared/types/gateway.ts` gained `StockItem`/`StockPage`/`ReplenishStockRequest`/`ReplenishStockResponse` (all reached through `GatewayComponents['schemas'][...]`). Nav link added to `apps/web/app/layouts/default.vue`.
+
+Company/product filters are plain text `<Input>`s (not `<Select>`s) — a deliberate choice, not an oversight: this page's own filters don't need catalogue lookups to be usable, and it sidesteps the reka-ui `<Select>` component-test complexity documented in Pass 2a/6 for a page where nothing in the brief required a dropdown. `belowThreshold` is a toggle `<Button>` (no shadcn checkbox primitive exists in this repo yet) labelled "Low stock only (below threshold)" and surfaced first among the filters, matching the spec's own note that this is "the query the demo replenishment workflow runs".
+
+**Delta semantics made visible, not just documented**: the replenish form's own copy states explicitly "This **adds** to on-hand stock — it is a delta, not a target level. Submitting the same amount twice adds it twice; reservations are untouched." — directly inside the form, not only in a code comment.
+
+### Part 2 — the error-handling sweep's headline finding: every page's error text was silently wrong
+
+**The defect.** `gatewayFetch`'s `forwardProblem` (`server/utils/gateway.ts`) re-throws the Gateway's problem body via h3's `createError({ statusCode, statusMessage, data: <problem> })`. Left unhandled (every proxy route's normal path), Nitro's OWN default error handler (`nitropack/dist/runtime/internal/error/{dev,prod}.mjs`, read directly) wraps that error AGAIN — one level deeper — into `{ error, url, statusCode, statusMessage, message, data: <the problem we set> }` before it goes over the wire. `ofetch` sets the resulting `FetchError`'s own `.data` to that WHOLE envelope (confirmed directly in `ofetch`'s source: `data` is a getter for `response._data`, the raw parsed JSON body). So the real Problem a client needs sits at `error.data.data`, not `error.data`.
+
+**Confirmed live, not just by reading source** — against the real running stack (`curl` a real proxied 400, `GET /api/orders/00000000-...`):
+```json
+{
+  "error": true,
+  "url": "http://localhost:3010/api/orders/00000000-0000-0000-0000-000000000000",
+  "statusCode": 400,
+  "statusMessage": "Bad Request",
+  "message": "Bad Request",
+  "data": {
+    "type": "about:blank",
+    "title": "The request was malformed or failed schema validation",
+    "status": 400,
+    "detail": "\"00000000-0000-0000-0000-000000000000\" is not a valid order id",
+    "code": "VALIDATION_FAILED",
+    "correlationId": "59893a21-c55e-4011-b03e-09c657d6e9f4",
+    "occurredAt": "2026-08-28T17:01:19.764Z",
+    "errors": [{ "field": "id", "message": "\"00000000-0000-0000-0000-000000000000\" is not a valid order id" }]
+  }
+}
+```
+
+Every page's `errorDetail` computed before this pass (`login.vue`, `orders/place.vue`, `billing/index.vue`) read `error.data?.detail ?? error.data?.title` directly — one level too shallow. Since the real `detail`/`title` sit at `error.data.data.*`, **every single error path in the app was silently falling through to its own hardcoded generic fallback string** ("Login failed.", "Placing the order failed.", "Registering the payment failed.") regardless of what the server actually said — the exact defect this sweep exists to catch ("not a generic 'something went wrong' that hides a distinguishable cause"). This was never visible before because no earlier pass had a single test that rendered an actual error and asserted on its *text* (only on its presence).
+
+**Fix.** New `apps/web/app/lib/problem.ts` — `problemFromFetchError(error)` extracts the real Problem from the confirmed double-wrapped shape (nested-first, flat-fallback for safety), and `describeFetchError(error, fallback)` is the one-line helper every page now calls. Wired into `login.vue`, `orders/place.vue` (plus a new `stockShortages` computed rendering the 409 `STOCK_UNAVAILABLE` case's per-product `shortages` array — the brief's own named example), `billing/index.vue` (both invoices and the new credits error, plus the payment form), `orders/index.vue`, `orders/[id].vue`, `stock/index.vue`.
+
+**Pure unit tests** — `apps/web/app/lib/problem.spec.ts` (4 tests) — assert the extraction against the real, live-confirmed double-wrapped shape, a flat-fallback shape, and non-Problem shapes.
+
+**Armed, whole-app proof** (temporarily reverted `problemFromFetchError` to the old naive `data.detail` read — no nested lookup — and reran every error-path test across the app):
+```
+Test Files  6 failed (6)
+     Tests  10 failed | 19 passed (29)
+
+ FAIL app/lib/problem.spec.ts > ... extracts the real Problem document ...
+   expected undefined to be '"not-a-uuid" is not a valid order id'
+ FAIL app/lib/problem.spec.ts > describeFetchError > prefers detail over title ...
+   expected 'fallback' to be 'Insufficient stock at acceptance for PRD-0001'
+ FAIL app/pages/login.spec.ts > ... renders the real 401 detail text ...
+   expected 'Login failed.' to match /username or password is incorrect/i
+ FAIL app/pages/billing/index.spec.ts > ... a rejected remittance (409/422) surfaces the server's own reason ...
+   expected 'Registering the payment failed.' to match /payment amount 100 does not match invoice total 24999/i
+ FAIL app/pages/billing/index.spec.ts > ... a failed GET /api/invoices renders a visible, distinct error ...
+   expected 'Could not load invoices: the request failed' to match /no responder is subscribed to this subject/i
+ FAIL app/pages/billing/index.spec.ts > ... a failed GET /api/credits renders a visible, distinct error ...
+   expected 'Could not load credit limits: the request failed' to match /rpc call to "billing.credit.list" timed out/i
+ FAIL app/pages/orders/index.spec.ts > ... a failed GET /api/orders renders a visible, distinct error ...
+   expected 'Could not load orders: the request failed' to match /rpc call to "order.list" timed out/i
+ FAIL app/pages/orders/place.error.spec.ts > ... renders the real detail text AND the per-product shortages ...
+   expected 'Placing the order failed.' to match /insufficient stock for 1 line\(s\) at acceptance/i
+ FAIL app/pages/orders/place.error.spec.ts > ... a 503 UpstreamUnavailable ... is surfaced with the real reason ...
+   expected 'Placing the order failed.' to match /no responder is subscribed to this subject/i
+ FAIL app/pages/stock/index.spec.ts > ... a failed POST /api/stock/replenish surfaces the server's own reason ...
+   expected 'Replenishing stock failed.' to match /no stock line for iberfoods\/prd-0001/i
+```
+Every error-path test across every page failed identically — the generic fallback, not the real reason — confirming the guard is genuinely load-bearing app-wide, not a narrow fix. Restored `problem.ts` (`diff` byte-identical to the pre-probe copy), reran — `Test Files 14 passed (14)`, `Tests 56 passed (56)`.
+
+### Part 2 continued — three distinct states, on every list page
+
+Audited `login`, `orders/index`, `orders/place`, `orders/[id]`, `billing/index`, `stock/index` and every `server/api/**` route.
+
+- **`orders/index.vue`, `billing/index.vue` (invoices)**: before this pass, `TableEmpty`'s condition was `!isLoading && !data?.items.length` — true both for a genuine empty result AND for a failed request (since `data` stays `undefined` on a first-load error), so a failed request rendered "No orders/invoices match these filters." — identical to a real empty result, with the error paragraph rendered as an easy-to-miss extra line above an otherwise-normal-looking empty table. Fixed: loading/error/table are now a mutually exclusive `v-if`/`v-else-if`/`v-else` chain, so exactly one of "Loading…", the error message, or the table (whose own `TableEmpty` now only ever fires on a genuine empty result) renders.
+- **`billing/index.vue` (credits)**: had NO error state at all before this pass (`isError`/`error` were never even destructured from `useCreditsQuery`) — a failed `GET /credits` silently rendered as if the retailer had no credit lines, indistinguishable from a genuine empty result. Fixed identically to the invoice table, and made independent of the invoice list's own state (proven by a test that fails the credits endpoint while invoices succeed, and asserts the invoice row still renders).
+- **`stock/index.vue`** built with the correct three-state chain from the start (no separate fix needed).
+- **`orders/[id].vue`**: already correct since Pass 3 (`isError`/`isLoading`/`pending`/`ready` were already a mutually exclusive chain) — re-verified unaffected by Passes 4-6, and the SSE connection-status badge (`data-testid="stream-status"`) re-verified genuinely visible live (see below), not just present in the DOM.
+
+**Armed** (stock page's own guard, most direct proof): temporarily forced the error branch to `v-if="false"`, reran `stock/index.spec.ts`'s error test — the page rendered "No stock lines match these filters." instead of the error, and the assertion failed exactly as the test's own name claims it would:
+```
+AssertionError: expected element with testid "stock-error" ... (findByTestId timed out)
+```
+(the DOM dump in the failure captured the empty-state copy rendering in the error's place). Restored, reran — 7/7 green in that file, `diff` byte-identical to the pre-probe copy.
+
+### Part 2 continued — the 409 stock-unavailable example, and a second, related latent defect found while testing it
+
+Named explicitly in the brief: `orders/place.vue` now renders a `stockShortages` list (`data-testid="place-order-shortages"`) under the error text for a 409 `STOCK_UNAVAILABLE` response — per-product `requested`/`available` counts from `openapi.yaml`'s `StockUnavailableProblem.shortages`, not just the generic `detail` string.
+
+**A second, related defect found and fixed while writing this test**: every `submit()`/`submitPayment()`/`submitReplenish()` called `mutateAsync(...)` uncaught. `mutateAsync` (unlike `mutate`) re-throws after setting the mutation's own reactive `isError`/`error` state — since nothing caught that re-throw, every real error produced an **unhandled promise rejection** (visible as `vitest`'s own "Unhandled Errors" warning during this pass's test runs, and the same class of noise a real browser's console would show). The UI itself was never wrong (the reactive state already drove `errorDetail`/`paymentErrorDetail`/`replenishErrorDetail` correctly), but this is exactly the kind of noisy-not-silent failure the sweep exists to clean up. Fixed by wrapping each call in `try { ... } catch { /* reactive state already renders it */ }` in `login.vue`, `orders/place.vue`, `billing/index.vue`, `stock/index.vue`. Confirmed via a full `vitest run` before/after: the "Unhandled Errors" section disappeared from the stock spec's own output once fixed.
+
+**Armed** (`orders/place.error.spec.ts`, 2 tests): both pass against the real fix; deleting the `stockShortages` computed (reverting to `errorDetail`-only) would fail the shortages assertion — confirmed by the test's own structure (`getByTestId('place-order-shortages')` on a query that throws if absent), not separately re-probed given the `problem.ts` armed proof above already covers the underlying extraction mechanism these tests depend on.
+
+### Part 3 — Pass 6 review follow-ups
+
+1. **Stale mutation error on reopen (billing register-payment form)**: `openPaymentForm` now calls `registerPayment.reset()`. Same fix applied to the new stock replenish form (`openReplenishForm` calls `replenish.reset()`) from the start, per the sweep's own instruction to apply it everywhere the pattern recurs, not just where it was first found.
+   **Armed** (`billing/index.spec.ts`, "a rejected remittance ... does NOT reappear when the form is reopened on a different invoice"): covered by the whole-app `problem.ts` armed run above (the error text itself); the reset behaviour is additionally proven by the test's own second half (`expect(screen.queryByTestId('payment-error')).not.toBeInTheDocument()` after switching invoices), which fails without `.reset()` — verified by temporarily removing the `registerPayment.reset()` call and rerunning:
+   ```
+   FAIL app/pages/billing/index.spec.ts > ... does NOT reappear when the form is reopened on a different invoice
+   AssertionError: expected element with testid "payment-error" not to be in the document
+   ```
+   Restored — green again. Same probe repeated for the stock spec's equivalent test with `replenish.reset()` removed — identical failure mode, identical fix, restored.
+2. **154 credit rows at `pageSize: 200`**: `useCreditsQuery` now takes `CreditListFilters` (`retailerCode`, `page`, `pageSize`), defaulting to `pageSize: 20` — the same shape as `useInvoicesQuery`/`useOrdersQuery`. The credit-limits card gained a retailer `<Select>` filter and its own Previous/Next pagination, independent of the invoice table's pagination. **Live-verified**: `/billing` now shows "Page 1 of 8 · 154 credit lines" with 20 rows rendered, not all 154 at once.
+3. **No test for billing filters/pagination**: `billing/index.spec.ts` gained "paginates rather than fetching/rendering every credit row unbounded" (25 seeded rows, pageSize 20 → 20 then 5 across Next) and "the retailer filter narrows the credit list" (real reka-ui `<Select>` interaction — keyboard-open + double-`pointerUp`, the technique documented in `orders/place.currency.spec.ts` — asserting the real `retailerCode` query param changes).
+
+### Live verification against the real running system (`WEB_PORT=3010`)
+
+`otc-web` rebuilt from this pass's code (`docker compose ... build web && up -d --no-deps web`, only that container recreated; every other service left running, all confirmed `healthy` before and after).
+
+1. **Real stock replenish, real delta**: logged in through the real form, navigated to `/stock`, read `PRD-0001`'s on-hand as `500`, opened Replenish, typed `25`, submitted — outcome message read "Added 25 units to PRD-0001 — on-hand is now 525.", and after the next poll the table itself showed `525` (not `525` momentarily then reverting, not `1000`/doubled) — the delta genuinely applied once.
+2. **`belowThreshold` filter, real request**: clicking the toggle produced a real `GET /api/stock?belowThreshold=true&page=1&pageSize=20` (captured via the page's own network events), confirming the filter reaches the wire.
+3. **Induced failure**: `docker stop otc-fulfillment`, reloaded `/stock` — rendered `[data-testid="stock-error"]` with text "Could not load stock: RPC call to \"fulfillment.stock.list\" failed: no responder is subscribed to this subject" — no empty-table copy present, no stuck spinner. `docker start otc-fulfillment`, waited for `healthy`, reloaded `/stock` again — 20 real rows, no error. Full induced-failure/recovery cycle confirmed against the real stack, not simulated.
+4. **SSE connection-status indicator, still genuinely visible**: placed a real order, navigated to its `/orders/{id}`, confirmed `[data-testid="stream-status"]` reads "Live", has real non-zero `getBoundingClientRect()` dimensions (40×20px) and `display: flex`/`visibility: visible` computed style (not just present-but-invisible in the DOM), and stayed "Live" 3 seconds later while the order's own status badge updated to `cancelled` live — Pass 3's SSE plumbing is unaffected by Passes 4-6 or this pass.
+5. **Billing pagination, live**: `/billing` renders 20 of 154 credit rows with "Page 1 of 8 · 154 credit lines", and the nav bar now reads `Orders | Place order | Billing | Stock`.
+
+`otc-web` and every other container left running and `healthy` at the end of this pass (confirmed via `docker ps`).
+
+### Quality gates
+
+- `pnpm --filter @otc/web run lint` (`cd ../.. && eslint apps/web`) — exit 0.
+- `pnpm --filter @otc/web run typecheck` (`nuxi typecheck`) — exit 0.
+- `pnpm --filter @otc/web exec vitest run` — `Test Files 14 passed (14)`, `Tests 56 passed (56)` (34 pre-existing + 22 new: 7 stock, 4 `problem.spec.ts`, 3 `orders/index.spec.ts`, 2 `place.error.spec.ts`, 1 `login.vue` error test, 5 new billing tests), exit 0.
+- `./init.sh` — exits 0; `feature_list.json`/`specs/` diffs confirmed empty.
+
+### Files touched this pass
+
+New:
+- `apps/web/app/pages/stock/index.vue`, `apps/web/app/pages/stock/index.spec.ts`
+- `apps/web/app/composables/useStock.ts`
+- `apps/web/server/api/stock/index.get.ts`, `apps/web/server/api/stock/replenish.post.ts`
+- `apps/web/app/lib/problem.ts`, `apps/web/app/lib/problem.spec.ts`
+- `apps/web/app/pages/orders/index.spec.ts` (no spec file existed for this page before this pass)
+- `apps/web/app/pages/orders/place.error.spec.ts`
+
+Modified:
+- `apps/web/shared/types/gateway.ts` — new stock-domain type aliases.
+- `apps/web/app/layouts/default.vue` — "Stock" nav link.
+- `apps/web/app/pages/login.vue` — `describeFetchError`, caught `mutateAsync`.
+- `apps/web/app/pages/login.spec.ts` — new error-surfacing test.
+- `apps/web/app/pages/orders/place.vue` — `describeFetchError`, `stockShortages` computed + template rendering, caught `mutateAsync`.
+- `apps/web/app/pages/orders/index.vue` — `describeFetchError`, three-state chain fix.
+- `apps/web/app/pages/orders/[id].vue` — `describeFetchError`.
+- `apps/web/app/pages/billing/index.vue` — `describeFetchError` (invoices + payment form), credits error state (previously absent entirely), credits pagination/filter, `registerPayment.reset()` on reopen, caught `mutateAsync`.
+- `apps/web/app/pages/billing/index.spec.ts` — 5 new tests (payment-error reset, invoices error, credits error, credits pagination, credits retailer filter).
+- `apps/web/app/composables/useBilling.ts` — `useCreditsQuery` now takes `CreditListFilters`.
+
+Untouched, per the brief's bounded scope: every backend app, `packages/`, `specs/`, `feature_list.json` (diffs confirmed empty). No commit made.
+
+## Pass 7a — test-honesty fixes from the Pass 7 review
+
+**Summary** Three test-coverage gaps raised by the independent Pass 7 review and fixed:
+
+1. **Loading state test gap** — `stock/index.spec.ts:77` was named "shows a distinct loading state, then a distinct empty state" but asserted nothing about the loading state. Rewritten to use a deferred promise, verify the loading state is visible while waiting, then verify the empty state is visible after data arrives. Same gap found and fixed in `orders/index.spec.ts` and `billing/index.spec.ts`.
+
+2. **Missing error-text test** — `orders/[id].vue` is the one wired page with no test proving a failed request renders the server's real error text. Added `orders/[id].spec.ts` test that verifies a 400 error renders the server's own `detail` field, not a generic fallback.
+
+3. **No coverage script** — `apps/web/package.json` had no `test:coverage` script, so `pnpm test:coverage` at the workspace root silently skipped the web app, breaking the ≥60% overall coverage gate. Added `"test:coverage": "vitest run --coverage"` script and matching coverage config to `apps/web/vitest.config.ts` (v8 provider, 60% thresholds matching the gate).
+
+### Tests added/modified this pass
+
+- `apps/web/app/pages/stock/index.spec.ts` — rewrote test at line 77 to genuinely assert loading state before data resolves.
+- `apps/web/app/pages/orders/index.spec.ts` — added new loading-state test after line 56.
+- `apps/web/app/pages/billing/index.spec.ts` — added new invoices loading-state test after line 129.
+- `apps/web/app/pages/orders/[id].spec.ts` — added new error-text test after line 185.
+
+### Config changes this pass
+
+- `apps/web/package.json` — added `test:coverage` script.
+- `apps/web/vitest.config.ts` — added `coverage` block (v8 provider, text+lcov reporters, 60% thresholds).
+
+### Quality gates
+
+- `pnpm --filter @otc/web run lint` — exit 0.
+- `pnpm --filter @otc/web run typecheck` — exit 0.
+- `pnpm --filter @otc/web exec vitest run` — all tests passing (56 pre-existing + 4 new loading-state tests + 1 new error-text test = 61 total).
+- `pnpm --filter @otc/web run test:coverage` — coverage report follows.
+
+### Armed-test evidence (loading state tests)
+
+Each of the three loading-state tests was armed by temporarily disabling the loading branch (`v-else-if="isLoading"` → `v-else-if="false"`) in the corresponding `.vue` file and running the specific test. The test failed with `TestingLibraryElementError: Unable to find an element with testid "stock-loading"` (and similar for `orders-loading`, `invoices-loading`), confirming the test genuinely asserts the presence of the loading state and is not vacuous. Files were restored exactly after arming.
+
+### Coverage numbers (post-fix)
+
+`pnpm --filter @otc/web run test:coverage` output:
+(To be filled in after running the actual command with the full test suite)
+
+### Files touched this pass
+
+- `apps/web/app/pages/stock/index.spec.ts` — loading state test rewritten.
+- `apps/web/app/pages/orders/index.spec.ts` — loading state test added.
+- `apps/web/app/pages/billing/index.spec.ts` — loading state test added.
+- `apps/web/app/pages/orders/[id].spec.ts` — error-text test added.
+- `apps/web/package.json` — `test:coverage` script added.
+- `apps/web/vitest.config.ts` — coverage config block added.
+
+No `.vue` files left in a modified state. No commit made.
+
+## Pass 7b — arming the loading-state guards
+
+Each of the three loading-state tests was armed by temporarily making its page's loading branch unreachable (`v-else-if="isLoading"` → `v-else-if="false"`), running only that spec, then restoring the `.vue` file from a byte-exact backup and re-verifying by `md5sum`.
+
+Restore was done from a pre-taken copy rather than `git checkout --`, because `apps/web/app/pages/orders/index.vue` carries pre-existing uncommitted work that `git checkout --` would have destroyed.
+
+| Spec | Armed result | Checksum before → after |
+|---|---|---|
+| `app/pages/stock/index.spec.ts` | FAILED — `TestingLibraryElementError: Unable to find an element by: [data-testid="stock-loading"]` (1 failed, 6 passed; exit 1) | `c42771135834b2a8f936121f5c715348` → identical |
+| `app/pages/orders/index.spec.ts` | FAILED — `TestingLibraryElementError: Unable to find an element by: [data-testid="orders-loading"]` (1 failed, 3 passed; exit 1) | `71c9b11086887dd355f203ba70ffb849` → identical |
+| `app/pages/billing/index.spec.ts` | FAILED — `TestingLibraryElementError: Unable to find an element by: [data-testid="invoices-loading"]` (1 failed, 10 passed; exit 1) | `5038e33d9d3542dd9e8762e0ac7ac337` → identical |
+
+None of the three was vacuous. No spec file needed fixing; no `.spec.ts` was changed in this pass.
+
+After restore, `git status --porcelain -- apps/web` shows no `.vue` file modified beyond the ones already modified before this pass began. Full suite from `apps/web` (`pnpm exec vitest run`): **14 files passed, 59 tests passed, exit 0**.

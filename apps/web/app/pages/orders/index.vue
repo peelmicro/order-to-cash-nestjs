@@ -7,6 +7,7 @@ import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableR
 import { useRetailersQuery } from '@/composables/useCatalog';
 import { useOrdersQuery, type OrderListFilters } from '@/composables/useOrders';
 import { formatMoney } from '@/lib/money';
+import { describeFetchError } from '@/lib/problem';
 import type { OrderStatus } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
@@ -120,10 +121,14 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
     </div>
 
     <p v-if="isError" class="text-sm text-destructive" data-testid="orders-error">
-      Could not load orders{{ (error as Error)?.message ? `: ${(error as Error).message}` : '' }}.
+      Could not load orders: {{ describeFetchError(error, 'the request failed') }}
     </p>
 
-    <Table>
+    <div v-else-if="isLoading" class="text-sm text-muted-foreground" data-testid="orders-loading">
+      Loading…
+    </div>
+
+    <Table v-else>
       <TableHeader>
         <TableRow>
           <TableHead>Reference</TableHead>
@@ -137,7 +142,7 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
         </TableRow>
       </TableHeader>
       <TableBody>
-        <TableEmpty v-if="!isLoading && !data?.items.length" :colspan="6">
+        <TableEmpty v-if="!data?.items.length" :colspan="6">
           No orders match these filters.
         </TableEmpty>
         <TableRow v-for="order in data?.items" :key="order.orderId">
@@ -161,7 +166,7 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
       </TableBody>
     </Table>
 
-    <div class="flex items-center justify-between">
+    <div v-if="!isError" class="flex items-center justify-between">
       <span class="text-sm text-muted-foreground">
         Page {{ data?.page.page ?? filters.page }} of {{ totalPages }} · {{ data?.page.total ?? 0 }} orders
       </span>

@@ -9,6 +9,7 @@ import { applyOrderStreamUpdate, applyTimelineAppended, useOrderDetailQuery } fr
 import { useOrderStream } from '@/composables/useOrderStream';
 import { formatMoney } from '@/lib/money';
 import type { EventSourceFactory } from '@/lib/order-stream-client';
+import { describeFetchError } from '@/lib/problem';
 import type { OrderStatus } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
@@ -108,7 +109,7 @@ function retryConnection(): void {
     </div>
 
     <p v-if="isError" class="text-sm text-destructive" data-testid="order-detail-error">
-      Could not load this order{{ (error as Error)?.message ? `: ${(error as Error).message}` : '' }}.
+      Could not load this order: {{ describeFetchError(error, 'the request failed') }}
     </p>
 
     <div v-else-if="isLoading" class="text-sm text-muted-foreground" data-testid="order-detail-loading">

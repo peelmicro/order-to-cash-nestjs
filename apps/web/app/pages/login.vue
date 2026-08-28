@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useLoginMutation } from '@/composables/useSession';
-import type { Problem } from '#shared/types/gateway';
+import { describeFetchError } from '@/lib/problem';
 
 definePageMeta({ layout: 'default' });
 
@@ -31,14 +31,20 @@ onMounted(() => {
 });
 
 async function submit() {
-  await login.mutateAsync({ username: form.username, password: form.password });
-  await navigateTo('/orders');
+  try {
+    await login.mutateAsync({ username: form.username, password: form.password });
+    await navigateTo('/orders');
+  } catch {
+    // `login.isError`/`.error` (read by `errorDetail`) already drives the
+    // error UI — this only prevents an unhandled promise rejection from
+    // `mutateAsync`'s own re-throw, and correctly skips the navigation.
+  }
 }
 
-const errorDetail = computed(() => {
-  const error = login.error.value as { data?: Problem } | null;
-  return error?.data?.detail ?? error?.data?.title ?? (login.isError.value ? 'Login failed.' : undefined);
-});
+// Reads the server's own reason via `describeFetchError` — see
+// `app/lib/problem.ts` for why a naive `error.data?.detail` silently misses
+// it (this app's error-handling sweep's own headline finding).
+const errorDetail = computed(() => (login.isError.value ? describeFetchError(login.error.value, 'Login failed.') : undefined));
 </script>
 
 <template>

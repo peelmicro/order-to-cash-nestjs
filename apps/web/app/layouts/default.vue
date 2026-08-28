@@ -34,6 +34,20 @@ async function handleLogout() {
           >
             Place order
           </NuxtLink>
+          <NuxtLink
+            to="/billing"
+            class="text-sm text-muted-foreground hover:text-foreground"
+            active-class="text-foreground font-medium"
+          >
+            Billing
+          </NuxtLink>
+          <NuxtLink
+            to="/stock"
+            class="text-sm text-muted-foreground hover:text-foreground"
+            active-class="text-foreground font-medium"
+          >
+            Stock
+          </NuxtLink>
         </nav>
         <div class="flex items-center gap-3">
           <span v-if="session?.authenticated" class="text-sm text-muted-foreground">

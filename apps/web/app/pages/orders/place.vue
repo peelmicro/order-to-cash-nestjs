@@ -9,7 +9,8 @@ import { Separator } from '@/components/ui/separator';
 import { useCompaniesQuery, useProductsQuery, useRetailersQuery } from '@/composables/useCatalog';
 import { usePlaceOrderMutation } from '@/composables/useOrders';
 import { decimalStringToMinorUnits, draftOrderTotal, formatMoney } from '@/lib/money';
-import type { Problem } from '#shared/types/gateway';
+import { problemFromFetchError } from '@/lib/problem';
+import type { StockUnavailableProblem } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
 
@@ -182,9 +183,24 @@ function fillCompensationDemo() {
 const placeOrder = usePlaceOrderMutation();
 const successOrderReference = ref<string | null>(null);
 
-const errorDetail = computed(() => {
-  const error = placeOrder.error.value as { data?: Problem } | null;
-  return error?.data?.detail ?? error?.data?.title ?? (placeOrder.isError.value ? 'Placing the order failed.' : undefined);
+// `app/lib/problem.ts` — reads the server's own reason (RFC 9457 `detail`),
+// not a naive `error.data?.detail` (this app's error-handling sweep found
+// that misses a real, live-confirmed wrapping layer and silently falls
+// through to the generic fallback on every error, everywhere).
+const errorDetail = computed(() => (placeOrder.isError.value ? (problemFromFetchError(placeOrder.error.value)?.detail ?? problemFromFetchError(placeOrder.error.value)?.title ?? 'Placing the order failed.') : undefined));
+
+/**
+ * The 409/`STOCK_UNAVAILABLE` case named explicitly in this pass's brief:
+ * the acceptance-time availability check failed. `openapi.yaml`'s
+ * `StockUnavailableProblem` carries a `shortages` array (per-product
+ * requested vs available) alongside the generic `detail` text — surfaced
+ * here so the operator sees exactly which line(s) are short, not just "it
+ * failed".
+ */
+const stockShortages = computed(() => {
+  if (!placeOrder.isError.value) return undefined;
+  const problem = problemFromFetchError(placeOrder.error.value) as StockUnavailableProblem | undefined;
+  return problem?.shortages?.length ? problem.shortages : undefined;
 });
 
 async function submit() {
@@ -208,13 +224,18 @@ async function submit() {
       }),
   };
 
-  const result = await placeOrder.mutateAsync({
-    request: payload,
-    idempotencyKey: crypto.randomUUID(),
-  });
-
-  successOrderReference.value = result.orderReference;
-  lines.value = [emptyDraftLine()];
+  try {
+    const result = await placeOrder.mutateAsync({
+      request: payload,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    successOrderReference.value = result.orderReference;
+    lines.value = [emptyDraftLine()];
+  } catch {
+    // `placeOrder.isError`/`.error` (read by `errorDetail`/`stockShortages`)
+    // already drives the error UI — this only prevents an unhandled
+    // promise rejection from `mutateAsync`'s own re-throw.
+  }
 }
 </script>
 
@@ -364,9 +385,14 @@ async function submit() {
             <Input id="notes" v-model="form.notes" />
           </div>
 
-          <p v-if="errorDetail" class="text-sm text-destructive" data-testid="place-order-error">
-            {{ errorDetail }}
-          </p>
+          <div v-if="errorDetail" class="flex flex-col gap-1 text-sm text-destructive" data-testid="place-order-error">
+            <p>{{ errorDetail }}</p>
+            <ul v-if="stockShortages" class="list-disc pl-5" data-testid="place-order-shortages">
+              <li v-for="shortage in stockShortages" :key="shortage.productCode">
+                {{ shortage.productCode }}: requested {{ shortage.requested }}, only {{ shortage.available }} available
+              </li>
+            </ul>
+          </div>
           <p v-if="successOrderReference" class="text-sm text-emerald-600" data-testid="place-order-success">
             Order {{ successOrderReference }} accepted. It is not queryable yet — check the
             <NuxtLink to="/orders" class="underline">

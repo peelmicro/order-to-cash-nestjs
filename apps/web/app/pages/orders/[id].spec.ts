@@ -13,11 +13,11 @@
 // `EventSource` implementation in `app/lib/order-stream-client.spec.ts`.
 // This file's job is to prove the Vue-layer wiring: real frames flowing
 // through the real composable reach the real rendered DOM.
-import { setResponseStatus } from 'h3';
+import { createError, setResponseStatus } from 'h3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { registerEndpoint, renderSuspended } from '@nuxt/test-utils/runtime';
 import { screen, waitFor, within } from '@testing-library/vue';
-import { VueQueryPlugin } from '@tanstack/vue-query';
+import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 import OrderDetailPage from './[id].vue';
 import type { EventSourceLike } from '@/lib/order-stream-client';
 import type { OrderDetail, ProjectionPending } from '#shared/types/gateway';
@@ -49,6 +49,23 @@ class FakeEventSource extends EventTarget {
 
 function fakeFactory(url: string): EventSourceLike {
   return new FakeEventSource(url) as unknown as EventSourceLike;
+}
+
+/**
+ * TanStack Query defaults to `retry: 3` with exponential backoff, which causes
+ * error-state assertions to timeout (take 1000+ ms per test). Setting `retry:
+ * false` makes error conditions surface deterministically on the first attempt.
+ */
+function testQueryClient(): QueryClient {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
+}
+
+async function renderOrderDetail(props: { orderId: string; streamFactory?: (url: string) => EventSourceLike } = { orderId: 'order-1' }) {
+  return renderSuspended(OrderDetailPage, {
+    route: `/orders/${props.orderId}`,
+    props,
+    global: { plugins: [[VueQueryPlugin, { queryClient: testQueryClient() }]] },
+  });
 }
 
 function readyOrder(overrides: Partial<OrderDetail> = {}): OrderDetail {
@@ -83,11 +100,7 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
       },
     });
 
-    await renderSuspended(OrderDetailPage, {
-      route: '/orders/order-pending',
-      props: { orderId: 'order-pending' },
-      global: { plugins: [VueQueryPlugin] },
-    });
+    await renderOrderDetail({ orderId: 'order-pending' });
 
     const pending = await screen.findByTestId('order-detail-pending');
     expect(within(pending).getByText(/waiting for this order to appear/i)).toBeInTheDocument();
@@ -98,11 +111,7 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
   it('renders the header and timeline from the real GET response once loaded', async () => {
     registerEndpoint('/api/orders/order-1', { method: 'GET', handler: () => readyOrder() });
 
-    await renderSuspended(OrderDetailPage, {
-      route: '/orders/order-1',
-      props: { orderId: 'order-1', streamFactory: fakeFactory },
-      global: { plugins: [VueQueryPlugin] },
-    });
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
 
     expect(await screen.findByText('ORD-000001')).toBeInTheDocument();
     expect(screen.getByTestId('order-detail-status')).toHaveTextContent('placed');
@@ -114,11 +123,7 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
   it('R51 — a live timeline.appended frame is rendered, and a redelivered frame (same eventId) never produces a second entry', async () => {
     registerEndpoint('/api/orders/order-1', { method: 'GET', handler: () => readyOrder() });
 
-    await renderSuspended(OrderDetailPage, {
-      route: '/orders/order-1',
-      props: { orderId: 'order-1', streamFactory: fakeFactory },
-      global: { plugins: [VueQueryPlugin] },
-    });
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
 
     await screen.findByText('ORD-000001');
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
@@ -141,11 +146,7 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
   it('a live order.updated frame updates the rendered status badge', async () => {
     registerEndpoint('/api/orders/order-1', { method: 'GET', handler: () => readyOrder() });
 
-    await renderSuspended(OrderDetailPage, {
-      route: '/orders/order-1',
-      props: { orderId: 'order-1', streamFactory: fakeFactory },
-      global: { plugins: [VueQueryPlugin] },
-    });
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
 
     await screen.findByText('ORD-000001');
     await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
@@ -167,11 +168,7 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
       },
     });
 
-    await renderSuspended(OrderDetailPage, {
-      route: '/orders/order-1',
-      props: { orderId: 'order-1', streamFactory: fakeFactory },
-      global: { plugins: [VueQueryPlugin] },
-    });
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
 
     await screen.findByText('ORD-000001');
     expect(screen.getByTestId('order-detail-status')).toHaveTextContent('placed');
@@ -182,5 +179,25 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
 
     await waitFor(() => expect(callCount).toBe(2));
     await waitFor(() => expect(screen.getByTestId('order-detail-status')).toHaveTextContent('confirmed'));
+  });
+
+  it('a failed GET /api/orders/{id} renders the server\'s real error text, not a generic fallback', async () => {
+    registerEndpoint('/api/orders/order-error', {
+      method: 'GET',
+      handler: () => {
+        throw createError({
+          statusCode: 400,
+          statusMessage: 'Bad Request',
+          data: { code: 'INVALID_ORDER_ID', title: 'Invalid order ID', detail: 'Order ID must be a valid UUID' },
+        });
+      },
+    });
+
+    await renderOrderDetail({ orderId: 'order-error' });
+
+    const errorEl = await screen.findByTestId('order-detail-error');
+    expect(errorEl.textContent).toMatch(/order id must be a valid uuid/i);
+    expect(screen.queryByTestId('order-detail-loading')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('order-detail-pending')).not.toBeInTheDocument();
   });
 });

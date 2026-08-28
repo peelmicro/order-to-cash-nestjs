@@ -1,8 +1,9 @@
 // @vitest-environment nuxt
+import { createError } from 'h3';
 import { describe, expect, it, vi } from 'vitest';
-import { renderSuspended } from '@nuxt/test-utils/runtime';
+import { registerEndpoint, renderSuspended } from '@nuxt/test-utils/runtime';
 import { screen, fireEvent } from '@testing-library/vue';
-import { VueQueryPlugin } from '@tanstack/vue-query';
+import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 
 /**
  * Bug 1 regression: the login `<form>` carries no `action`/`method`
@@ -69,5 +70,34 @@ describe('login.vue — submit button is gated on hydration, not only on isPendi
     const button = screen.getByRole('button', { name: /sign in|signing in/i });
     expect(button).not.toBeDisabled();
     expect(button).toHaveTextContent('Sign in');
+  });
+});
+
+// Error-handling sweep (feature 29 pass 7).
+describe('login.vue — a failed login surfaces the server\'s own reason', () => {
+  it('renders the real 401 detail text (not a blank form, not a generic fallback)', async () => {
+    registerEndpoint('/api/auth/login', {
+      method: 'POST',
+      handler: () => {
+        throw createError({
+          statusCode: 401,
+          statusMessage: 'Unauthorized',
+          data: { code: 'INVALID_CREDENTIALS', title: 'Bad credentials', detail: 'Username or password is incorrect' },
+        });
+      },
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await renderSuspended(await import('./login.vue').then((m) => m.default), {
+      global: { plugins: [[VueQueryPlugin, { queryClient }]] },
+    });
+
+    await fireEvent.update(screen.getByLabelText('Username'), 'operator');
+    await fireEvent.update(screen.getByLabelText('Password'), 'wrong-password');
+    await fireEvent.submit(screen.getByRole('button', { name: /sign in/i }).closest('form')!);
+
+    const errorEl = await screen.findByTestId('login-error');
+    expect(errorEl.textContent).toMatch(/username or password is incorrect/i);
+    expect(errorEl.textContent).not.toMatch(/^login failed\.?$/i);
   });
 });
