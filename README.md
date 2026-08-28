@@ -47,6 +47,8 @@ Two things built here are meant to be reused verbatim by #8 and #9: the stack-ag
 | Docker + Compose | latest | required from Phase 4 onwards |
 
 > **If you run more than one Docker daemon** (e.g. Docker Desktop *and* the system Engine), be aware that `docker` follows your active **context** while Testcontainers does not — it reads `DOCKER_HOST`, then falls back to `/var/run/docker.sock`. The integration tests can therefore run against a different daemon than your compose stack, and their disposable containers will be invisible to a plain `docker ps`. Everything still works; to watch them, point the CLI at the same socket: `DOCKER_HOST=unix:///var/run/docker.sock docker ps`.
+>
+> **On Linux, prefer the native Docker Engine over Docker Desktop** — and if you have both, `docker context use default` removes the split above entirely by pointing the CLI at the same socket Testcontainers already uses. Docker Desktop on Linux runs every container inside a VM: measured on this project's own dev machine, `qemu-system-x86` held **20.2 GB** of host RAM to run a stack whose containers actually used 5.1 GB, and it did not hand that memory back when the containers stopped — only stopping Docker Desktop itself did (`systemctl --user stop docker-desktop.service`). The native Engine also writes through `overlay2` straight to the host filesystem rather than through a VM disk image, which matters for a stack running four databases plus SonarQube's embedded Elasticsearch. After switching, rebuild once (`pnpm dc:build:apps`) — images and volumes do not migrate between daemons, but every store here is reproducible from `pnpm dc:seed`.
 
 ```bash
 git clone https://github.com/peelmicro/order-to-cash-nestjs.git
@@ -203,7 +205,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 20 | n8n demo workflows | ⬜ |
 | 21 | SonarQube + coverage gates | ⬜ |
 | 22 | Prometheus, Grafana, Jaeger verification | ⬜ |
-| 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), verified healthy against the live infra stack |
+| 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), all running non-root as uid 1000, verified healthy from a cold cycle against the live infra stack |
 | 24 | Documentation + demo recording | ⬜ |
 | 25 | Final checkpoint | ⬜ |
 
