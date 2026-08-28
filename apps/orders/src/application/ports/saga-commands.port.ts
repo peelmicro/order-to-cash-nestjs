@@ -13,6 +13,7 @@ import type {
   DespatchCreateRequestPayload,
   InvoiceIssueReplyPayload,
   InvoiceIssueRequestPayload,
+  RpcError,
   StockReleaseReplyPayload,
   StockReleaseRequestPayload,
   StockReserveReplyPayload,
@@ -50,7 +51,14 @@ export class SagaCommandTimeoutError extends Error {
   }
 }
 
-/** Any other transport-level failure — no responder subscribed (NATS `NoResponders`), a malformed reply, a connection error, or an `RpcError`-shaped body (design.md §6.1). */
+/**
+ * Any other GENUINELY RETRYABLE failure — no responder subscribed (NATS
+ * `NoResponders`), a malformed reply, a connection error, or an
+ * `RpcError`-shaped body whose `code` is one of the transient/infra
+ * codes (`TIMEOUT`, `UNAVAILABLE`, `INTERNAL_ERROR`) — design.md §6.1.
+ * A terminal business rejection (feature 42) is NOT one of these; see
+ * `SagaCommandBusinessRejectionError` below.
+ */
 export class SagaCommandTransportError extends Error {
   readonly code = 'SAGA_COMMAND_TRANSPORT_ERROR';
 
@@ -59,6 +67,37 @@ export class SagaCommandTransportError extends Error {
     reason: string,
   ) {
     super(`saga command: transport failure on subject "${subject}": ${reason}`);
+    this.name = new.target.name;
+  }
+}
+
+/**
+ * A TERMINAL business rejection (feature 42, correcting design.md's
+ * original §6.1 framing) — the responder replied with an `RpcError`
+ * whose `code` is one of the closed-set business-outcome codes
+ * (`VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `PRECONDITION_FAILED`,
+ * `ORDER_NOT_CANCELLABLE`, `STOCK_UNAVAILABLE`, `INVOICE_NOT_PAYABLE`,
+ * `PAYMENT_MISMATCH`, `DOMAIN_ERROR`). Retrying it can NEVER succeed —
+ * it is a definitive "no" from the responder's own domain, not a
+ * transport hiccup — so `SagaCommandDispatcher` short-circuits straight
+ * to a resolved end state instead of SO4's retry/backoff loop. This is
+ * distinct from SO6's existing "business rejection is not an error"
+ * rule (a TYPED reply payload's `outcome: 'rejected'` for
+ * `stock.reserve`/`credit.hold`, which resolves normally and is marked
+ * `sent`): an `RpcError`-shaped reply means the command itself was never
+ * fulfilled, so the row cannot be marked `sent` — it is marked
+ * `rejected` instead, a distinct terminal status `claimDue` never
+ * re-claims.
+ */
+export class SagaCommandBusinessRejectionError extends Error {
+  readonly code = 'SAGA_COMMAND_BUSINESS_REJECTION';
+
+  constructor(
+    readonly subject: string,
+    readonly rpcErrorCode: RpcError['code'],
+    reason: string,
+  ) {
+    super(`saga command: terminal business rejection on subject "${subject}" (${rpcErrorCode}): ${reason}`);
     this.name = new.target.name;
   }
 }

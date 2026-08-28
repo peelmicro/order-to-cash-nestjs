@@ -26,7 +26,14 @@ export const SAGA_COMMAND_KIND_VALUES = [
 
 export type SagaCommandKindRow = (typeof SAGA_COMMAND_KIND_VALUES)[number];
 
-export const SAGA_COMMAND_STATUS_VALUES = ['pending', 'sent', 'parked'] as const;
+// `rejected` (feature 42) — the terminal end state for a command whose
+// responder replied with a terminal-business `RpcError` (e.g.
+// `PRECONDITION_FAILED`); distinct from `parked`, which stays
+// retry-eligible on a capped backoff schedule. Six characters, well
+// within the existing `varchar(10)` column — no column-length migration
+// needed, only this TS-level enum widening (drizzle-kit generate
+// confirmed no SQL diff, see progress/impl_orders_saga_terminal_rejection.md).
+export const SAGA_COMMAND_STATUS_VALUES = ['pending', 'sent', 'parked', 'rejected'] as const;
 
 export type SagaCommandStatusRow = (typeof SAGA_COMMAND_STATUS_VALUES)[number];
 

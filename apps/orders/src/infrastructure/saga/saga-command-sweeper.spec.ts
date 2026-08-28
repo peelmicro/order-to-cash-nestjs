@@ -87,6 +87,9 @@ describe('SagaCommandSweeperService', () => {
       async park() {
         return true;
       },
+      async markRejected() {
+        return true;
+      },
       async claimDeadLetter() {
         return true;
       },
@@ -124,6 +127,9 @@ describe('SagaCommandSweeperService', () => {
       async park() {
         return true;
       },
+      async markRejected() {
+        return true;
+      },
       async claimDeadLetter() {
         return true;
       },
@@ -157,6 +163,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async markRejected() {
         return true;
       },
       async claimDeadLetter() {
@@ -195,6 +204,9 @@ describe('SagaCommandSweeperService', () => {
       async park() {
         return true;
       },
+      async markRejected() {
+        return true;
+      },
       async claimDeadLetter() {
         return true;
       },
@@ -223,6 +235,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async markRejected() {
         return true;
       },
       async claimDeadLetter() {
@@ -256,6 +271,9 @@ describe('SagaCommandSweeperService', () => {
         return true;
       },
       async park() {
+        return true;
+      },
+      async markRejected() {
         return true;
       },
       async claimDeadLetter() {

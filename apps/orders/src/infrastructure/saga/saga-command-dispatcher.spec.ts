@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Envelope } from '@otc/contracts';
 import type { SagaCommandStore, SagaCommandRecord } from '../../application/ports/saga-command-store.port';
 import {
+  SagaCommandBusinessRejectionError,
   SagaCommandTimeoutError,
   SagaCommandTransportError,
   type SagaCommandsPort,
@@ -49,19 +50,22 @@ function pendingRow(overrides: Partial<SagaCommandRecord> = {}): SagaCommandReco
 
 function fakeStore(
   row: SagaCommandRecord | null,
-  options: { parkReturns?: boolean; claimDeadLetterReturns?: boolean } = {},
+  options: { parkReturns?: boolean; claimDeadLetterReturns?: boolean; markRejectedReturns?: boolean } = {},
 ): SagaCommandStore & {
   markSentCalls: UniqueId[];
   parkCalls: Array<{ id: UniqueId; attempts: number; lastError: string; nextAttemptAt: Date }>;
   claimDeadLetterCalls: UniqueId[];
+  markRejectedCalls: Array<{ id: UniqueId; attempts: number; lastError: string }>;
 } {
   const markSentCalls: UniqueId[] = [];
   const parkCalls: Array<{ id: UniqueId; attempts: number; lastError: string; nextAttemptAt: Date }> = [];
   const claimDeadLetterCalls: UniqueId[] = [];
+  const markRejectedCalls: Array<{ id: UniqueId; attempts: number; lastError: string }> = [];
   return {
     markSentCalls,
     parkCalls,
     claimDeadLetterCalls,
+    markRejectedCalls,
     async enqueue() {
       throw new Error('not used by this test');
     },
@@ -78,6 +82,10 @@ function fakeStore(
     async park(id, attempts, lastError, nextAttemptAt) {
       parkCalls.push({ id, attempts, lastError, nextAttemptAt });
       return options.parkReturns ?? true;
+    },
+    async markRejected(id, attempts, lastError) {
+      markRejectedCalls.push({ id, attempts, lastError });
+      return options.markRejectedReturns ?? true;
     },
     async claimDeadLetter(id) {
       claimDeadLetterCalls.push(id);
@@ -242,6 +250,77 @@ describe('SagaCommandDispatcher — SO4 retry policy', () => {
 
     expect(outcome).toBe('sent');
     expect(store.markSentCalls).toEqual([row.id]);
+  });
+});
+
+// Feature 42 — the adapter now classifies a terminal RpcError business
+// rejection (e.g. PRECONDITION_FAILED) as `SagaCommandBusinessRejectionError`,
+// distinct from `SagaCommandTransportError`. Proves the dispatcher's
+// short-circuit: NO further in-line attempts, NO backoff delay, and a
+// terminal `rejected` resolution — never `park()`'s retry-eligible path.
+// Armed: reverting the adapter's `isRpcErrorReply` terminal/transient split
+// (so EVERY RpcError throws `SagaCommandTransportError`, as before this
+// feature) makes `dispatch()` retry this row the full `maxAttempts` times
+// via the transient branch below instead of short-circuiting on the first
+// attempt — this suite's "called exactly once" assertions then fail with
+// the port stub actually invoked `maxAttempts` times, proving the guard is
+// live (see progress/impl_orders_saga_terminal_rejection.md for the
+// verbatim failure recorded when this was armed).
+describe('SagaCommandDispatcher — feature 42 (terminal business rejection short-circuits SO4 retry)', () => {
+  it('a terminal business rejection (PRECONDITION_FAILED) calls the port exactly ONCE, delays zero times, and resolves "rejected" via markRejected — never park', async () => {
+    const row = pendingRow({ command: 'stock.release' });
+    const store = fakeStore(row);
+    const delays: number[] = [];
+    const delay = async (ms: number): Promise<void> => {
+      delays.push(ms);
+    };
+    const releaseStock = vi
+      .fn()
+      .mockRejectedValue(new SagaCommandBusinessRejectionError('fulfillment.stock.release', 'PRECONDITION_FAILED', 'reservation already consumed'));
+    const dispatcher = new SagaCommandDispatcher(fakePort({ releaseStock }), store, DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, delay);
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.release');
+
+    expect(outcome).toBe('rejected');
+    expect(releaseStock).toHaveBeenCalledTimes(1); // NOT maxAttempts (3) — no in-line retry at all
+    expect(delays).toHaveLength(0); // NOT SO4's backoff schedule — no delay is ever awaited
+    expect(store.markRejectedCalls).toHaveLength(1);
+    expect(store.markRejectedCalls[0]?.id).toEqual(row.id);
+    expect(store.markRejectedCalls[0]?.attempts).toBe(1);
+    expect(store.markRejectedCalls[0]?.lastError).toContain('PRECONDITION_FAILED');
+    expect(store.parkCalls).toHaveLength(0); // never park()'s retry-eligible path
+    expect(store.markSentCalls).toHaveLength(0);
+  });
+
+  it('a terminal business rejection on a resumed PARKED row (attempts already accumulated) accumulates onto the prior attempts count', async () => {
+    const row = pendingRow({ command: 'stock.release', status: 'parked', attempts: 4 });
+    const store = fakeStore(row);
+    const releaseStock = vi
+      .fn()
+      .mockRejectedValue(new SagaCommandBusinessRejectionError('fulfillment.stock.release', 'PRECONDITION_FAILED', 'reservation already consumed'));
+    const dispatcher = new SagaCommandDispatcher(fakePort({ releaseStock }), store, DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, noDelay);
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.release');
+
+    expect(outcome).toBe('rejected');
+    expect(releaseStock).toHaveBeenCalledTimes(1);
+    expect(store.markRejectedCalls[0]?.attempts).toBe(5); // row.attempts (4) + this cycle's 1 attempt
+  });
+
+  it('a genuinely TRANSIENT rejection (e.g. wrapped in SagaCommandTransportError) is UNCHANGED — still retried to exhaustion and still parks the old way, never calling markRejected', async () => {
+    const row = pendingRow({ command: 'stock.release' });
+    const store = fakeStore(row);
+    const releaseStock = vi
+      .fn()
+      .mockRejectedValue(new SagaCommandTransportError('fulfillment.stock.release', 'responder returned INTERNAL_ERROR: boom'));
+    const dispatcher = new SagaCommandDispatcher(fakePort({ releaseStock }), store, DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG, noDelay);
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'stock.release');
+
+    expect(outcome).toBe('parked'); // NOT 'rejected' — the terminal path is untouched
+    expect(releaseStock).toHaveBeenCalledTimes(DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG.maxAttempts); // full retry budget, unaffected
+    expect(store.parkCalls).toHaveLength(1);
+    expect(store.markRejectedCalls).toHaveLength(0);
   });
 });
 

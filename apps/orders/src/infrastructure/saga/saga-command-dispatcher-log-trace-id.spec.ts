@@ -74,6 +74,9 @@ function fakeStore(row: SagaCommandRecord | null, options: { parkReturns?: boole
     async park() {
       return options.parkReturns ?? true;
     },
+    async markRejected() {
+      return true;
+    },
     async claimDeadLetter() {
       return true;
     },

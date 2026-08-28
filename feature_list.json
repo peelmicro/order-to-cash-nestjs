@@ -560,7 +560,7 @@
       "phase": 8,
       "title": "NatsSagaCommandsAdapter: distinguish a terminal RpcError (business rejection) from a retryable transport error",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "a PRECONDITION_FAILED (or other terminal-business-outcome) RpcError reply from a responder is classified as terminal, not retried at capped backoff forever",
         "a genuinely retryable transport failure (timeout, connection refused, no responder) is unaffected \u2014 still retried exactly as today",

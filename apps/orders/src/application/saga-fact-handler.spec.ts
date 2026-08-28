@@ -132,6 +132,10 @@ class FakeSagaCommandStore implements SagaCommandStore {
     throw new Error('not used by this test');
   }
 
+  async markRejected(): Promise<boolean> {
+    throw new Error('not used by this test');
+  }
+
   async claimDeadLetter(): Promise<boolean> {
     throw new Error('not used by this test');
   }

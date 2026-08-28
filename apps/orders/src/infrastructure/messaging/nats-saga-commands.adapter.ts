@@ -22,6 +22,7 @@ import type {
   StockReserveRequestPayload,
 } from '@otc/contracts';
 import {
+  SagaCommandBusinessRejectionError,
   SagaCommandTimeoutError,
   SagaCommandTransportError,
   type SagaCommandMeta,
@@ -63,6 +64,39 @@ function requestHeaders(meta: SagaCommandMeta): MsgHdrs {
 
 function isRpcErrorReply(body: unknown): body is RpcError {
   return typeof body === 'object' && body !== null && typeof (body as { code?: unknown }).code === 'string';
+}
+
+/**
+ * Feature 42: `RpcError.code` (`@otc/contracts`) is a closed union that
+ * splits into terminal-business codes — a definitive "no" from the
+ * responder's own domain, which retrying can never turn into a "yes" —
+ * and transient/infra codes, which a later attempt genuinely might
+ * resolve. `TIMEOUT` never reaches here (the caller's own timeout,
+ * thrown before any reply body exists); it is listed on the transient
+ * side of the exhaustive switch purely so the switch stays exhaustive
+ * against the full `RpcError['code']` union.
+ */
+function isTerminalRpcErrorCode(code: RpcError['code']): boolean {
+  switch (code) {
+    case 'VALIDATION_FAILED':
+    case 'NOT_FOUND':
+    case 'CONFLICT':
+    case 'PRECONDITION_FAILED':
+    case 'ORDER_NOT_CANCELLABLE':
+    case 'STOCK_UNAVAILABLE':
+    case 'INVOICE_NOT_PAYABLE':
+    case 'PAYMENT_MISMATCH':
+    case 'DOMAIN_ERROR':
+      return true;
+    case 'TIMEOUT':
+    case 'UNAVAILABLE':
+    case 'INTERNAL_ERROR':
+      return false;
+    default: {
+      const exhaustive: never = code;
+      throw new Error(`nats-saga-commands.adapter: unmapped RpcError code "${String(exhaustive)}"`);
+    }
+  }
 }
 
 function isNoRespondersError(error: unknown): boolean {
@@ -144,6 +178,9 @@ export class NatsSagaCommandsAdapter implements SagaCommandsPort {
     }
 
     if (isRpcErrorReply(body)) {
+      if (isTerminalRpcErrorCode(body.code)) {
+        throw new SagaCommandBusinessRejectionError(subject, body.code, body.message);
+      }
       throw new SagaCommandTransportError(subject, `responder returned ${body.code}: ${body.message}`);
     }
 

@@ -17,6 +17,7 @@ import type { UniqueId } from '@otc/shared-kernel';
 import { activeTraceId } from '../observability/trace-context.js';
 import type { SagaCommandRecord, SagaCommandStore } from '../../application/ports/saga-command-store.port';
 import {
+  SagaCommandBusinessRejectionError,
   SagaCommandTimeoutError,
   SagaCommandTransportError,
   type SagaCommandMeta,
@@ -39,7 +40,7 @@ export const DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG: SagaCommandDispatcherConfig
   parkRetryCapMs: 900_000,
 };
 
-export type SagaCommandDispatchOutcome = 'sent' | 'parked' | 'noop';
+export type SagaCommandDispatchOutcome = 'sent' | 'parked' | 'rejected' | 'noop';
 
 export interface SagaCommandParkContext {
   readonly attempts: number;
@@ -130,7 +131,11 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
    * retry policy. Absent or already `sent` — a stale hop — is a silent
    * no-op (design.md §5.5): the unique key and this claim make
    * double-dispatch harmless on top of the responders' own idempotency
-   * (saga.md §6 layer 3).
+   * (saga.md §6 layer 3). A TERMINAL business rejection (feature 42 —
+   * `SagaCommandBusinessRejectionError`) short-circuits the retry loop
+   * on its first occurrence, skipping remaining attempts/backoff and
+   * `park()`'s retry-eligible path entirely, resolving instead to
+   * `markRejected`'s terminal `rejected` status.
    */
   async dispatch(orderId: UniqueId, command: SagaCommandKind): Promise<SagaCommandDispatchOutcome> {
     const row = await this.store.findByOrderAndCommand(orderId, command);
@@ -164,6 +169,29 @@ export class SagaCommandDispatcher implements DispatchesSagaCommands {
         }
         return 'sent';
       } catch (error) {
+        // Feature 42: a terminal business rejection short-circuits the
+        // retry loop immediately — no further in-line attempts, no
+        // backoff delay, and NOT `park()`'s retry-eligible path. The
+        // responder has already given a definitive "no" from its own
+        // domain (e.g. `PRECONDITION_FAILED`); a second/third attempt at
+        // the same subject with the same idempotent request id can only
+        // ever reproduce the identical rejection, so retrying it is pure
+        // waste — and, before this fix, an unresolvable infinite retry.
+        if (error instanceof SagaCommandBusinessRejectionError) {
+          const totalAttempts = row.attempts + attemptsThisCycle;
+          await this.store.markRejected(row.id, totalAttempts, error.message);
+          const rejectedTraceId = activeTraceId();
+          this.logger.error('saga-command-dispatcher: terminal business rejection, command rejected', {
+            orderId: orderId.value,
+            correlationId: orderId.value,
+            ...(rejectedTraceId ? { traceId: rejectedTraceId } : {}),
+            command,
+            attempts: totalAttempts,
+            rpcErrorCode: error.rpcErrorCode,
+            error: error.message,
+          });
+          return 'rejected';
+        }
         lastError =
           error instanceof SagaCommandTimeoutError || error instanceof SagaCommandTransportError
             ? error.message

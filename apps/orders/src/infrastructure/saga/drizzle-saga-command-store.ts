@@ -127,6 +127,21 @@ export class DrizzleSagaCommandStore implements SagaCommandStore {
     return affectedRows(result) > 0;
   }
 
+  /** `pending -> rejected` (or `parked -> rejected`) on a terminal business-rejection `RpcError` reply (feature 42) — no `next_attempt_at` to set, this row is never retried again. Same conditional-update safety as `markSent`/`park`. */
+  async markRejected(id: UniqueId, attempts: number, lastError: string): Promise<boolean> {
+    const result = await this.db
+      .update(sagaCommands)
+      .set({
+        status: 'rejected',
+        attempts,
+        lastError,
+        nextAttemptAt: null,
+        updatedAt: this.clock.now(),
+      })
+      .where(and(eq(sagaCommands.id, id.value), notAlreadySent()));
+    return affectedRows(result) > 0;
+  }
+
   /** OR3's "at most once" claim (design.md §4.2 point 1) — a conditional update, same race-safety shape as `markSent`/`park`. */
   async claimDeadLetter(id: UniqueId): Promise<boolean> {
     const result = await this.db

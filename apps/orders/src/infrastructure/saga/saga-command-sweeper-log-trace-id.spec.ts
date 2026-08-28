@@ -108,6 +108,9 @@ describe('SagaCommandSweeperService — per-row log carries traceId + correlatio
         async park() {
           return true;
         },
+        async markRejected() {
+          return true;
+        },
         async claimDeadLetter() {
           return true;
         },
@@ -161,6 +164,9 @@ describe('SagaCommandSweeperService — per-row log carries traceId + correlatio
           return true;
         },
         async park() {
+          return true;
+        },
+        async markRejected() {
           return true;
         },
         async claimDeadLetter() {

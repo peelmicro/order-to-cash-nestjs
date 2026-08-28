@@ -102,6 +102,7 @@ describe('CancelOrderHandler', () => {
       claimDue: vi.fn(),
       markSent: vi.fn(),
       park: vi.fn(),
+      markRejected: vi.fn(),
       claimDeadLetter: vi.fn(),
     };
     unitOfWork = { execute: vi.fn(async (work: (tx: TransactionContext) => Promise<unknown>) => work(fakeTx())) as UnitOfWork['execute'] };

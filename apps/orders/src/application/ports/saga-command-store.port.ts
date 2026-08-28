@@ -13,7 +13,15 @@ import type { SagaCommandKind } from '../saga-steps.js';
 
 export const SAGA_COMMAND_STORE = Symbol('SagaCommandStore');
 
-export type SagaCommandStatus = 'pending' | 'sent' | 'parked';
+/**
+ * `rejected` (feature 42) is the terminal end state for a command whose
+ * responder replied with a terminal-business `RpcError` (e.g.
+ * `PRECONDITION_FAILED`) — retrying it can never succeed, so it is a
+ * dead end distinct from `parked` (which IS retry-eligible on a capped
+ * backoff schedule). `claimDue`'s predicate matches only `pending` and
+ * `parked`, so a `rejected` row is never re-claimed.
+ */
+export type SagaCommandStatus = 'pending' | 'sent' | 'parked' | 'rejected';
 
 export interface EnqueueSagaCommandInput {
   readonly id: UniqueId;
@@ -71,6 +79,17 @@ export interface SagaCommandStore {
 
   /** `pending -> parked` on exhausted in-line attempts (SO5) — same conditional-update safety as `markSent`. */
   park(id: UniqueId, attempts: number, lastError: string, nextAttemptAt: Date): Promise<boolean>;
+
+  /**
+   * `pending -> rejected` (or `parked -> rejected`) on a TERMINAL
+   * business-rejection `RpcError` reply (feature 42) — the row will
+   * never be retried again, so there is no `nextAttemptAt` to set.
+   * Same conditional-update safety as `markSent`/`park`
+   * (`WHERE status <> 'sent'`). `claimDue`'s predicate matches only
+   * `pending`/`parked`, so a `rejected` row is structurally excluded
+   * from every future sweep claim without any extra guard there.
+   */
+  markRejected(id: UniqueId, attempts: number, lastError: string): Promise<boolean>;
 
   /**
    * OR3's "at most once" claim — `UPDATE ... SET dead_lettered_at = NOW()

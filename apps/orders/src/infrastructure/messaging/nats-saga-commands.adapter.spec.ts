@@ -17,9 +17,15 @@ import { extractNatsTraceContext, tracer } from '../observability/trace-context'
 import type {
   CreditHoldReplyPayload,
   RpcError,
+  StockReleaseReplyPayload,
   StockReserveReplyPayload,
 } from '@otc/contracts';
-import { SagaCommandTimeoutError, SagaCommandTransportError, type SagaCommandMeta } from '../../application/ports/saga-commands.port';
+import {
+  SagaCommandBusinessRejectionError,
+  SagaCommandTimeoutError,
+  SagaCommandTransportError,
+  type SagaCommandMeta,
+} from '../../application/ports/saga-commands.port';
 import {
   CREDIT_HOLD_SUBJECT,
   CREDIT_RELEASE_SUBJECT,
@@ -187,6 +193,53 @@ describe('NatsSagaCommandsAdapter — reserveStock', () => {
       ),
     ).rejects.toThrow(SagaCommandTransportError);
   });
+});
+
+// Feature 42 — the terminal-vs-transient RpcError split. Reproduces the
+// live bug's exact scenario: `stock.release` on an already-`consumed`
+// reservation, which Fulfillment correctly answers with `PRECONDITION_FAILED`
+// (an `RpcError`-shaped reply, distinct from `StockReleaseReplyPayload`'s
+// own typed `outcome` field — SO6 is unrelated to this path). Armed: with
+// `isTerminalRpcErrorCode` reverted to "every code is terminal" or removed
+// entirely (the pre-fix state, where `isRpcErrorReply` alone decided the
+// outcome and every RpcError became `SagaCommandTransportError`), the
+// `PRECONDITION_FAILED` case below fails — it throws `SagaCommandTransportError`
+// instead of `SagaCommandBusinessRejectionError` (verbatim recorded in
+// progress/impl_orders_saga_terminal_rejection.md).
+describe('NatsSagaCommandsAdapter — feature 42 (terminal vs. transient RpcError classification)', () => {
+  const replyCodec = JSONCodec<StockReleaseReplyPayload | RpcError>();
+
+  async function releaseStockWithReply(errorReply: RpcError) {
+    const client = fakeClient(async () => ({ data: replyCodec.encode(errorReply) }));
+    const adapter = new NatsSagaCommandsAdapter(client, 1500);
+    return adapter.releaseStock({ orderReference: 'ORD-000001', reason: 'order_cancelled' }, META);
+  }
+
+  it.each(['VALIDATION_FAILED', 'NOT_FOUND', 'CONFLICT', 'PRECONDITION_FAILED', 'ORDER_NOT_CANCELLABLE', 'STOCK_UNAVAILABLE', 'INVOICE_NOT_PAYABLE', 'PAYMENT_MISMATCH', 'DOMAIN_ERROR'] as const)(
+    'throws SagaCommandBusinessRejectionError (terminal, not transport) for RpcError code %s',
+    async (code) => {
+      await expect(releaseStockWithReply({ code, message: 'reservation already consumed' })).rejects.toThrow(
+        SagaCommandBusinessRejectionError,
+      );
+    },
+  );
+
+  it('the exact reproduced bug: stock.release against an already-consumed reservation (PRECONDITION_FAILED) is terminal, carries the subject and the responder code', async () => {
+    await expect(
+      releaseStockWithReply({ code: 'PRECONDITION_FAILED', message: 'reservation already consumed' }),
+    ).rejects.toMatchObject({
+      subject: STOCK_RELEASE_SUBJECT,
+      rpcErrorCode: 'PRECONDITION_FAILED',
+    });
+  });
+
+  it.each(['TIMEOUT', 'UNAVAILABLE', 'INTERNAL_ERROR'] as const)(
+    'throws SagaCommandTransportError (still retryable, UNCHANGED) for RpcError code %s',
+    async (code) => {
+      await expect(releaseStockWithReply({ code, message: 'boom' })).rejects.toThrow(SagaCommandTransportError);
+      await expect(releaseStockWithReply({ code, message: 'boom' })).rejects.not.toThrow(SagaCommandBusinessRejectionError);
+    },
+  );
 });
 
 describe('NatsSagaCommandsAdapter — holdCredit (business rejection is not an error, SO6)', () => {
