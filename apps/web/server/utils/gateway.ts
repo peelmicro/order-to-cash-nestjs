@@ -48,6 +48,42 @@ export async function gatewayFetch<T>(event: H3Event, path: string, options: Gat
   }
 }
 
+export interface GatewayRawResponse<T> {
+  status: number;
+  data: T;
+}
+
+/**
+ * Like `gatewayFetch`, but also returns the real HTTP status the Gateway
+ * answered with, instead of only the parsed body. Needed for `GET /orders/{id}`:
+ * its `202`/`ProjectionPending` case (R55) is a genuine 2xx success as far as
+ * `$fetch` is concerned (it never throws), so the only way for this route's
+ * own response to honestly forward "not projected yet" to the browser is to
+ * read the status the Gateway actually sent and set the same one here,
+ * rather than always answering `200`.
+ */
+export async function gatewayFetchWithStatus<T>(event: H3Event, path: string, options: GatewayRequestOptions = {}): Promise<GatewayRawResponse<T>> {
+  const config = useRuntimeConfig(event);
+  const token = await requireGatewayToken(event);
+  let status = 200;
+
+  try {
+    const data = await $fetch<T>(path, {
+      method: options.method,
+      query: options.query,
+      body: options.body,
+      baseURL: config.gatewayBaseUrl,
+      headers: { ...options.headers, Authorization: `Bearer ${token}` },
+      onResponse({ response }) {
+        status = response.status;
+      },
+    });
+    return { status, data: data as T };
+  } catch (error) {
+    forwardProblem(error);
+  }
+}
+
 /** Calls the Gateway with no session/auth requirement — `POST /auth/login` and the token-bearing `GET /auth/me` call right after it, before a session exists yet. */
 export async function gatewayFetchPublic<T>(event: H3Event, path: string, options: GatewayRequestOptions = {}): Promise<T> {
   const config = useRuntimeConfig(event);

@@ -26,6 +26,18 @@ export type Product = GatewayComponents['schemas']['Product'];
 export type ValidationProblem = GatewayComponents['schemas']['ValidationProblem'];
 export type StockUnavailableProblem = GatewayComponents['schemas']['StockUnavailableProblem'];
 
+// ── Order detail + live SSE timeline (feature 29 pass 3) ──────────────────
+export type OrderDetail = GatewayComponents['schemas']['OrderDetail'];
+export type TimelineEntry = GatewayComponents['schemas']['TimelineEntry'];
+export type ProjectionPending = GatewayComponents['schemas']['ProjectionPending'];
+export type OrderStreamUpdate = GatewayComponents['schemas']['OrderStreamUpdate'];
+export type TimelineStreamEntry = GatewayComponents['schemas']['TimelineStreamEntry'];
+export type StreamReady = GatewayComponents['schemas']['StreamReady'];
+export type StreamPing = GatewayComponents['schemas']['StreamPing'];
+export type OrderReferences = GatewayComponents['schemas']['OrderReferences'];
+export type OrderTotals = GatewayComponents['schemas']['OrderTotals'];
+export type PartyRef = GatewayComponents['schemas']['PartyRef'];
+
 /** The shape `server/api/auth/session.get.ts` and `server/api/auth/login.post.ts` return to the browser — the operator's identity, never the token (F14). */
 export interface SessionInfo {
   authenticated: boolean;

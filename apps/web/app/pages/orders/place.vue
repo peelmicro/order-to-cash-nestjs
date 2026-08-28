@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -8,8 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { useCompaniesQuery, useProductsQuery, useRetailersQuery } from '@/composables/useCatalog';
 import { usePlaceOrderMutation } from '@/composables/useOrders';
-import { draftOrderTotal, formatMoney } from '@/lib/money';
-import type { Problem, PlaceOrderLine } from '#shared/types/gateway';
+import { decimalStringToMinorUnits, draftOrderTotal, formatMoney } from '@/lib/money';
+import type { Problem } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
 
@@ -34,8 +34,30 @@ const catalogUnavailable = computed(() => retailersFailed.value || companiesFail
 
 const priceByProductCode = computed(() => new Map((products.value ?? []).map((p) => [p.code, p.price])));
 
-interface DraftLine extends PlaceOrderLine {
+/**
+ * `unitPriceInput`/`lineDiscountInput` hold the human-typed decimal
+ * major-unit string exactly as entered (e.g. `"249.99"`), never the raw
+ * integer minor-units wire value — this is what fixed the "Unit price
+ * override shows 24999 instead of 249.99" bug (and the identical,
+ * previously-undiscovered issue on "Line discount", which bound to the same
+ * raw-minor-units shape). Keeping the input bound to its own live string
+ * (rather than a value re-derived from a parsed minor-units number on every
+ * keystroke) also avoids the field fighting the user mid-type — e.g.
+ * reformatting `"249."` back to `"249"` the instant the trailing decimal
+ * point is typed. The minor-units integer these ultimately represent is
+ * computed on demand, at the two points that actually need the wire/domain
+ * shape: the running-total display and the submit payload (both via
+ * `decimalStringToMinorUnits`, `@/lib/money.ts`).
+ */
+interface DraftLine {
+  productCode: string;
   quantity: number;
+  unitPriceInput: string;
+  lineDiscountInput: string;
+}
+
+function emptyDraftLine(): DraftLine {
+  return { productCode: '', quantity: 1, unitPriceInput: '', lineDiscountInput: '' };
 }
 
 const form = reactive({
@@ -45,10 +67,78 @@ const form = reactive({
   notes: '',
 });
 
-const lines = ref<DraftLine[]>([{ productCode: '', quantity: 1 }]);
+const lines = ref<DraftLine[]>([emptyDraftLine()]);
+
+/**
+ * Selected-value labels for the retailer/company/product `<Select>`s.
+ * Computed here (rather than via `<SelectValue>`'s own scoped-slot
+ * `selectedLabel`) because the vendored wrapper at
+ * `app/components/ui/select/SelectValue.vue` renders a bare `<slot />`
+ * with no `v-bind` — it does not forward reka-ui's scoped-slot props
+ * through to a caller-provided `<template #default>`, so `selectedLabel`
+ * would always be `undefined` there (confirmed live in a real browser: a
+ * `<template #default="{ selectedLabel }">` on `<SelectValue>` rendered
+ * `undefined` every time, never the actual option text). Deriving the
+ * label independently here sidesteps that gap without touching the
+ * vendored primitive.
+ */
+const retailerLabel = computed(() => {
+  const selected = retailers.value?.find((r) => r.code === form.retailerCode);
+  return selected ? `${selected.name} (${selected.code})` : undefined;
+});
+const companyLabel = computed(() => {
+  const selected = companies.value?.find((c) => c.code === form.companyCode);
+  return selected ? `${selected.name} (${selected.code})` : undefined;
+});
+function productLabel(productCode: string): string | undefined {
+  const selected = products.value?.find((p) => p.code === productCode);
+  return selected ? `${selected.name} (${selected.code}) — ${formatMoney(selected.price, selected.currency)}` : undefined;
+}
+
+/**
+ * SSR-safe disabled-until-hydrated guard — same fix as `login.vue`'s (see
+ * that file's comment for the full root-cause explanation). This form has
+ * no password field, so the security angle doesn't apply, but the same
+ * "first click does nothing until hydration finishes" UX bug does, since
+ * this `<form>` also carries no `action`/`method` and relies on
+ * `@submit.prevent` being attached as a live listener.
+ */
+const mounted = ref(false);
+onMounted(() => {
+  mounted.value = true;
+});
+
+/**
+ * Confirmed live: `AldiGb` trades in GBP, `CarrefourEs` in EUR — the retailer
+ * carries its own trading currency (`GET /catalog/retailers`'s `Party.currency`,
+ * `packages/contracts/src/generated/openapi.types.ts`). Selecting a retailer
+ * whose currency differs from the field's current value (starting from the
+ * `'EUR'` default) was previously a silent mismatch a user had no way to
+ * notice before submitting. Re-derive the default from the selected retailer
+ * every time the selection changes — the field stays a plain, editable
+ * `Input` (a manual override after selection is still possible), only the
+ * *default* it snaps to on selection is now correct instead of permanently
+ * `'EUR'`.
+ *
+ * Known, deliberate-for-now limitation (not an oversight): this watcher
+ * re-derives unconditionally on every retailer change, including a change
+ * that happens *after* the user has manually overridden `form.currency` —
+ * so a manual override is silently clobbered by re-selecting a retailer.
+ * Correctly fixing this needs a `touched`/dirty flag plus a test for the
+ * override-then-reselect path; deferred as a follow-up.
+ */
+watch(
+  () => form.retailerCode,
+  (retailerCode) => {
+    const selected = retailers.value?.find((r) => r.code === retailerCode);
+    if (selected) {
+      form.currency = selected.currency;
+    }
+  },
+);
 
 function addLine() {
-  lines.value.push({ productCode: '', quantity: 1 });
+  lines.value.push(emptyDraftLine());
 }
 
 function removeLine(index: number) {
@@ -57,7 +147,14 @@ function removeLine(index: number) {
 
 const runningTotal = computed(() =>
   draftOrderTotal(
-    lines.value.filter((l) => l.productCode),
+    lines.value
+      .filter((l) => l.productCode)
+      .map((l) => ({
+        productCode: l.productCode,
+        quantity: l.quantity,
+        unitPrice: decimalStringToMinorUnits(l.unitPriceInput),
+        lineDiscount: decimalStringToMinorUnits(l.lineDiscountInput),
+      })),
     priceByProductCode.value,
     0,
   ),
@@ -65,18 +162,21 @@ const runningTotal = computed(() =>
 
 /**
  * R42's demo affordance — mirrors `scripts/place-order.mjs --qty 1` exactly:
- * one line, 1 × PRD-0001, `unitPrice` supplied explicitly as 24999 so the
- * total is exactly 24999 minor units — ends in `.99`, which the credit
- * simulator refuses, triggering the saga's compensation path (stock
- * released, order cancelled). Uses the seeded (CarrefourEs, IBERFOODS) pair
- * directly — the same defaults `scripts/place-order.mjs` falls back to —
- * so the fill works whether or not the live catalogue lookup is.
+ * one line, 1 × PRD-0001, `unitPrice` supplied explicitly so the total is
+ * exactly 24999 minor units — ends in `.99`, which the credit simulator
+ * refuses, triggering the saga's compensation path (stock released, order
+ * cancelled). Pre-fills the human-readable decimal `"249.99"` (not the raw
+ * minor-units integer `24999`) — the field displays/accepts decimal amounts
+ * like every other currency input, this button included. Uses the seeded
+ * (CarrefourEs, IBERFOODS) pair directly — the same defaults
+ * `scripts/place-order.mjs` falls back to — so the fill works whether or not
+ * the live catalogue lookup is.
  */
 function fillCompensationDemo() {
   form.retailerCode = retailers.value?.[0]?.code ?? 'CarrefourEs';
   form.companyCode = companies.value?.[0]?.code ?? 'IBERFOODS';
   form.notes = 'demo — compensation path (.99)';
-  lines.value = [{ productCode: 'PRD-0001', quantity: 1, unitPrice: 24999 }];
+  lines.value = [{ productCode: 'PRD-0001', quantity: 1, unitPriceInput: '249.99', lineDiscountInput: '' }];
 }
 
 const placeOrder = usePlaceOrderMutation();
@@ -96,12 +196,16 @@ async function submit() {
     notes: form.notes || undefined,
     lines: lines.value
       .filter((l) => l.productCode && l.quantity > 0)
-      .map((l) => ({
-        productCode: l.productCode,
-        quantity: l.quantity,
-        ...(l.unitPrice !== undefined ? { unitPrice: l.unitPrice } : {}),
-        ...(l.lineDiscount ? { lineDiscount: l.lineDiscount } : {}),
-      })),
+      .map((l) => {
+        const unitPrice = decimalStringToMinorUnits(l.unitPriceInput);
+        const lineDiscount = decimalStringToMinorUnits(l.lineDiscountInput);
+        return {
+          productCode: l.productCode,
+          quantity: l.quantity,
+          ...(unitPrice !== undefined ? { unitPrice } : {}),
+          ...(lineDiscount ? { lineDiscount } : {}),
+        };
+      }),
   };
 
   const result = await placeOrder.mutateAsync({
@@ -110,7 +214,7 @@ async function submit() {
   });
 
   successOrderReference.value = result.orderReference;
-  lines.value = [{ productCode: '', quantity: 1 }];
+  lines.value = [emptyDraftLine()];
 }
 </script>
 
@@ -140,8 +244,8 @@ async function submit() {
             <div class="flex flex-col gap-1.5">
               <Label>Retailer</Label>
               <Select v-if="retailersUsable" v-model="form.retailerCode">
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a retailer" />
+                <SelectTrigger class="w-full min-w-0" data-testid="retailer-select-trigger">
+                  <SelectValue class="truncate" placeholder="Select a retailer" :title="retailerLabel ?? 'Select a retailer'" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem v-for="retailer in retailers" :key="retailer.code" :value="retailer.code">
@@ -154,8 +258,8 @@ async function submit() {
             <div class="flex flex-col gap-1.5">
               <Label>Company</Label>
               <Select v-if="companiesUsable" v-model="form.companyCode">
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a company" />
+                <SelectTrigger class="w-full min-w-0">
+                  <SelectValue class="truncate" placeholder="Select a company" :title="companyLabel ?? 'Select a company'" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem v-for="company in companies" :key="company.code" :value="company.code">
@@ -184,13 +288,13 @@ async function submit() {
             <div
               v-for="(line, index) in lines"
               :key="index"
-              class="grid grid-cols-1 items-end gap-3 sm:grid-cols-[2fr_1fr_1fr_1fr_auto]"
+              class="grid grid-cols-1 items-end gap-3 sm:grid-cols-[2fr_1fr_1.5fr_1fr_auto]"
             >
               <div class="flex flex-col gap-1.5">
                 <Label>Product</Label>
                 <Select v-if="productsUsable" v-model="line.productCode">
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select a product" />
+                  <SelectTrigger class="w-full min-w-0">
+                    <SelectValue class="truncate" placeholder="Select a product" :title="productLabel(line.productCode) ?? 'Select a product'" />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem v-for="product in products" :key="product.code" :value="product.code">
@@ -212,21 +316,26 @@ async function submit() {
               <div class="flex flex-col gap-1.5">
                 <Label>Unit price override</Label>
                 <Input
-                  :model-value="line.unitPrice"
+                  :model-value="line.unitPriceInput"
                   type="number"
                   min="0"
-                  placeholder="catalogue price"
-                  @update:model-value="(v) => (line.unitPrice = v === '' ? undefined : Number(v))"
+                  step="0.01"
+                  placeholder="catalogue"
+                  class="text-sm"
+                  data-testid="unit-price-input"
+                  @update:model-value="(v) => (line.unitPriceInput = String(v))"
                 />
               </div>
               <div class="flex flex-col gap-1.5">
                 <Label>Line discount</Label>
                 <Input
-                  :model-value="line.lineDiscount"
+                  :model-value="line.lineDiscountInput"
                   type="number"
                   min="0"
-                  placeholder="0"
-                  @update:model-value="(v) => (line.lineDiscount = v === '' ? undefined : Number(v))"
+                  step="0.01"
+                  placeholder="0.00"
+                  data-testid="line-discount-input"
+                  @update:model-value="(v) => (line.lineDiscountInput = String(v))"
                 />
               </div>
               <Button
@@ -266,7 +375,10 @@ async function submit() {
             in a moment.
           </p>
 
-          <Button type="submit" :disabled="placeOrder.isPending.value || !form.retailerCode || !form.companyCode">
+          <Button
+            type="submit"
+            :disabled="placeOrder.isPending.value || !mounted || !form.retailerCode || !form.companyCode"
+          >
             {{ placeOrder.isPending.value ? 'Placing…' : 'Place order' }}
           </Button>
         </form>

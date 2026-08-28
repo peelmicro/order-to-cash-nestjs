@@ -12,9 +12,13 @@
 //     violation is only visible after resolving a bare specifier to a file.
 //   - it scopes cleanly per `files: [...]` block in flat config, one block
 //     per rule, with no extra parser/resolver wiring.
+import path from "node:path";
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import eslintConfigPrettier from "eslint-config-prettier";
+import eslintPluginVue from "eslint-plugin-vue";
+import vueEslintParser from "vue-eslint-parser";
+import requireRefDotValue from "./apps/web/eslint-rules/require-ref-dot-value.mjs";
 
 const DOMAIN_PURITY_MESSAGE =
   "Domain layer must stay framework/infrastructure free (see CLAUDE.md § Non-negotiables).";
@@ -61,6 +65,27 @@ const REQUIRE_EXPLICIT_TRANSPORT_SELECTOR =
 const REQUIRE_EXPLICIT_TRANSPORT_MESSAGE =
   "@MessagePattern/@EventPattern must name its Transport (e.g. Transport.NATS, Transport.KAFKA). A bare pattern binds to every connected transport and crashes hybrid apps at boot — see CLAUDE.md § Non-negotiables.";
 
+// The ref-unwrapping footgun (apps/web's own regression — see
+// progress/impl_web_app.md's "Placing…"/stuck-disabled-button bug):
+// `<script setup>` only auto-unwraps a TOP-LEVEL ref identifier.
+// `placeOrder.isPending` — a ref reached through an object PROPERTY
+// (`useMutation()`'s `toRefs()`-shaped return value) — silently resolves to
+// the raw, always-truthy `Ref` object instead of its real boolean value,
+// wherever it is used without an explicit `.value`.
+//
+// The type-aware rule below (`@typescript-eslint/no-unnecessary-condition`,
+// wired for `.vue` files via typescript-eslint's project service) catches
+// this pattern in `<script>` code, but not inside `<template>` expression
+// containers — vue-eslint-parser does not wire template expressions into
+// the TypeScript type-checker for typed linting. Since the real bug
+// happened specifically in template code, `apps/web/eslint-rules
+// /require-ref-dot-value.mjs` (a small local rule, registered below as
+// `local/require-ref-dot-value`) closes that gap directly, using
+// `defineTemplateBodyVisitor` — the same mechanism every eslint-plugin-vue
+// rule uses internally to see template nodes at all. Full rationale,
+// including why a plain `no-restricted-syntax` selector was tried first and
+// does not work here either, is in that file's own header comment.
+
 export default tseslint.config(
   {
     ignores: [
@@ -92,6 +117,98 @@ export default tseslint.config(
     languageOptions: {
       sourceType: "module",
       globals: { process: "readonly", console: "readonly" },
+    },
+  },
+  // Vue-aware linting for apps/web (Nuxt 4). Before this block, `pnpm lint`
+  // (`eslint .` at the repo root — the only lint entry point in this
+  // monorepo; no app, including apps/web, has ever had a package-level
+  // `lint` script of its own) never parsed a single `.vue` file: the root
+  // flat config had no Vue parser configured. `eslint-plugin-vue`'s own
+  // `flat/recommended` preset is an array of config objects, some of which
+  // carry no `files` glob of their own (global plugin registration) — each
+  // entry is remapped to `apps/web/**/*.vue` explicitly here so the preset
+  // stays scoped to this one app, exactly like every other rule block in
+  // this file, rather than registering the `vue` plugin repo-wide.
+  ...eslintPluginVue.configs["flat/recommended"].map((c) => ({
+    ...c,
+    files: ["apps/web/**/*.vue"],
+  })),
+  // Type-aware linting inside `.vue` files (`<script setup lang="ts">` and
+  // template expression containers alike), via typescript-eslint's project
+  // service + `extraFileExtensions` — the documented way to extend typed
+  // linting past `.ts`/`.tsx` into Vue SFCs. This is what actually catches
+  // the exact bug class that shipped once already
+  // (progress/impl_web_app.md's "Placing…" regression, `place.vue`'s
+  // `placeOrder.isPending` used directly instead of `.isPending.value`):
+  // `@typescript-eslint/no-unnecessary-condition` flags a condition whose
+  // *type* is always truthy — a `Ref<boolean>` accessed without `.value` is
+  // a non-nullable object, always truthy, regardless of the wrapped
+  // boolean's real value. Deliberately NOT relying on
+  // `vue/no-ref-as-operand` (already included by `flat/recommended` above)
+  // for this: that rule only tracks identifiers assigned directly from a
+  // `ref()`/`computed()`/`toRefs()` call visible in the *same file's*
+  // static scope — `useMutation()`'s own internal `toRefs()` call lives in
+  // `@tanstack/vue-query`, a different module entirely, invisible to that
+  // rule's scope analysis, so it does not and cannot catch this pattern.
+  // The type-aware rule below reasons from the resolved TypeScript type
+  // instead, which resolves correctly across module boundaries.
+  {
+    files: ["apps/web/**/*.vue"],
+    languageOptions: {
+      parser: vueEslintParser,
+      parserOptions: {
+        parser: tseslint.parser,
+        extraFileExtensions: [".vue"],
+        sourceType: "module",
+        projectService: true,
+        tsconfigRootDir: path.join(import.meta.dirname, "apps/web"),
+      },
+    },
+    plugins: {
+      local: { rules: { "require-ref-dot-value": requireRefDotValue } },
+    },
+    rules: {
+      "@typescript-eslint/no-unnecessary-condition": "error",
+      "local/require-ref-dot-value": "error",
+      // Same reasoning `tseslint.configs.recommended` already applies to
+      // every `.ts`/`.tsx`/`.mts`/`.cts` file in this repo (see that
+      // preset's own `no-undef: 'off'`, which does not reach `.vue` files
+      // since its `files` glob is TS-extension-only): Nuxt's entire
+      // auto-import surface (`definePageMeta`, `navigateTo`, `useRoute`,
+      // the implicit Vue reactivity APIs, etc.) is realized as ambient
+      // TypeScript globals in `.nuxt/nuxt.d.ts`/`.nuxt/types/imports.d.ts`
+      // — invisible to the plain-JS `no-undef` rule, which cannot read
+      // `.d.ts` ambient declarations, but fully visible to and enforced by
+      // `nuxi typecheck` (`pnpm --filter @otc/web run typecheck`, already a
+      // mandatory quality gate) — a genuinely undefined identifier still
+      // fails the build there. Confirmed live: without this line, every
+      // page in this app (`definePageMeta`, `navigateTo`, `useRoute`,
+      // `computed` used via auto-import rather than an explicit `vue`
+      // import) reported a false-positive `no-undef` the instant `.vue`
+      // files started being parsed at all.
+      "no-undef": "off",
+      // Nuxt's file-based routing (`pages/index.vue`, `pages/login.vue`,
+      // `pages/orders/place.vue`) and shadcn-vue's own single-word
+      // primitive names (`Button.vue`, `Card.vue`, `Input.vue`, ...) are
+      // both real, intentional conventions this rule exists to discourage
+      // in hand-authored, manually-registered components — neither
+      // applies here.
+      "vue/multi-word-component-names": "off",
+    },
+  },
+  {
+    // shadcn-vue's UI primitives under app/components/ui/** are vendored,
+    // copied in verbatim by its own CLI (documented in
+    // progress/impl_web_app.md), not hand-authored in this repo — exempt
+    // them from the type-aware condition rule above rather than rewriting
+    // third-party component style to satisfy a rule this pass added.
+    files: ["apps/web/app/components/ui/**/*.vue"],
+    rules: {
+      "@typescript-eslint/no-unnecessary-condition": "off",
+      // shadcn-vue's own generated prop shape (`withDefaults`-free optional
+      // `class`/`variant`/`size` props destructured via `defineProps`) is
+      // the library's documented pattern, unrelated to this pass.
+      "vue/require-default-prop": "off",
     },
   },
   {

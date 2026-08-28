@@ -9,7 +9,13 @@ import { defineVitestConfig } from '@nuxt/test-utils/config';
 export default defineVitestConfig({
   test: {
     environment: 'nuxt',
-    include: ['app/**/*.spec.ts'],
+    // `server/**` specs (the streaming-proxy forwarding tests) are
+    // deliberately framework-free — no Nitro auto-imports, real local HTTP
+    // servers instead of Nuxt's own — and override this file's default
+    // environment back to plain `node` per-file via a `// @vitest-environment
+    // node` docblock, since they need neither happy-dom nor Nitro's mocked
+    // runtime, only a real `fetch`.
+    include: ['app/**/*.spec.ts', 'server/**/*.spec.ts'],
     setupFiles: ['./vitest.setup.ts'],
   },
 });

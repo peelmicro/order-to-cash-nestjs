@@ -142,7 +142,9 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
         </TableEmpty>
         <TableRow v-for="order in data?.items" :key="order.orderId">
           <TableCell class="font-medium">
-            {{ order.orderReference }}
+            <NuxtLink :to="`/orders/${order.orderId}`" class="hover:underline">
+              {{ order.orderReference }}
+            </NuxtLink>
           </TableCell>
           <TableCell>{{ new Date(order.orderDate).toLocaleString() }}</TableCell>
           <TableCell>{{ order.retailer.name ?? order.retailer.code }}</TableCell>
