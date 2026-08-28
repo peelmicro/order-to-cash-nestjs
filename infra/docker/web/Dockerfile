@@ -56,7 +56,25 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 WORKDIR /app
-COPY --from=build /app/apps/web/.output ./.output
+COPY --chown=node:node --from=build /app/apps/web/.output ./.output
+
+# ── non-root ──────────────────────────────────────────────────────────────
+# The base image's own unprivileged `node` user (uid 1000, gid 1000); `USER`
+# after the COPY so the `--chown` above is what grants ownership of `.output`.
+#
+# Checked rather than assumed for this one, because a Nitro server is the
+# likeliest of the three images to want a writable path at runtime:
+#   * apps/web/nuxt.config.ts declares NO `nitro` block at all — no `preset`,
+#     no `storage`/`devStorage` mounts — so no filesystem storage driver is
+#     mounted and nothing lazily creates a `.data/` directory under the cwd;
+#   * grepped apps/web for `useStorage`/`writeFile`/`mkdir`/`.data/` — zero
+#     hits, so the app itself never writes to disk either;
+#   * sessions are nuxt-auth-utils sealed COOKIES (NUXT_SESSION_PASSWORD),
+#     i.e. client-side state, not a server-side session store on disk;
+#   * the port is ${WEB_PORT:-3000}, and 3010 on this machine — both far
+#     above 1024, so no privileged bind.
+# Nitro also honours TMPDIR (/tmp, world-writable) for anything transient.
+USER node
 
 # No wget/curl in this slim image — Node's own http client drives the
 # healthcheck instead. apps/web exposes no /health endpoint (confirmed: no

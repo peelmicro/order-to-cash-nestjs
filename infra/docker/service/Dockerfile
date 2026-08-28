@@ -100,17 +100,25 @@ WORKDIR /app
 # as symlinks from apps/<service>/node_modules into packages/*/ (relative,
 # by directory depth) and every registry dep as a symlink into the root
 # node_modules/.pnpm store — both trees must be copied to preserve them.
-COPY --from=prod-deps /app/node_modules ./node_modules
-COPY --from=prod-deps /app/package.json ./package.json
-COPY --from=prod-deps /app/packages/shared-kernel/package.json ./packages/shared-kernel/package.json
-COPY --from=prod-deps /app/packages/contracts/package.json ./packages/contracts/package.json
-COPY --from=prod-deps /app/${APP_DIR}/package.json ./${APP_DIR}/package.json
-COPY --from=prod-deps /app/${APP_DIR}/node_modules ./${APP_DIR}/node_modules
+#
+# `--chown=node:node` on every COPY (rather than a single `RUN chown -R`
+# afterwards) is deliberate: the trees below are the pnpm symlink farm, and
+# `COPY --chown` applies the ownership as the layer is written — it lchown()s
+# the symlink itself and chown()s the real file in the .pnpm store separately,
+# so nothing is dereferenced and no link is flattened or broken. A
+# `RUN chown -R` would instead duplicate the whole ~250 MB tree into a second
+# layer for no benefit.
+COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=prod-deps /app/package.json ./package.json
+COPY --chown=node:node --from=prod-deps /app/packages/shared-kernel/package.json ./packages/shared-kernel/package.json
+COPY --chown=node:node --from=prod-deps /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --chown=node:node --from=prod-deps /app/${APP_DIR}/package.json ./${APP_DIR}/package.json
+COPY --chown=node:node --from=prod-deps /app/${APP_DIR}/node_modules ./${APP_DIR}/node_modules
 
 # Compiled output only — never the TS source, never a devDependency.
-COPY --from=build /app/packages/shared-kernel/dist ./packages/shared-kernel/dist
-COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
-COPY --from=build /app/${APP_DIR}/dist ./${APP_DIR}/dist
+COPY --chown=node:node --from=build /app/packages/shared-kernel/dist ./packages/shared-kernel/dist
+COPY --chown=node:node --from=build /app/packages/contracts/dist ./packages/contracts/dist
+COPY --chown=node:node --from=build /app/${APP_DIR}/dist ./${APP_DIR}/dist
 
 # apps/gateway's setup-docs.ts reads specs/shared/openapi.yaml at RUNTIME
 # (`path.resolve(__dirname, '../../../../specs/shared/openapi.yaml')`,
@@ -121,7 +129,28 @@ COPY --from=build /app/${APP_DIR}/dist ./${APP_DIR}/dist
 # other service reads from specs/ at runtime (checked), but the file is
 # small (68 KB) and this Dockerfile is shared across all six services, so
 # copying it unconditionally is simpler than a service-specific branch.
-COPY specs/shared/openapi.yaml ./specs/shared/openapi.yaml
+COPY --chown=node:node specs/shared/openapi.yaml ./specs/shared/openapi.yaml
+
+# ── non-root ──────────────────────────────────────────────────────────────
+# The official node:*-bookworm-slim images already ship an unprivileged
+# `node` user (uid 1000, gid 1000) — used here rather than adding another.
+# Placed AFTER every COPY: `USER` only affects instructions that follow it,
+# so a `USER` before the copies would leave the copied trees root-owned
+# (the `--chown` flags above are what actually grant ownership) while
+# breaking nothing visibly until first read at runtime.
+#
+# Two things that would normally complicate a non-root runtime were checked
+# rather than assumed, and neither applies:
+#   * every service binds 3001–3006 (.env / DEFAULT_PORT build args) — all
+#     above 1024, so no CAP_NET_BIND_SERVICE is needed;
+#   * the HEALTHCHECK below is Node's own http client against localhost,
+#     which needs no privilege (it is not ping/raw sockets, and installs no
+#     wget/curl that would need one).
+# Nothing under /app is written at runtime either: no service has a
+# writeFileSync/mkdirSync outside *.spec.ts / test-support (grepped across
+# all six apps' src/), so a root-owned, node-readable /app is sufficient and
+# the filesystem can stay effectively read-only for uid 1000.
+USER node
 
 # No wget/curl in this image on purpose (keeps the runtime slim) — the
 # healthcheck uses Node's own http client instead, against this service's
@@ -142,16 +171,21 @@ FROM node:${NODE_VERSION}-bookworm-slim AS migrate
 ARG SERVICE
 ENV APP_DIR=apps/${SERVICE}
 WORKDIR /app
-COPY --from=prod-deps /app/node_modules ./node_modules
-COPY --from=prod-deps /app/package.json ./package.json
-COPY --from=prod-deps /app/packages/shared-kernel/package.json ./packages/shared-kernel/package.json
-COPY --from=prod-deps /app/packages/contracts/package.json ./packages/contracts/package.json
-COPY --from=prod-deps /app/${APP_DIR}/package.json ./${APP_DIR}/package.json
-COPY --from=prod-deps /app/${APP_DIR}/node_modules ./${APP_DIR}/node_modules
-COPY --from=build /app/packages/shared-kernel/dist ./packages/shared-kernel/dist
-COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
-COPY --from=build /app/${APP_DIR}/dist ./${APP_DIR}/dist
+COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=prod-deps /app/package.json ./package.json
+COPY --chown=node:node --from=prod-deps /app/packages/shared-kernel/package.json ./packages/shared-kernel/package.json
+COPY --chown=node:node --from=prod-deps /app/packages/contracts/package.json ./packages/contracts/package.json
+COPY --chown=node:node --from=prod-deps /app/${APP_DIR}/package.json ./${APP_DIR}/package.json
+COPY --chown=node:node --from=prod-deps /app/${APP_DIR}/node_modules ./${APP_DIR}/node_modules
+COPY --chown=node:node --from=build /app/packages/shared-kernel/dist ./packages/shared-kernel/dist
+COPY --chown=node:node --from=build /app/packages/contracts/dist ./packages/contracts/dist
+COPY --chown=node:node --from=build /app/${APP_DIR}/dist ./${APP_DIR}/dist
 # The committed SQL migrations (drizzle-kit generate output) — static files,
 # copied straight from the build context, never compiled.
-COPY apps/${SERVICE}/drizzle ./${APP_DIR}/drizzle
+COPY --chown=node:node apps/${SERVICE}/drizzle ./${APP_DIR}/drizzle
+# Non-root here too — this stage is a separate FROM, so the `runtime` stage's
+# own USER does NOT carry over to it. The migration CLI only reads the
+# drizzle/ SQL above and writes to MySQL over the network; it needs no local
+# write access and no privileged port.
+USER node
 CMD node ${APP_DIR}/dist/infrastructure/persistence/migrate-cli.js

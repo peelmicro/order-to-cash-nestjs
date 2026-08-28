@@ -59,4 +59,20 @@ COPY apps/billing apps/billing
 RUN pnpm --filter "@otc/shared-kernel" run build && pnpm --filter "@otc/contracts" run build
 
 WORKDIR /app/apps/seed
+
+# ── non-root ──────────────────────────────────────────────────────────────
+# Single-stage image, so unlike the other two Dockerfiles there is no
+# `COPY --chown` to hang ownership off: pnpm installs and builds as root
+# above, and this stage keeps that (corepack's global pnpm install needs
+# root, and a `RUN chown -R /app` would duplicate this image's ~786 MB tree
+# into a second layer). `USER node` last is enough because uid 1000 only
+# ever READS /app here — everything root wrote is mode 644/755 (default
+# umask 022), so it is world-readable, and:
+#   * this CLI writes exclusively to MySQL and MongoDB over the network —
+#     grepped apps/seed/src for writeFileSync/mkdirSync/createWriteStream,
+#     zero hits, it produces no local artefact;
+#   * `tsx` (esbuild) keeps its transform cache under os.tmpdir(), i.e.
+#     /tmp (mode 1777), never under /app;
+#   * it binds no port at all, so the >1024 question does not arise.
+USER node
 CMD ["node_modules/.bin/tsx", "src/index.ts"]
