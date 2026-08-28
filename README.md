@@ -196,7 +196,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 13 | Gateway / BFF | ✅ 18 REST paths, JWT, NATS RPC, SSE stream (reconnect-safe heartbeat), Swagger at `/docs` |
 | 14 | Health checks, OTel propagation, retry + DLQ | ✅ requestId dedup, dead-letter (3 services), tracing, log correlation, metrics, health checks |
 | 15 | End-to-end saga verification | ✅ happy path, `.99`/`stock_rejected` compensation, redelivery, poison-to-DLQ, composed trace — all proven against real spawned services |
-| 16 | Nuxt 4 web app | 🚧 auth (JWT server-side only), place-order and order-list pages working; order-detail/SSE, stock, billing views open |
+| 16 | Nuxt 4 web app | 🚧 auth, place-order, order-list, and order-detail/SSE (live saga timeline, reconnect-safe) all working and reviewed; stock, billing views and the error-handling sweep open |
 | 17 | Web component tests | ⬜ |
 | 18 | API tests through the Gateway | ⬜ |
 | 19 | Playwright end-to-end tests | ⬜ |
