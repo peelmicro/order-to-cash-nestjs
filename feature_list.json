@@ -405,7 +405,7 @@
       "phase": 16,
       "title": "Nuxt 4 web app: place order, list, detail with live timeline, stock, billing",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "types imported from packages/contracts",
         "live SSE timeline with reconnect",
@@ -419,7 +419,7 @@
       "phase": 17,
       "title": "Vitest + Vue Testing Library component tests",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "timeline, place-order form, stock and billing tables covered",
         "SSE composable tested with a fake EventSource"
@@ -431,7 +431,7 @@
       "phase": 18,
       "title": "Black-box API tests through the Gateway",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "full happy path",
         "full compensation path",
@@ -494,7 +494,7 @@
       "phase": 23,
       "title": "Full stack compose (~18 containers) with healthcheck-gated dependencies",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "cold start reaches a demoable state within ~2 minutes",
         "infra-only mode still works with apps run from the CLI"
