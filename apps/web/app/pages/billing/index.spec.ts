@@ -386,3 +386,35 @@ describe('billing/index.vue — credit limits: pagination and filter (Pass 6 rev
     await waitFor(() => expect(lastRetailerCode).toBe('CarrefourEs'));
   });
 });
+
+// D8 regression guard (progress/review_sonarqube_quality_gates.md, second
+// review) — see `orders/index.spec.ts` for the full rationale. This page has
+// TWO "Retailer"-labelled filters (credit limits + invoices), hence
+// `getAllByLabelText` rather than `getByLabelText`.
+describe('billing/index.vue — accessible filter controls and table headers (D8 guard)', () => {
+  it('the credit-limits Retailer filter and the invoices Status/Retailer filters resolve by their visible label', async () => {
+    mockInvoices([]);
+    mockCredits([]);
+    mockRetailers();
+
+    await renderBilling();
+
+    expect(await screen.findAllByLabelText('Retailer')).toHaveLength(2);
+    expect(screen.getByLabelText('Status')).toBeInTheDocument();
+  });
+
+  it('both tables (credit limits, invoices) expose real column headers (role=columnheader, scope=col)', async () => {
+    mockInvoices([makeInvoice()]);
+    mockCredits([makeCredit()]);
+    mockRetailers();
+
+    await renderBilling();
+
+    await screen.findByTestId('credit-row');
+    await screen.findByTestId('invoice-row');
+
+    const headers = screen.getAllByRole('columnheader');
+    expect(headers).toHaveLength(6 + 8); // credit-limits table + invoices table
+    headers.forEach((header) => expect(header).toHaveAttribute('scope', 'col'));
+  });
+});

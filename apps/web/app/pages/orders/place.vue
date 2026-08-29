@@ -263,32 +263,56 @@ async function submit() {
         <form class="flex flex-col gap-6" @submit.prevent="submit">
           <div class="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div class="flex flex-col gap-1.5">
-              <Label>Retailer</Label>
-              <Select v-if="retailersUsable" v-model="form.retailerCode">
-                <SelectTrigger class="w-full min-w-0" data-testid="retailer-select-trigger">
-                  <SelectValue class="truncate" placeholder="Select a retailer" :title="retailerLabel ?? 'Select a retailer'" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="retailer in retailers" :key="retailer.code" :value="retailer.code">
-                    {{ retailer.name }} ({{ retailer.code }})
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <Input v-else v-model="form.retailerCode" placeholder="e.g. CarrefourEs" />
+              <!--
+                The Select and the Input fallback are mutually exclusive
+                (v-if/v-else on the same wrapping <template> — never both in
+                the DOM at once), so each gets its OWN static id/label pair
+                rather than one shared id or a dynamic `for`/`id` computed
+                from a ternary: a shared id was a genuine duplicate-id defect
+                (SonarQube Web:S7930) the first time this page tried it, and
+                a dynamic `:for`/`:id` pair — while correctly matching at
+                runtime — is invisible to a static id/label checker (it
+                cannot evaluate a template expression), so it is undetectable
+                as accessible even though it is. Two fully static pairs,
+                grouped under <template> so `v-else` still binds to the
+                right `v-if`, are both correct AND verifiable.
+              -->
+              <template v-if="retailersUsable">
+                <Label for="retailer-select">Retailer</Label>
+                <Select v-model="form.retailerCode">
+                  <SelectTrigger id="retailer-select" class="w-full min-w-0" data-testid="retailer-select-trigger">
+                    <SelectValue class="truncate" placeholder="Select a retailer" :title="retailerLabel ?? 'Select a retailer'" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="retailer in retailers" :key="retailer.code" :value="retailer.code">
+                      {{ retailer.name }} ({{ retailer.code }})
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </template>
+              <template v-else>
+                <Label for="retailer-input">Retailer</Label>
+                <Input id="retailer-input" v-model="form.retailerCode" placeholder="e.g. CarrefourEs" />
+              </template>
             </div>
             <div class="flex flex-col gap-1.5">
-              <Label>Company</Label>
-              <Select v-if="companiesUsable" v-model="form.companyCode">
-                <SelectTrigger class="w-full min-w-0" data-testid="company-select-trigger">
-                  <SelectValue class="truncate" placeholder="Select a company" :title="companyLabel ?? 'Select a company'" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem v-for="company in companies" :key="company.code" :value="company.code">
-                    {{ company.name }} ({{ company.code }})
-                  </SelectItem>
-                </SelectContent>
-              </Select>
-              <Input v-else v-model="form.companyCode" placeholder="e.g. IBERFOODS" />
+              <template v-if="companiesUsable">
+                <Label for="company-select">Company</Label>
+                <Select v-model="form.companyCode">
+                  <SelectTrigger id="company-select" class="w-full min-w-0" data-testid="company-select-trigger">
+                    <SelectValue class="truncate" placeholder="Select a company" :title="companyLabel ?? 'Select a company'" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem v-for="company in companies" :key="company.code" :value="company.code">
+                      {{ company.name }} ({{ company.code }})
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
+              </template>
+              <template v-else>
+                <Label for="company-input">Company</Label>
+                <Input id="company-input" v-model="form.companyCode" placeholder="e.g. IBERFOODS" />
+              </template>
             </div>
             <div class="flex flex-col gap-1.5">
               <Label for="currency">Currency</Label>
@@ -312,22 +336,36 @@ async function submit() {
               class="grid grid-cols-1 items-end gap-3 sm:grid-cols-[2fr_1fr_1.5fr_1fr_auto]"
             >
               <div class="flex flex-col gap-1.5">
-                <Label>Product</Label>
-                <Select v-if="productsUsable" v-model="line.productCode">
-                  <SelectTrigger class="w-full min-w-0" data-testid="product-select-trigger">
-                    <SelectValue class="truncate" placeholder="Select a product" :title="productLabel(line.productCode) ?? 'Select a product'" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem v-for="product in products" :key="product.code" :value="product.code">
-                      {{ product.name }} ({{ product.code }}) — {{ formatMoney(product.price, product.currency) }}
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
-                <Input v-else v-model="line.productCode" placeholder="e.g. PRD-0001" />
+                <!--
+                  Same reasoning as the Retailer/Company pair above: two
+                  fully separate id/label pairs per branch, not one id
+                  shared by both. This one is inside a `v-for`, so "static"
+                  means "distinct per branch", with the loop `index`
+                  appended to keep each pair unique across lines — never a
+                  single id computed by a ternary between the two branches.
+                -->
+                <template v-if="productsUsable">
+                  <Label :for="`product-select-field-${index}`">Product</Label>
+                  <Select v-model="line.productCode">
+                    <SelectTrigger :id="`product-select-field-${index}`" class="w-full min-w-0" data-testid="product-select-trigger">
+                      <SelectValue class="truncate" placeholder="Select a product" :title="productLabel(line.productCode) ?? 'Select a product'" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem v-for="product in products" :key="product.code" :value="product.code">
+                        {{ product.name }} ({{ product.code }}) — {{ formatMoney(product.price, product.currency) }}
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </template>
+                <template v-else>
+                  <Label :for="`product-input-field-${index}`">Product</Label>
+                  <Input :id="`product-input-field-${index}`" v-model="line.productCode" placeholder="e.g. PRD-0001" />
+                </template>
               </div>
               <div class="flex flex-col gap-1.5">
-                <Label>Quantity</Label>
+                <Label :for="`quantity-field-${index}`">Quantity</Label>
                 <Input
+                  :id="`quantity-field-${index}`"
                   :model-value="line.quantity"
                   type="number"
                   min="1"
@@ -336,8 +374,9 @@ async function submit() {
                 />
               </div>
               <div class="flex flex-col gap-1.5">
-                <Label>Unit price override</Label>
+                <Label :for="`unit-price-field-${index}`">Unit price override</Label>
                 <Input
+                  :id="`unit-price-field-${index}`"
                   :model-value="line.unitPriceInput"
                   type="number"
                   min="0"
@@ -349,8 +388,9 @@ async function submit() {
                 />
               </div>
               <div class="flex flex-col gap-1.5">
-                <Label>Line discount</Label>
+                <Label :for="`line-discount-field-${index}`">Line discount</Label>
                 <Input
+                  :id="`line-discount-field-${index}`"
                   :model-value="line.lineDiscountInput"
                   type="number"
                   min="0"

@@ -114,3 +114,35 @@ describe('orders/index.vue — loading / empty / error are three distinct states
     expect(screen.queryByTestId('orders-loading')).not.toBeInTheDocument();
   });
 });
+
+// D8 regression guard (progress/review_sonarqube_quality_gates.md, second
+// review): the a11y fixes had no test that would fail if deleted — armed and
+// confirmed against this exact page (`for="order-status-filter"` deletion
+// survived the full 66-test suite). These assert the ACCESSIBLE properties
+// (label association, real `columnheader` roles), not `data-testid`, so a
+// legitimate refactor of the mechanism would still pass.
+describe('orders/index.vue — accessible filter controls and table headers (D8 guard)', () => {
+  it('the Status and Retailer filters resolve by their visible label, not only by data-testid', async () => {
+    registerEndpoint('/api/orders', () => ({ items: [], page: { page: 1, pageSize: 20, total: 0 } } satisfies OrderSummaryPage));
+    mockRetailers();
+
+    await renderOrders();
+
+    expect(await screen.findByLabelText('Status')).toBeInTheDocument();
+    expect(screen.getByLabelText('Retailer')).toBeInTheDocument();
+  });
+
+  it('the order table exposes real column headers (role=columnheader, scope=col — WCAG 2.2 1.3.1), not just visible text', async () => {
+    registerEndpoint('/api/orders', () => ({
+      items: [makeOrder()],
+      page: { page: 1, pageSize: 20, total: 1 },
+    } satisfies OrderSummaryPage));
+    mockRetailers();
+
+    await renderOrders();
+
+    const headers = await screen.findAllByRole('columnheader');
+    expect(headers.map((h) => h.textContent?.trim())).toEqual(['Reference', 'Date', 'Retailer', 'Company', 'Status', 'Total']);
+    headers.forEach((header) => expect(header).toHaveAttribute('scope', 'col'));
+  });
+});

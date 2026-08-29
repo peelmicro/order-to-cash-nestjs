@@ -2,6 +2,7 @@
 import { computed, reactive } from 'vue';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useRetailersQuery } from '@/composables/useCatalog';
@@ -82,9 +83,9 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
 
     <div class="flex flex-wrap items-end gap-4">
       <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">Status</span>
+        <Label for="order-status-filter">Status</Label>
         <Select v-model="statusFilterValue">
-          <SelectTrigger class="w-48">
+          <SelectTrigger id="order-status-filter" class="w-48">
             <SelectValue placeholder="All statuses" />
           </SelectTrigger>
           <SelectContent>
@@ -99,9 +100,9 @@ function statusVariant(status: OrderStatus): 'default' | 'secondary' | 'destruct
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">Retailer</span>
+        <Label for="order-retailer-filter">Retailer</Label>
         <Select v-model="retailerFilterValue">
-          <SelectTrigger class="w-56">
+          <SelectTrigger id="order-retailer-filter" class="w-56">
             <SelectValue placeholder="All retailers" />
           </SelectTrigger>
           <SelectContent>

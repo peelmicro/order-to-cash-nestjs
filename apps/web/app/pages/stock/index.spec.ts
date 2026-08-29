@@ -214,3 +214,31 @@ describe('stock/index.vue — error handling', () => {
     expect(screen.queryByTestId('replenish-error')).not.toBeInTheDocument();
   });
 });
+
+// D8 regression guard (progress/review_sonarqube_quality_gates.md, second
+// review) — see `orders/index.spec.ts` for the full rationale.
+describe('stock/index.vue — accessible filter controls and table headers (D8 guard)', () => {
+  it('the Company and Product filters resolve by their visible label', async () => {
+    registerEndpoint('/api/stock', () => ({ items: [], page: { page: 1, pageSize: 20, total: 0 } } satisfies StockPageResponse));
+
+    await renderStock();
+
+    expect(await screen.findByLabelText('Company')).toBeInTheDocument();
+    expect(screen.getByLabelText('Product')).toBeInTheDocument();
+  });
+
+  it('the stock table exposes real column headers (role=columnheader, scope=col)', async () => {
+    registerEndpoint('/api/stock', () => ({
+      items: [makeStockItem()],
+      page: { page: 1, pageSize: 20, total: 1 },
+    } satisfies StockPageResponse));
+
+    await renderStock();
+
+    const headers = await screen.findAllByRole('columnheader');
+    // 6 named headers + 1 trailing empty `<th />` (the actions column, D13).
+    expect(headers).toHaveLength(7);
+    expect(headers.slice(0, 6).map((h) => h.textContent?.trim())).toEqual(['Company', 'Product', 'On hand', 'Reserved', 'Available', 'Threshold']);
+    headers.forEach((header) => expect(header).toHaveAttribute('scope', 'col'));
+  });
+});

@@ -172,9 +172,9 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
       <CardContent class="flex flex-col gap-4">
         <div class="flex flex-wrap items-end gap-4">
           <div class="flex flex-col gap-1.5">
-            <span class="text-sm font-medium">Retailer</span>
+            <Label for="credit-retailer-filter">Retailer</Label>
             <Select v-model="creditRetailerFilterValue">
-              <SelectTrigger class="w-56" data-testid="credit-retailer-filter-trigger">
+              <SelectTrigger id="credit-retailer-filter" class="w-56" data-testid="credit-retailer-filter-trigger">
                 <SelectValue placeholder="All retailers" />
               </SelectTrigger>
               <SelectContent>
@@ -257,9 +257,9 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
 
     <div class="flex flex-wrap items-end gap-4">
       <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">Status</span>
+        <Label for="invoice-status-filter">Status</Label>
         <Select v-model="statusFilterValue">
-          <SelectTrigger class="w-48">
+          <SelectTrigger id="invoice-status-filter" class="w-48">
             <SelectValue placeholder="All statuses" />
           </SelectTrigger>
           <SelectContent>
@@ -274,9 +274,9 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <span class="text-sm font-medium">Retailer</span>
+        <Label for="invoice-retailer-filter">Retailer</Label>
         <Select v-model="retailerFilterValue">
-          <SelectTrigger class="w-56">
+          <SelectTrigger id="invoice-retailer-filter" class="w-56">
             <SelectValue placeholder="All retailers" />
           </SelectTrigger>
           <SelectContent>

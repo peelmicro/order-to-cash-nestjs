@@ -8,10 +8,11 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Base URL: `E2E_BASE_URL` if set, else `http://localhost:${WEB_PORT}`
  * (falls back to the compose default, 3000, if `WEB_PORT` itself is unset —
- * matching every other app's own `WEB_PORT` convention). The currently
- * running stack under test uses `WEB_PORT=3010`; export `E2E_BASE_URL`
- * explicitly (see apps/web/package.json's `test:e2e` script / README) when
- * pointing at it, rather than hardcoding 3010 here.
+ * matching every other app's own `WEB_PORT` convention). Deliberately no
+ * hardcoded port in prose here: `.env`'s `WEB_PORT` is the source of truth
+ * and it moves between environments, so read it (or export `E2E_BASE_URL`
+ * explicitly — see apps/web/package.json's `test:e2e` script / README)
+ * rather than trusting a number written in a comment.
  */
 const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${process.env.WEB_PORT ?? 3000}`;
 
