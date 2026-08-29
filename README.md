@@ -138,6 +138,42 @@ Other `dc:*:apps` scripts mirror the `dc:*:infra` ones already in use: `dc:down:
 
 Every app image is built **locally** (`pull_policy: build`, same discipline as `docker-compose.infra.yml`'s `otel-collector`/`kafka-init`) — none of these are published anywhere. Build context is always the **repo root** (`context: .`, never `apps/<service>`): pnpm workspaces need the full lockfile plus every `packages/*/package.json` to install correctly. Every NestJS service's Dockerfile ([`infra/docker/service/Dockerfile`](infra/docker/service/Dockerfile), shared across all six via a `SERVICE` build ARG) runs the real build — `tsc -p tsconfig.build.json`, never `tsx`/esbuild — for exactly the reason CLAUDE.md's DI-tokens rule exists: `emitDecoratorMetadata` only survives a real `tsc` compile, and this is the one place a wrong choice here would silently break every constructor-injected provider. `apps/web` ([`infra/docker/web/Dockerfile`](infra/docker/web/Dockerfile)) is a different shape — Nitro's `node-server` preset produces a self-contained `.output/` needing no monorepo `node_modules` at runtime — and `apps/seed` ([`infra/docker/seed/Dockerfile`](infra/docker/seed/Dockerfile)) keeps its own `tsx`-based script unchanged, per CLAUDE.md's explicit carve-out for that one app.
 
+## End-to-end tests
+
+Playwright drives the real, already-running web UI (never `pnpm dev:web` — see the caveat below) through both saga scenarios end to end: the happy path to `completed` with a payment that flips the invoice to `paid`, and the `.99` credit-rejection path that compensates back to `cancelled`.
+
+```bash
+# One-time: install Playwright's chromium browser binary.
+pnpm --filter @otc/web exec playwright install chromium
+# `--with-deps` additionally installs this browser's OS-level dependencies
+# and needs sudo; plain `install chromium` is enough on a machine that
+# already has a Chrome/Chromium-capable environment (true of most dev
+# machines and CI images), which is why it is the documented default here.
+
+# Run against a running stack, either the containers or a local build,
+# pointed at with E2E_BASE_URL:
+cd apps/web
+E2E_BASE_URL=http://localhost:3010 pnpm run test:e2e
+
+# Or via the root aggregator (same env var, same effect):
+E2E_BASE_URL=http://localhost:3010 pnpm run test:e2e
+```
+
+`test:e2e` loads `GATEWAY_OPERATOR_USERNAME`/`GATEWAY_OPERATOR_PASSWORD` from the root `.env` automatically (`dotenv -e ../../.env`), for the real login `global.setup.ts` performs before either spec runs.
+
+To *watch* the browser drive the app, or to pass any other Playwright flag, export the root `.env` into your shell and invoke Playwright directly:
+
+```bash
+set -a; source .env; set +a          # exports GATEWAY_OPERATOR_PASSWORD et al.
+E2E_BASE_URL=http://localhost:3010 pnpm --filter @otc/web exec playwright test --headed
+```
+
+Do **not** use `pnpm run test:e2e -- --headed`. `pnpm` appends `-- --headed`, but the script's `dotenv -e ../../.env --` has already consumed a `--`, so Playwright receives `--` and `--headed` as **test-name filters** rather than as an option — the run silently proceeds headless and still reports `3 passed`. Conversely `pnpm exec playwright` alone skips the `dotenv` wrapper and fails fast with `GATEWAY_OPERATOR_PASSWORD is not set`; exporting the env first is what reconciles the two.
+
+**Each full run places two real orders and consumes two real units of `PRD-0006` stock for `ALBIONFOODS`** — this is a real system, not a fixture: nothing is cleaned up afterwards (deliberately — see `progress/review_e2e_playwright.md` §8 for why a cleanup path across four service databases is worse than the noise it would remove). Reset the stack before recording a demo (`docker compose down -v` + `pnpm seed`), not after running this suite.
+
+The suite targets a running, built stack and **cannot run against `pnpm dev:web`** — against a Nuxt dev server the login form's click lands pre-hydration on the cold dev bundle and the subsequent navigation never completes. Point it at the containerised stack (`WEB_PORT`) or at a local production build (`pnpm build && node apps/web/.output/server/index.mjs`) instead.
+
 ## How this is being built
 
 > **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. What follows is the short version.
@@ -201,7 +237,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 16 | Nuxt 4 web app | ✅ auth (JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline, billing (invoices, credits, Register payment) and stock (on-hand/reserved, delta replenish) — plus an error sweep so every failure shows the server's real reason |
 | 17 | Web component tests | ✅ 59 tests / 14 files, written inside each feature loop rather than as a separate phase; SSE covered against a real `EventSource` over real HTTP. Coverage 85.8% statements, 87.0% lines |
 | 18 | API tests through the Gateway | ✅ black-box over real HTTP against a real spawned Gateway + fleet (supertest as client only) — happy path, `.99` compensation, payment idempotency, and a general causal-ordering invariant asserted on every order |
-| 19 | Playwright end-to-end tests | ⬜ |
+| 19 | Playwright end-to-end tests | ✅ 3 scenarios in a real browser against the running stack — happy path to `completed`, `.99` compensation with the rendered causal link, invoice → `paid`. Found a real stale-page defect no lower test layer could reach |
 | 20 | n8n demo workflows | ⬜ |
 | 21 | SonarQube + coverage gates | ⬜ |
 | 22 | Prometheus, Grafana, Jaeger verification | ⬜ |
