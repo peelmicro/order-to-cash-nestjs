@@ -469,7 +469,7 @@
       "phase": 21,
       "title": "SonarQube optional profile + enforced coverage thresholds",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "coverage gates enforced in pnpm quality independently of SonarQube",
         ">=80% domain, >=60% overall"

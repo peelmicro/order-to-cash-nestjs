@@ -20,10 +20,13 @@ export default defineVitestConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      // Numbers wired now per CLAUDE.md; not enforced-failing until phase 21
-      // (sonarqube_quality_gates) — `vitest run` (the default `test` script)
-      // does not compute coverage at all, only `test:coverage` does, and
-      // thresholds only fail *that* invocation.
+      // Enforced since phase 21 (sonarqube_quality_gates): root `pnpm
+      // quality` now chains `test:coverage` (root package.json), which runs
+      // `vitest run --coverage` here, so this 60% floor is a live gate on
+      // that invocation, not a dormant number. `vitest run` (the default
+      // `test` script) still does not compute coverage at all — only
+      // `test:coverage` does — so thresholds only fail *that* invocation,
+      // same as every other workspace.
       thresholds: {
         lines: 60,
         statements: 60,

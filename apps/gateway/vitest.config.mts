@@ -13,15 +13,24 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      // Numbers wired now per CLAUDE.md; not enforced-failing until phase 21
-      // (sonarqube_quality_gates) — `vitest run` (the default `test` script)
-      // does not compute coverage at all, only `test:coverage` does, and
-      // thresholds only fail *that* invocation.
+      // Two-tier gate (phase 21, sonarqube_quality_gates — CLAUDE.md
+      // "coverage gates enforced in `pnpm quality` independently of
+      // SonarQube"): the domain layer is held to a higher bar than the rest
+      // of the service, per-glob, so a well-covered infrastructure/
+      // presentation layer can never mask a thin domain/. `pnpm quality`
+      // now runs `test:coverage` (root package.json), so this is the live
+      // gate, not a dormant number.
       thresholds: {
-        lines: 60,
+        'src/domain/**': {
+          statements: 80,
+          branches: 80,
+          functions: 80,
+          lines: 80,
+        },
         statements: 60,
         branches: 60,
         functions: 60,
+        lines: 60,
       },
     },
   },

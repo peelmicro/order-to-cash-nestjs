@@ -30,6 +30,11 @@
 import type { Db } from 'mongodb';
 import { ORDER_TIMELINE_COLLECTION } from './read-model-indexes';
 
+// SonarQube typescript:S7739 ("Do not add `then` to an object") is
+// suppressed for this whole file in sonar-project.properties
+// (sonar.issue.ignore.multicriteria) — `then:` below is MongoDB's own
+// required $switch branch syntax, not a thenable; see that file's comment
+// for the full reasoning.
 const STATUS_RANK_SWITCH = {
   $switch: {
     branches: [
