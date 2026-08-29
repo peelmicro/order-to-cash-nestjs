@@ -1454,12 +1454,26 @@ components:
 
     TimelineEntry:
       type: object
-      description: One projected fact. The timeline is ordered by `occurredAt`, never by arrival order (R50).
+      description: |
+        One projected fact. The timeline is ordered by `occurredAt` ascending, never by
+        arrival order (R50). Two entries sharing one identical `occurredAt` (a tie group)
+        are then ordered so that a fact always follows the fact that caused it: within the
+        tie group, entry `p` is the cause of entry `c` exactly when `c.causationId` equals
+        `p.eventId`; where no such recorded edge exists between two tied entries (including
+        every document projected before this ordering existed), they fall back to `eventId`
+        ascending — a deterministic but causally arbitrary order (amendment A1).
       properties:
         eventId:
           allOf:
             - $ref: '#/components/schemas/UniqueId'
           description: The idempotency key — an entry with this id is never appended twice (R51).
+        causationId:
+          allOf:
+            - $ref: '#/components/schemas/UniqueId'
+          description: >-
+            The `eventId` of the fact that caused this one; ties on `occurredAt` are ordered
+            so that a fact follows its cause. Absent on an entry projected before this field
+            existed.
         eventType:
           type: string
           examples:
@@ -1576,6 +1590,10 @@ components:
       properties:
         eventId:
           $ref: '#/components/schemas/UniqueId'
+        causationId:
+          allOf:
+            - $ref: '#/components/schemas/UniqueId'
+          description: Same field as `TimelineEntry.causationId`, carried onto the stream frame.
         orderId:
           $ref: '#/components/schemas/UniqueId'
         orderReference:

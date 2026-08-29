@@ -96,6 +96,14 @@ export interface TimelineEntryFixture {
   occurredAt: Date;
   summary: string;
   detail?: Record<string, unknown>;
+  // Amendment A1 (projector_read_model PR34) — the SAME causal-chain
+  // value each entry's OutboxFixture row already carries as its own
+  // `causationId` (this file's header comment, design.md §3.5), copied
+  // here too so `mongo.writer.ts` can write it onto the MongoDB timeline
+  // entry exactly as the projector would (PR30). Without this, a seeded
+  // document's tie groups have no causal edges and stay on PR31's
+  // eventId fallback forever (PR35).
+  causationId: string;
 }
 
 export interface ReservationFixture {
@@ -511,15 +519,15 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
   ];
 
   const timeline: TimelineEntryFixture[] = [
-    { eventId: orderPlacedEventId, eventType: 'order.placed.v1', occurredAt: t0, summary: `Order ${orderReference} placed for ${retailerCode}` },
-    { eventId: stockReservedEventId, eventType: 'stock.reserved.v1', occurredAt: tStockReserved, summary: `Stock reserved for ${reservations.length} line(s)` },
-    { eventId: creditApprovedEventId, eventType: 'credit.approved.v1', occurredAt: tCreditApproved, summary: `Credit hold of ${totalAmount} ${currency.code} approved` },
-    { eventId: orderConfirmedEventId, eventType: 'order.confirmed.v1', occurredAt: tOrderConfirmed, summary: 'Order confirmed (ORDRSP)' },
-    { eventId: orderDespatchedEventId, eventType: 'order.despatched.v1', occurredAt: tDespatched, summary: `Despatch ${despatchReference} created` },
-    { eventId: invoiceIssuedEventId, eventType: 'invoice.issued.v1', occurredAt: tInvoiceIssued, summary: `Invoice ${invoiceReference} issued` },
-    { eventId: paymentReceivedEventId, eventType: 'payment.received.v1', occurredAt: tPaymentReceived, summary: `Payment ${paymentReference} received` },
-    { eventId: creditReleasedEventId, eventType: 'credit.released.v1', occurredAt: tCreditReleased, summary: 'Credit exposure released — invoice paid' },
-    { eventId: orderCompletedEventId, eventType: 'order.completed.v1', occurredAt: tCompleted, summary: `Order ${orderReference} completed` },
+    { eventId: orderPlacedEventId, eventType: 'order.placed.v1', occurredAt: t0, summary: `Order ${orderReference} placed for ${retailerCode}`, causationId: orderPlacedCausationId },
+    { eventId: stockReservedEventId, eventType: 'stock.reserved.v1', occurredAt: tStockReserved, summary: `Stock reserved for ${reservations.length} line(s)`, causationId: stockReservedCausationId },
+    { eventId: creditApprovedEventId, eventType: 'credit.approved.v1', occurredAt: tCreditApproved, summary: `Credit hold of ${totalAmount} ${currency.code} approved`, causationId: creditApprovedCausationId },
+    { eventId: orderConfirmedEventId, eventType: 'order.confirmed.v1', occurredAt: tOrderConfirmed, summary: 'Order confirmed (ORDRSP)', causationId: orderConfirmedCausationId },
+    { eventId: orderDespatchedEventId, eventType: 'order.despatched.v1', occurredAt: tDespatched, summary: `Despatch ${despatchReference} created`, causationId: orderDespatchedCausationId },
+    { eventId: invoiceIssuedEventId, eventType: 'invoice.issued.v1', occurredAt: tInvoiceIssued, summary: `Invoice ${invoiceReference} issued`, causationId: invoiceIssuedCausationId },
+    { eventId: paymentReceivedEventId, eventType: 'payment.received.v1', occurredAt: tPaymentReceived, summary: `Payment ${paymentReference} received`, causationId: paymentReceivedCausationId },
+    { eventId: creditReleasedEventId, eventType: 'credit.released.v1', occurredAt: tCreditReleased, summary: 'Credit exposure released — invoice paid', causationId: creditReleasedCausationId },
+    { eventId: orderCompletedEventId, eventType: 'order.completed.v1', occurredAt: tCompleted, summary: `Order ${orderReference} completed`, causationId: orderCompletedCausationId },
   ];
 
   return {
@@ -757,20 +765,22 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
   ];
 
   const timeline: TimelineEntryFixture[] = [
-    { eventId: orderPlacedEventId, eventType: 'order.placed.v1', occurredAt: t0, summary: `Order ${orderReference} placed for ${retailerCode}` },
-    { eventId: stockReservedEventId, eventType: 'stock.reserved.v1', occurredAt: tStockReserved, summary: `Stock reserved for ${reservations.length} line(s)` },
+    { eventId: orderPlacedEventId, eventType: 'order.placed.v1', occurredAt: t0, summary: `Order ${orderReference} placed for ${retailerCode}`, causationId: orderPlacedCausationId },
+    { eventId: stockReservedEventId, eventType: 'stock.reserved.v1', occurredAt: tStockReserved, summary: `Stock reserved for ${reservations.length} line(s)`, causationId: stockReservedCausationId },
     {
       eventId: creditRejectedEventId,
       eventType: 'credit.rejected.v1',
       occurredAt: tCreditRejected,
       summary: `Credit hold of ${totalAmount} ${currency.code} rejected (simulated_cents_rule)`,
       detail: { reason: creditRejectedPayload.reason, requestedAmount: totalAmount },
+      causationId: creditRejectedCausationId,
     },
     {
       eventId: stockReleasedEventId,
       eventType: 'stock.released.v1',
       occurredAt: tStockReleased,
       summary: `${reservations.reduce((sum, r) => sum + r.units, 0)} unit(s) released back to stock (compensation)`,
+      causationId: stockReleasedCausationId,
     },
     {
       eventId: orderCancelledEventId,
@@ -778,6 +788,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       occurredAt: tCancelled,
       summary: `Order ${orderReference} cancelled (credit_rejected)`,
       detail: { cancellationReason: 'credit_rejected' },
+      causationId: orderCancelledCausationId,
     },
   ];
 

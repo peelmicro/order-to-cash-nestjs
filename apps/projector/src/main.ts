@@ -8,6 +8,7 @@ import { AppModule, MONGO_DB } from './app.module';
 import { loadKafkaConfig } from './infrastructure/messaging/kafka.config';
 import { ensureReadModelIndexes } from './infrastructure/persistence/read-model-indexes';
 import { backfillLegacyDocuments } from './infrastructure/persistence/legacy-document-backfill';
+import { migrateTimelineOrder } from './infrastructure/persistence/timeline-order-migration';
 import type { MongoHandle } from './infrastructure/persistence/mongo-client';
 
 async function bootstrap(): Promise<void> {
@@ -31,6 +32,20 @@ async function bootstrap(): Promise<void> {
   await ensureReadModelIndexes(db);
   const backfilled = await backfillLegacyDocuments(db);
   console.log(`[projector] legacy-document-backfill: ${backfilled} document(s) backfilled`);
+
+  // Amendment A1 (PR32, PR35) — a SEPARATE, version-stamped migration from
+  // the one above: every document written before A1 (and every document
+  // written by an already-superseded rule) has its `events` order
+  // frozen behind a stale `timelineOrderVersion`, and a terminal order
+  // never receives another fact to self-heal it. Selected by comparing
+  // the STORED version against the CURRENT one — never by field presence,
+  // which is what let the rejected first attempt silently skip documents
+  // it had already rewritten once its own rank table was corrected.
+  const timelineOrderMigration = await migrateTimelineOrder(db);
+  console.log(
+    `[projector] timeline-order-migration: ${timelineOrderMigration.migrated} document(s) migrated, ` +
+      `${timelineOrderMigration.stillEdgeless} of them still holding an entry with no causationId (PR35 — ordered by the eventId fallback, not causally repaired)`,
+  );
 
   // Hybrid app: the HTTP port stays for health; ONE Kafka microservice
   // transport consumes all three fact topics

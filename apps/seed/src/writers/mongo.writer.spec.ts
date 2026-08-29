@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SAGAS, COMPLETED_SAGAS, CANCELLED_SAGAS } from '../data/sagas.data';
-import { toTimelineDocument } from './mongo.writer';
+import { toTimelineDocument, TIMELINE_ORDER_VERSION } from './mongo.writer';
 
 describe('toTimelineDocument — matches specs/shared/openapi.yaml OrderDetail shape exactly', () => {
   it.each(SAGAS.map((saga) => [saga.orderReference, saga] as const))(
@@ -70,5 +70,35 @@ describe('toTimelineDocument — matches specs/shared/openapi.yaml OrderDetail s
       'order.cancelled.v1',
     ]);
     expect(doc.cancellationReason).toBe('credit_rejected');
+  });
+
+  it('PR34 (A1) — every entry carries a causationId from the fixture\'s OWN declared causal chain, and the document is stamped at the CURRENT timelineOrderVersion', () => {
+    for (const saga of SAGAS) {
+      const doc = toTimelineDocument(saga);
+      expect(doc.timelineOrderVersion).toBe(TIMELINE_ORDER_VERSION);
+      for (const event of doc.events) {
+        expect(typeof event.causationId).toBe('string');
+        expect(event.causationId.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('PR34 (A1) — the compensation pair\'s causal edge is real in the seeded data: order.cancelled.v1.causationId names stock.released.v1\'s OWN eventId', () => {
+    const [cancelled] = CANCELLED_SAGAS;
+    const doc = toTimelineDocument(cancelled);
+    const released = doc.events.find((e) => e.eventType === 'stock.released.v1')!;
+    const cancelledEntry = doc.events.find((e) => e.eventType === 'order.cancelled.v1')!;
+    expect(cancelledEntry.causationId).toBe(released.eventId);
+  });
+
+  it('PR34 (A1) — the Billing edge (amendment A1 open point 2) is real in the seeded data too: credit.released.v1.causationId names payment.received.v1\'s OWN eventId, not a synthetic command id', () => {
+    for (const saga of COMPLETED_SAGAS) {
+      const doc = toTimelineDocument(saga);
+      const payment = doc.events.find((e) => e.eventType === 'payment.received.v1')!;
+      const released = doc.events.find((e) => e.eventType === 'credit.released.v1')!;
+      const completed = doc.events.find((e) => e.eventType === 'order.completed.v1')!;
+      expect(released.causationId).toBe(payment.eventId);
+      expect(completed.causationId).toBe(released.eventId);
+    }
   });
 });

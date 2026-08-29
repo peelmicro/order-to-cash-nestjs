@@ -266,7 +266,19 @@ export class Invoice extends AggregateRoot<Invoice> {
    * or `InvoicePaymentAmountMismatchError` (B10) — each of which changes
    * nothing and appends no event.
    */
-  markPaid(input: MarkPaidInput, ctx: InvoiceContext): void {
+  /**
+   * Returns the `eventId` of the `payment.received.v1` fact it just
+   * appended — amendment A1 (open point 2,
+   * `progress/spec_projector_timeline_ordering.md`): `payment.received.v1`
+   * and `credit.released.v1` were both stamped with the SAME
+   * `causationId` (`cmd.requestId`), so the projector's timeline saw two
+   * siblings rather than a chain and could not causally order them.
+   * `payment-register.handler.ts` uses this return value as the
+   * `causationId` of the `credit.released.v1` fact it triggers next,
+   * making the release's cause the payment that produced it — matching
+   * R47's own "in that order" wording — with no new machinery anywhere.
+   */
+  markPaid(input: MarkPaidInput, ctx: InvoiceContext): UniqueId {
     if (this.props.state.status === 'paid') {
       throw new InvoiceAlreadyPaidError(this.props.invoiceReference.value);
     }
@@ -293,6 +305,7 @@ export class Invoice extends AggregateRoot<Invoice> {
       ctx,
     );
     this.appendFact(event);
+    return event.eventId;
   }
 
   toSnapshot(): InvoiceSnapshot {

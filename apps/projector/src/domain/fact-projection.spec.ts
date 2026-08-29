@@ -75,6 +75,27 @@ describe('fact-projection — PR14 unit half › never reads a clock, timestamps
   });
 });
 
+describe('fact-projection — PR30 (A1) › the entry carries the envelope\'s causationId verbatim, and no eventType-derived ordering key', () => {
+  it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: entry.causationId equals the envelope\'s own causationId', (_type, build) => {
+    const envelope = build({ causationId: 'a-deliberately-distinctive-causation-id' });
+    const delta = projectFact(envelope);
+    expect(delta.entry.causationId).toBe('a-deliberately-distinctive-causation-id');
+  });
+
+  it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: no timeline entry carries statusRank or any other eventType-derived ordering key', (_type, build) => {
+    const delta = projectFact(build());
+    expect(delta.entry).not.toHaveProperty('statusRank');
+    // The ONLY ordering-relevant fields on an entry are occurredAt (already
+    // asserted), eventId and causationId — a literal, recorded edge, never
+    // a derived rank (PR10's own final sentence).
+    expect(Object.keys(delta.entry).sort()).toEqual(
+      ['causationId', 'detail', 'eventId', 'eventType', 'occurredAt', 'summary'].filter(
+        (key) => key !== 'detail' || 'detail' in delta.entry,
+      ),
+    );
+  });
+});
+
 describe('fact-projection — PR28 › no framework, driver or clock import anywhere under domain/', () => {
   const DOMAIN_DIR = path.resolve(__dirname, '.');
   const FORBIDDEN = [/@nestjs\//, /drizzle-orm/, /kafkajs/, /['"]nats['"]/, /['"]mongodb['"]/, /new Date\(\)/, /Date\.now\(\)/];

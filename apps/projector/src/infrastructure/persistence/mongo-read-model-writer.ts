@@ -10,7 +10,7 @@ import type {
   ApplyOutcome,
   ReadModelWriter,
 } from '../../application/ports/read-model-writer.port';
-import { deltaToPipeline, dedupKeyOf } from './delta-to-pipeline';
+import { deltaToPipeline, dedupKeyOf, TIMELINE_ORDER_VERSION } from './delta-to-pipeline';
 import { MongoIdempotentConsumer } from '../messaging/idempotent-consumer';
 import type { OrderTimelineDocument } from './order-timeline.document';
 
@@ -54,6 +54,12 @@ function placeholderSkeleton(orderId: string, seedOccurredAt: string): OrderTime
     updatedAt: seedOccurredAt,
     statusRank: 0,
     processedEventKeys: [],
+    // Amendment A1 (PR32) — an empty `events[]` needs no sorting, but
+    // stamping it here anyway keeps every document this projector writes
+    // at the CURRENT version from the instant it exists, so the boot
+    // migration never has reason to touch a document this projector
+    // itself created.
+    timelineOrderVersion: TIMELINE_ORDER_VERSION,
   };
 }
 
@@ -71,6 +77,7 @@ function toAppliedOrderTimeline(document: OrderTimelineDocument): AppliedOrderTi
       eventType: latest!.eventType,
       occurredAt: latest!.occurredAt,
       summary: latest!.summary,
+      causationId: latest!.causationId,
     },
   };
 }

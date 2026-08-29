@@ -28,6 +28,9 @@ export interface AppliedOrderTimeline {
     readonly eventType: string;
     readonly occurredAt: string;
     readonly summary: string;
+    // Amendment A1 (PR33) — carried through to TimelineStreamEntry so the
+    // SSE-visible shape stays consistent with the wire's TimelineEntry.
+    readonly causationId: string;
   };
 }
 

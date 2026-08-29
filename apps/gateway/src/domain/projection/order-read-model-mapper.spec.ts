@@ -59,6 +59,24 @@ describe('toOrderDetail', () => {
     expect(detail.totals).toEqual({ initialAmount: 130000, initialDiscount: 5750, totalAmount: 124250 });
   });
 
+  it('PR33 (A1, gate ruling: public) — maps events[].causationId through unmapped, when present', () => {
+    const withEdge = completeDoc({
+      events: [
+        { eventId: 'evt-1', eventType: 'order.placed.v1', occurredAt: '2026-08-18T10:15:00.000Z', summary: 'Order placed', causationId: 'command-orders-create-1' },
+      ],
+    });
+    const detail = toOrderDetail(withEdge);
+    expect(detail.events[0]).toHaveProperty('causationId', 'command-orders-create-1');
+  });
+
+  it('PR33 (A1) — an entry with NO stored causationId (every document written before A1) is passed through without one, never invented', () => {
+    const withoutEdge = completeDoc({
+      events: [{ eventId: 'evt-1', eventType: 'order.placed.v1', occurredAt: '2026-08-18T10:15:00.000Z', summary: 'Order placed' }],
+    });
+    const detail = toOrderDetail(withoutEdge);
+    expect(detail.events[0]).not.toHaveProperty('causationId');
+  });
+
   it('R53 — a placeholder document is returned with headerComplete:false and null header fields, timeline intact', () => {
     const placeholder = completeDoc({
       orderReference: null,

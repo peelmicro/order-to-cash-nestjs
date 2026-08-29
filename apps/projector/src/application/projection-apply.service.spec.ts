@@ -15,7 +15,13 @@ const APPLIED_DOCUMENT: AppliedOrderTimeline = {
   cancellationReason: null,
   references: { despatchReference: null, invoiceReference: null, paymentReference: null },
   totals: { initialAmount: 2000, initialDiscount: 0, totalAmount: 2000 },
-  latestEntry: { eventId: 'event-1', eventType: 'order.placed.v1', occurredAt: '2026-08-24T10:00:00.000Z', summary: 'Order ORD-000001 placed for RETAILER01' },
+  latestEntry: {
+    eventId: 'event-1',
+    eventType: 'order.placed.v1',
+    occurredAt: '2026-08-24T10:00:00.000Z',
+    summary: 'Order ORD-000001 placed for RETAILER01',
+    causationId: 'cause-1',
+  },
 };
 
 /** A writer fake that invokes `afterApplied` exactly as `mongo-read-model-writer.ts` does: only on the 'processed' branch. */

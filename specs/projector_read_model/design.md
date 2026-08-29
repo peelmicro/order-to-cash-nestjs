@@ -74,8 +74,10 @@ The seeded shape is **sufficient for `R50` – `R55` and needs two additions**, 
 | `_id`, `orderId`, `orderReference`, `orderDate`, `retailer`, `company`, `status`, `cancellationReason`, `currency`, `totals`, `items`, `references`, `events[]`, `headerComplete`, `updatedAt` | **yes** | Adopted verbatim. `headerComplete` already exists and already means what `R53`/`PR9` need. |
 | `statusRank: number` | **no — added** | `PR12`. Makes `R52`'s "precedes" decidable inside a single atomic update, with no state-machine walk and no read-then-write. |
 | `processedEventKeys: string[]` | **no — added** | `PR23`. `` `${consumer}:${eventId}` ``, sorted. The dedup ledger. |
+| `events[].causationId: string` | **no — added by A1** | `PR30`. The causal edge `PR10`'s tiebreak needs. Verbatim from the envelope. Client-visible **iff** `PR33` is ruled public (open point 4). |
+| `timelineOrderVersion: number` | **no — added by A1** | `PR32`. Which version of `PR10`'s rule produced the stored `events` order. The migration selects on **this**, never on field presence. Projector-internal, always stripped from the wire. |
 
-Both are stripped by feature 25's Mongo projection (`{ projection: { statusRank: 0, processedEventKeys: 0 } }`) so `OrderDetail` on the wire is unchanged. `openapi.yaml` does not close `additionalProperties`, so no shared-contract change is needed either way; projecting them out is a cleanliness choice, recorded so feature 25 does not have to rediscover it.
+`statusRank`, `processedEventKeys` and `timelineOrderVersion` are stripped by feature 25's Mongo projection (`{ projection: { statusRank: 0, processedEventKeys: 0, timelineOrderVersion: 0 } }`); `events[].causationId` is stripped **only if** `PR33` is ruled internal so `OrderDetail` on the wire is unchanged. `openapi.yaml` does not close `additionalProperties`, so no shared-contract change is needed either way; projecting them out is a cleanliness choice, recorded so feature 25 does not have to rediscover it.
 
 ### 3.1 Two things about the seeded shape that must change
 
@@ -98,6 +100,7 @@ export interface TimelineEntryDelta {
   readonly eventId: string;
   readonly eventType: string;
   readonly occurredAt: string;          // ISO-8601, straight from the envelope
+  readonly causationId: string;         // A1/PR30 — verbatim from the envelope; the ONLY ordering input beyond occurredAt/eventId
   readonly summary: string;
   readonly detail?: Readonly<Record<string, unknown>>;
 }
@@ -172,9 +175,7 @@ An **update with an aggregation pipeline** (MongoDB 4.2+; the compose stack runs
   processedEventKeys: { $sortArray: {                                    // PR15 — a set union's order is unspecified
     input: { $setUnion: [{ $ifNull: ['$processedEventKeys', []] }, [dedupKey]] }, sortBy: 1 } },
 
-  events: { $sortArray: {                                                // PR10 — sorted in the document, not at read
-    input: { $concatArrays: [{ $ifNull: ['$events', []] }, [entryDoc]] },
-    sortBy: { occurredAt: 1, eventId: 1 } } },
+  events: <the causal timeline order of §5.5>,                          // PR10 (A1) — sorted in the document, not at read
 
   statusRank: { $max: [{ $ifNull: ['$statusRank', 0] }, rank] },         // PR12 — rank 0 for status-less facts
   status: { $cond: [{ $gt: [rank, { $ifNull: ['$statusRank', 0] }] }, impliedStatus, '$status'] },
@@ -198,6 +199,93 @@ Notes that matter:
 - `status` uses `$cond` on `rank > $statusRank` **strictly**, and `statusRank` uses `$max`. Both are evaluated against the *pre-update* document within one pipeline stage (`$set` computes all its expressions against the input document), so the two agree without ordering games.
 - For a status-less fact, `rank = 0`; `$max` leaves the rank and `$gt` is false, so `status` re-writes its own value. Cheap and total — no conditional pipeline construction, which keeps `delta-to-pipeline.ts` a pure function with one shape.
 - The header fields are written **unconditionally** when `delta.header` is present. They do not need `$ifNull` protection because `order.placed.v1` occurs exactly once per order and the dedup filter already stops its redelivery. Writing them conditionally would hide a genuine defect (two different `order.placed.v1` facts for one order id) behind a silent no-op.
+
+### 5.5 The causal timeline order (amendment A1 — `PR10`, `PR30` – `PR32`)
+
+> **This section is the mechanism. `requirements.md` `PR10` is the rule; nothing here may add to it.** Assessments #8 and #9 reimplement the rule from `PR10`; only the realisation below is #7's.
+
+#### 5.5.1 The rule, restated as an algorithm
+
+Given the stored entry set `E` of one document (each entry carrying `occurredAt`, `eventId`, `causationId`), the stored order is:
+
+```
+sort E by (occurredAt asc, depth(e) asc, eventId asc)
+
+where, for the tie group G(e) = { x in E : x.occurredAt == e.occurredAt }:
+  cause(e)  = the unique x in G(e) with x.eventId == e.causationId, or none
+  depth(e)  = 0                        if cause(e) is none
+            = 1 + depth(cause(e))      otherwise
+  evaluated as a fixpoint over at most |G(e)| relaxation rounds
+```
+
+Four properties, each of which is a requirement clause and not an implementation nicety:
+
+- **It is a topological order of the causal forest.** `depth(c) = depth(cause(c)) + 1`, strictly greater, so a fact is always stored after its cause. This is what `R28` asks for and what the rejected `statusRank` key only accidentally provided.
+- **It is total.** `eventId` is unique across facts, so no two entries compare equal.
+- **It is a pure function of `E`.** No arrival index, no insertion position, no clock, no generated id — `PR15`.
+- **It terminates on any input, including a cycle.** The round count is bounded by `|G|` a priori rather than by convergence, so a malformed history costs one bounded evaluation and yields a deterministic (if meaningless) order instead of a hang or a throw — `PR31`.
+
+Depth is a **BFS-level** order, not a DFS pre-order: two independent chains inside one tie group interleave by level rather than staying contiguous. Both are valid topological orders, `PR31`'s fallback makes either deterministic, and no tie group in this domain contains two independent chains. The simpler key was chosen deliberately — see open point 7.
+
+#### 5.5.2 Why the whole array is re-sorted, not just the insertion point
+
+`depth` is a property of the **group**, not of the entry, and a fact can arrive before the fact that caused it — the three fact topics are partitioned by `correlationId` but carry no ordering guarantee **across** topics, and `stock.released.v1` (`otc.fulfillment.facts.v1`) and `order.cancelled.v1` (`otc.orders.facts.v1`) are on different ones. If the child were placed on arrival using the depths known at that moment, its depth would be `0` and would never be revised, and the final array would depend on arrival order — a straight `PR15` violation that a single-topic test could never catch. So every apply recomputes every depth over the post-append array. The array is bounded by the thirteen facts of one order, so the cost is irrelevant.
+
+#### 5.5.3 The MongoDB realisation (#7 only)
+
+Still **one** `$set` stage inside the same single `findOneAndUpdate` of §5.2 — `PR6` is untouched, there is still no read-then-write, and `deltaToPipeline` stays a pure function returning plain objects.
+
+Sketch, in the order the stage computes it:
+
+```js
+// 1. the post-append array
+$let: { all: { $concatArrays: [{ $ifNull: ['$events', []] }, [entryDoc]] } }
+
+// 2. depth, by |all| relaxation rounds. $reduce over `all` is the iteration
+//    driver: it runs exactly |all| times, which is >= |G| for every group,
+//    so the fixpoint is reached for any acyclic relation and bounded for any
+//    cyclic one. Each round maps every entry to
+//      0                                  if no entry of the same occurredAt has eventId == causationId
+//      1 + (that entry's depth this round) otherwise
+//    (`$filter` + `$arrayElemAt` for the lookup; `$ifNull` for a missing
+//     causationId, which legacy and seeded entries have — PR35.)
+
+// 3. the sort
+$sortArray: { input: <entries with their computed depth>,
+              sortBy: { occurredAt: 1, __depth: 1, eventId: 1 } }
+
+// 4. drop the transient __depth so it is never stored (PR15 byte-identity,
+//    and it is not part of the document shape) — a $map projecting the
+//    entry's own fields.
+```
+
+Notes that matter:
+
+- `$sortArray` needs MongoDB **5.2+** (§5.3 already records this); `$reduce`, `$map`, `$filter` and `$let` are all 3.4+. **No `$function`, no server-side JavaScript** — that would need scripting enabled on the server and is not available in the compose stack's configuration.
+- `__depth` is **computed and discarded within the stage**. Storing it would be the `statusRank` mistake again in a new costume: a second derived field that must be kept true, and that goes stale the moment a cause arrives late.
+- The cost is `O(|G| · n²)` expression evaluations with `n ≤ 13`. Measured against the alternative — pulling the array into TypeScript, sorting it and writing it back — which is forbidden outright by `PR6`.
+- If the `$reduce` formulation proves unreadable to the point of being unmaintainable, the acceptable fallback is a **fixed** round count `K` with `K` stated in the source and a comment naming what happens beyond it (`PR31`'s truncation clause already covers it). `K = 4` covers every chain this domain can produce; `|all|` rounds covers every chain any domain can produce. Prefer `|all|`.
+
+#### 5.5.4 The migration (`PR32`)
+
+Runs at boot, after `backfillLegacyDocuments`, before `startAllMicroservices()` — the same position and the same shape as the existing backfill, for the same reason: a terminal order never receives another fact, so its stored order is frozen and only a migration can change it.
+
+| | Rejected first attempt | A1 |
+|---|---|---|
+| Selection filter | `{ 'events.statusRank': { $exists: false } }` — **presence** | `{ timelineOrderVersion: { $ne: TIMELINE_ORDER_VERSION } }` — **version** |
+| When the rule changes | Silently skips every document it already rewrote, on a green suite, logging `0 document(s) backfilled` | Selects **every** document again, because the constant changed |
+| Cleanup of a retired key | none | `$unset` of `events.$[].statusRank` in the same update |
+| What it reports | count migrated | count migrated, **and** count still holding an entry with no `causationId` (`PR35`) |
+
+`TIMELINE_ORDER_VERSION` is a single exported integer in the projector's persistence layer, incremented by hand whenever `PR10`'s rule changes, with a comment naming the change. That is the whole mechanism; its value is that it is impossible to change the rule and forget the migration, because the migration's own guard test asserts that a document stamped at `VERSION − 1` is re-sorted.
+
+The migration re-sorts with the **same** rule expression as the live pipeline (§5.5.3), applied to the stored array with no append. It does not invent a `causationId` (`PR35`), so for a document written before A1 every tie group is edgeless and the result is `occurredAt` then `eventId` — deterministic, and honestly reported as not-causally-ordered rather than presented as repaired.
+
+#### 5.5.5 What A1 removes
+
+`TimelineEntryDelta.statusRank`, `entryOf`'s `statusRank: rankOf(...)`, the `statusRank` key of the `events` `$sortArray`, the `events[].statusRank` field of `OrderTimelineDocument`, and the Gateway's `events.statusRank` exclusion. `PR12`'s **document-level** `statusRank` stays exactly as it is — it answers `R52`, which is a question about order status, and nothing else.
+
+---
 
 ### 5.4 What is *not* used, and why
 

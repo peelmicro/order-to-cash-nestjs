@@ -13,6 +13,19 @@
 // is a plain, local copy of `apps/projector/src/domain/order-status-rank.ts`'s
 // PR12 table; kept in sync by inspection, not by import, because the two
 // apps must never share source.
+//
+// Amendment A1 (projector_read_model PR34, gate-approved — see this
+// file's own precedent at open point 1 for PR22's partial index): each
+// timeline entry's `causationId` is written from `TimelineEntryFixture`'s
+// OWN declared value (`sagas.data.ts`'s causal-chain construction, the
+// SAME value each fact's `OutboxFixture` row already carries as its own
+// `causationId`), and the document is stamped with `timelineOrderVersion`
+// — a LOCAL copy of `apps/projector`'s own `TIMELINE_ORDER_VERSION`
+// constant, kept in sync by inspection for the same reason the rank table
+// is. Without this, a seeded document's tie groups have no causal edges
+// and stay on PR31's eventId fallback permanently (PR35) even after the
+// projector's own boot migration runs, because the migration NEVER
+// invents an edge that was never recorded.
 import { MongoClient, type Collection, type Db } from 'mongodb';
 import { loadMongoConfig, mongoConnectionUri, type MongoConfig } from '../mongo-config';
 import { SAGAS, type OrderSagaFixture } from '../data/sagas.data';
@@ -63,11 +76,15 @@ export interface OrderTimelineDocument {
     occurredAt: string;
     summary: string;
     detail?: Record<string, unknown>;
+    /** Amendment A1 (PR30/PR34) — the fixture's own declared causal edge, written verbatim (never derived or inferred). Public on the wire (PR33). */
+    causationId: string;
   }[];
   headerComplete: boolean;
   updatedAt: string;
   /** projector_read_model PR12 — the seeded document's own totalised status rank. Projector-owned, invisible to clients (openapi.yaml OrderDetail does not declare it). */
   statusRank: number;
+  /** Amendment A1 (PR32/PR34) — a local copy of the projector's own `TIMELINE_ORDER_VERSION`, so a seeded document is never picked up by the boot migration as if it needed repairing. */
+  timelineOrderVersion: number;
   /** projector_read_model PR23 — the dedup ledger, derived from this fixture's own `events[].eventId`, prefixed exactly as the projector's own `${consumer}:${eventId}` dedup key would be. */
   processedEventKeys: string[];
 }
@@ -92,6 +109,18 @@ function statusRankOf(status: string): number {
   }
   return rank;
 }
+
+/**
+ * Amendment A1 (PR32/PR34) — a LOCAL copy of
+ * `apps/projector/src/infrastructure/persistence/delta-to-pipeline.ts`'s
+ * own `TIMELINE_ORDER_VERSION`, kept in sync by inspection (this file's
+ * header comment) rather than by import: a seeded document is written
+ * ALREADY at the current version, so the projector's boot migration never
+ * has reason to touch it — a `pnpm seed` run therefore leaves every
+ * timeline causally ordered from the moment it exists, not merely once a
+ * later boot's migration catches up.
+ */
+export const TIMELINE_ORDER_VERSION = 2;
 
 export function toTimelineDocument(saga: OrderSagaFixture): OrderTimelineDocument {
   const retailer = retailerByCode(saga.retailerCode);
@@ -135,10 +164,18 @@ export function toTimelineDocument(saga: OrderSagaFixture): OrderTimelineDocumen
         occurredAt: entry.occurredAt.toISOString(),
         summary: entry.summary,
         ...(entry.detail ? { detail: entry.detail } : {}),
+        // Amendment A1 (PR30/PR34) — the fixture's OWN declared causal
+        // edge (sagas.data.ts's `*CausationId` chain), never inferred or
+        // reconstructed from array position here.
+        causationId: entry.causationId,
       })),
     headerComplete: true,
     updatedAt: saga.updatedAt.toISOString(),
     statusRank: statusRankOf(saga.status),
+    // Amendment A1 (PR32/PR34) — stamped at the CURRENT version, so this
+    // document is never picked up by the projector's version-mismatch
+    // migration as if it needed repairing.
+    timelineOrderVersion: TIMELINE_ORDER_VERSION,
     processedEventKeys: [...saga.timeline]
       .map((entry) => `projector:${entry.eventId}`)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),

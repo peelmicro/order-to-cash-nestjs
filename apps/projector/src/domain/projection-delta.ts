@@ -18,6 +18,16 @@ export interface TimelineEntryDelta {
   readonly eventType: string;
   readonly occurredAt: string; // ISO-8601, straight from the envelope (PR14)
   readonly summary: string;
+  // Amendment A1 (PR30) — the triggering envelope's OWN causationId,
+  // stored verbatim. This REPLACES the rejected first attempt's
+  // `statusRank` entry field (progress/spec_projector_timeline_ordering.md
+  // §6.2: a status ranking is not a causal ordering, and diverges from one
+  // the moment a status-bearing fact causes a status-less one — the exact
+  // shape of the R24 completion triple). `causationId` is the recorded
+  // causal edge `delta-to-pipeline.ts`'s pipeline uses to compute each tie
+  // group's depth; PR10 forbids inferring an edge from `eventType`, from
+  // an implied status, or from any other derived property.
+  readonly causationId: string;
   readonly detail?: Readonly<Record<string, unknown>>;
 }
 

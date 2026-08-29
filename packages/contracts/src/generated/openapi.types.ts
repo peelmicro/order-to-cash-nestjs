@@ -933,8 +933,18 @@ export interface components {
              */
             resumed: boolean;
         };
-        /** @description One projected fact. The timeline is ordered by `occurredAt`, never by arrival order (R50). */
+        /**
+         * @description One projected fact. The timeline is ordered by `occurredAt` ascending, never by
+         *     arrival order (R50). Two entries sharing one identical `occurredAt` (a tie group)
+         *     are then ordered so that a fact always follows the fact that caused it: within the
+         *     tie group, entry `p` is the cause of entry `c` exactly when `c.causationId` equals
+         *     `p.eventId`; where no such recorded edge exists between two tied entries (including
+         *     every document projected before this ordering existed), they fall back to `eventId`
+         *     ascending — a deterministic but causally arbitrary order (amendment A1).
+         */
         TimelineEntry: {
+            /** @description The `eventId` of the fact that caused this one; ties on `occurredAt` are ordered so that a fact follows its cause. Absent on an entry projected before this field existed. */
+            causationId?: components["schemas"]["UniqueId"];
             /** @description Optional structured extract of the fact payload for the UI — shortages, amounts, references. */
             detail?: Record<string, never>;
             /** @description The idempotency key — an entry with this id is never appended twice (R51). */
@@ -947,6 +957,8 @@ export interface components {
         };
         /** @description `data` of a `timeline.appended` frame — one fact was appended to an order timeline. */
         TimelineStreamEntry: {
+            /** @description Same field as `TimelineEntry.causationId`, carried onto the stream frame. */
+            causationId?: components["schemas"]["UniqueId"];
             eventId: components["schemas"]["UniqueId"];
             eventType: string;
             occurredAt: components["schemas"]["Instant"];

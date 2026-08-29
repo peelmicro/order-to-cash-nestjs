@@ -170,7 +170,7 @@ export class PaymentRegisterHandler {
       // 4. domain — R49's three refusals (currency mismatch, amount
       // mismatch, already paid) are ALL raised here, by the aggregate
       // itself (B8, B10); nothing written, no fact, on every one of them.
-      invoice.markPaid(
+      const paymentEventId = invoice.markPaid(
         {
           paymentReference: request.paymentReference,
           amount,
@@ -186,9 +186,19 @@ export class PaymentRegisterHandler {
       // is numerically neutral, `credit-exposure.ts`) means `outstanding`
       // here is exactly the order's original hold amount — this returns
       // `availableCredit` to precisely where it started.
+      //
+      // Amendment A1 (open point 2) — `causationId: paymentEventId`, NOT
+      // `ctx.causationId` (`cmd.requestId`): the release IS caused by the
+      // payment (`reason: 'invoice_paid'`), and R47 already specifies the
+      // two facts are emitted "in that order". Before this change both
+      // facts carried the SAME causationId (`cmd.requestId`) and were
+      // therefore siblings, not a chain — the projector's causal-edge
+      // timeline rule (PR10) could not order them and fell back to the
+      // causally-arbitrary `eventId` tiebreak (PR31). Making the edge real
+      // in the data is the whole fix; no new machinery anywhere.
       credit.releaseHold(
         { orderReference: invoiceSnapshot.orderReference, reason: 'invoice_paid', correlationId: cmd.correlationId },
-        ctx,
+        { ...ctx, causationId: paymentEventId },
         () => UniqueId.generate(),
       );
 

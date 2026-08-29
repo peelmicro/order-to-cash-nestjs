@@ -35,6 +35,9 @@ interface TimelineStreamEntry {
   eventType: string;
   occurredAt: string;
   summary: string;
+  // Amendment A1 (PR33) — public, same as TimelineEntry's own addition
+  // (specs/shared/openapi.yaml).
+  causationId: string;
 }
 
 export class NatsUpdateSignalPublisher implements UpdateSignalPublisher {
@@ -64,6 +67,7 @@ export class NatsUpdateSignalPublisher implements UpdateSignalPublisher {
       eventType: document.latestEntry.eventType,
       occurredAt: document.latestEntry.occurredAt,
       summary: document.latestEntry.summary,
+      causationId: document.latestEntry.causationId,
     };
 
     // Two independent, fire-and-forget publishes — neither awaits a

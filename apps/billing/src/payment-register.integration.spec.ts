@@ -133,7 +133,17 @@ describe('billing.payment.register — R47, R48, R49 (Testcontainers: mysql:8.4.
     expect(outboxRows).toHaveLength(2);
     expect(outboxRows.map((row) => row.eventType)).toEqual(['payment.received.v1', 'credit.released.v1']);
     expect(outboxRows[0]).toMatchObject({ correlationId: correlationId.value, causationId: requestId.value });
-    expect(outboxRows[1]).toMatchObject({ correlationId: correlationId.value, causationId: requestId.value });
+    // Amendment A1 (open point 2, progress/spec_projector_timeline_ordering.md)
+    // — `credit.released.v1`'s `causationId` is `payment.received.v1`'s
+    // OWN `eventId`, NOT `cmd.requestId`. Before this change both facts
+    // carried the SAME `causationId` (`requestId.value`) and the
+    // projector's causal-edge timeline rule (PR10) saw siblings, not a
+    // chain, and could not order them; this assertion is the live proof
+    // the edge is real in the outbox, not just in the domain layer. Fails
+    // if the handler reverts to reusing `ctx.causationId` for the release.
+    expect(outboxRows[1]!.causationId).toBe(outboxRows[0]!.eventId);
+    expect(outboxRows[1]!.causationId).not.toBe(requestId.value);
+    expect(outboxRows[1]).toMatchObject({ correlationId: correlationId.value });
   });
 
   it('R48 — a sequential repeat of the SAME paymentReference returns the original outcome, records no second payment and emits no second fact', async () => {

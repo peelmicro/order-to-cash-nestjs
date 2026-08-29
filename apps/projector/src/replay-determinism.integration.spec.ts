@@ -7,6 +7,7 @@
 // weakened to a partial comparison.
 import { randomUUID } from 'node:crypto';
 import type { Envelope } from '@otc/contracts';
+import type { Collection } from 'mongodb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   BILLING_FACTS_TOPIC,
@@ -25,13 +26,18 @@ import {
   creditApprovedEnvelope,
   creditReleasedEnvelope,
   invoiceIssuedEnvelope,
+  orderCancelledEnvelope,
   orderCompletedEnvelope,
   orderConfirmedEnvelope,
   orderDespatchedEnvelope,
   orderPlacedEnvelope,
   paymentReceivedEnvelope,
+  stockReleasedEnvelope,
   stockReservedEnvelope,
 } from './test-support/envelope-fixtures';
+import { projectFact } from './domain/fact-projection';
+import { MongoReadModelWriter } from './infrastructure/persistence/mongo-read-model-writer';
+import type { OrderTimelineDocument } from './infrastructure/persistence/order-timeline.document';
 
 const TOPIC_FOR: Readonly<Record<string, string>> = {
   'order.placed.v1': ORDERS_FACTS_TOPIC,
@@ -158,5 +164,72 @@ describe('replay-determinism — PR15 (Testcontainers, real Kafka + real MongoDB
       expect(second!.events).toHaveLength(9);
     },
     120_000,
+  );
+
+  it(
+    'PR15 (A1) — a fact delivered BEFORE the fact that caused it produces the IDENTICAL final array as the reverse arrival, because the whole array is re-sorted on every apply, not merely inserted at a computed point',
+    async () => {
+      const db = mongo.db();
+      const collection: Collection<OrderTimelineDocument> = db.collection('order_timeline');
+      // Deliberately eventId-adversarial (`RELEASED` sorts LAST
+      // lexically), so an eventId-only fallback would ALSO get this
+      // wrong if depth were not recomputed — same discipline as the
+      // R28/R24 causal-order guards.
+      const releasedEventId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+      const cancelledEventId = '00000000-0000-4000-8000-000000000001';
+      const sharedOccurredAt = '2026-08-24T18:00:00.000Z';
+
+      // Order A — canonical arrival: the CAUSE (stock.released.v1) first,
+      // the EFFECT (order.cancelled.v1) second.
+      const orderIdA = randomUUID();
+      const writer = new MongoReadModelWriter(collection);
+      await writer.apply(
+        projectFact(stockReleasedEnvelope({ eventId: releasedEventId, correlationId: orderIdA, aggregateId: orderIdA, occurredAt: sharedOccurredAt })),
+        releasedEventId,
+        'projector',
+        async () => {},
+      );
+      await writer.apply(
+        projectFact(
+          orderCancelledEnvelope({ eventId: cancelledEventId, correlationId: orderIdA, aggregateId: orderIdA, causationId: releasedEventId, occurredAt: sharedOccurredAt }),
+        ),
+        cancelledEventId,
+        'projector',
+        async () => {},
+      );
+      const docA = await collection.findOne({ _id: orderIdA } as never);
+
+      // Order B — the SAME two facts (identical eventId/occurredAt/
+      // causationId), but the EFFECT arrives FIRST and the CAUSE SECOND —
+      // exactly the shape no cross-topic ordering guarantee rules out
+      // (stock.released.v1 and order.cancelled.v1 are on different fact
+      // topics, design.md §5.5.2), and the exact case a "just insert the
+      // new entry at the right index" optimisation would get wrong: at
+      // insertion time the cancellation's own cause has not arrived yet,
+      // so its depth would be fixed at 0 and never revised.
+      const orderIdB = randomUUID();
+      await writer.apply(
+        projectFact(
+          orderCancelledEnvelope({ eventId: cancelledEventId, correlationId: orderIdB, aggregateId: orderIdB, causationId: releasedEventId, occurredAt: sharedOccurredAt }),
+        ),
+        cancelledEventId,
+        'projector',
+        async () => {},
+      );
+      await writer.apply(
+        projectFact(stockReleasedEnvelope({ eventId: releasedEventId, correlationId: orderIdB, aggregateId: orderIdB, occurredAt: sharedOccurredAt })),
+        releasedEventId,
+        'projector',
+        async () => {},
+      );
+      const docB = await collection.findOne({ _id: orderIdB } as never);
+
+      // Both orders used the SAME eventId/occurredAt/causationId/summary
+      // for their two facts, so the ENTRY ARRAYS are directly comparable
+      // (only _id/orderId/updatedAt differ at the document level).
+      expect(docA!.events.map((e) => e.eventType)).toEqual(['stock.released.v1', 'order.cancelled.v1']);
+      expect(docB!.events).toEqual(docA!.events);
+    },
+    60_000,
   );
 }, 180_000);

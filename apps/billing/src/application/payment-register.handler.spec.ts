@@ -116,7 +116,7 @@ function registerCommand(overrides: Partial<PaymentRegisterRequestPayload> = {})
 
 interface RecordedMarkPaid {
   readonly invoice: Invoice;
-  readonly events: readonly { eventType: string }[];
+  readonly events: readonly { eventType: string; eventId: UniqueId; causationId: UniqueId }[];
 }
 
 interface RecordingInvoices {
@@ -177,7 +177,7 @@ function invoiceRepositoryOf(options: InvoiceRepoOptions): RecordingInvoices {
 
 interface RecordedSave {
   readonly credit: BuyerCredit;
-  readonly events: readonly { eventType: string }[];
+  readonly events: readonly { eventType: string; eventId: UniqueId; causationId: UniqueId }[];
 }
 
 interface RecordingCredits {
@@ -230,7 +230,8 @@ describe('PaymentRegisterHandler — R47, the happy path', () => {
     const unitOfWork = new RecordingUnitOfWork();
     const handler = new PaymentRegisterHandler(unitOfWork, credits, sharedInvoices, fixedClock);
 
-    const reply = await handler.register(registerCommand());
+    const cmd = registerCommand();
+    const reply = await handler.register(cmd);
 
     expect(unitOfWork.executeCalls).toBe(1);
     expect(reply).toMatchObject({ outcome: 'accepted', invoiceReference: INVOICE_REF.value, orderReference: ORDER.value, invoiceStatus: 'paid' });
@@ -262,6 +263,18 @@ describe('PaymentRegisterHandler — R47, the happy path', () => {
     // The ledger identity: outstanding = hold - release = HOLD_AMOUNT,
     // fully released — availableCredit returns to creditLimit exactly.
     expect(saveCalls[0]!.credit.availableCredit).toEqual(Money.of(500_000, CURRENCY));
+
+    // Amendment A1 (open point 2, progress/spec_projector_timeline_ordering.md)
+    // — `credit.released.v1`'s `causationId` is `payment.received.v1`'s OWN
+    // `eventId`, NOT `cmd.requestId`. Before this change both facts shared
+    // `cmd.requestId` as their `causationId` and were siblings, not a
+    // chain — the projector's causal-edge timeline rule (PR10) could not
+    // order them. This assertion fails if `payment-register.handler.ts`
+    // reverts to reusing `ctx.causationId` for the release.
+    const paymentEventId = markPaidCalls[0]!.events[0]!.eventId;
+    const releaseCausationId = saveCalls[0]!.events[0]!.causationId;
+    expect(releaseCausationId).toEqual(paymentEventId);
+    expect(releaseCausationId).not.toEqual(cmd.requestId);
   });
 
   it('resolves the target invoice by invoiceId when invoiceReference is absent', async () => {

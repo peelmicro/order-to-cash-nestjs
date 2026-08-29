@@ -41,10 +41,24 @@ export interface OrderTimelineDocument {
     eventType: string;
     occurredAt: string;
     summary: string;
+    // Amendment A1 (PR30) — the triggering envelope's OWN causationId,
+    // stored verbatim; the recorded causal edge `delta-to-pipeline.ts`'s
+    // `causalTimelineOrder` computes each tie group's depth from (PR10).
+    // PUBLIC on the wire (PR33, gate ruling) — unlike the retired
+    // entry-level `statusRank` it replaces, this is NOT excluded by
+    // `mongo-order-read-model.adapter.ts`'s `EXCLUDE_INTERNAL_FIELDS`.
+    causationId: string;
     detail?: Record<string, unknown>;
   }[];
   headerComplete: boolean;
   updatedAt: string;
   statusRank: number;
   processedEventKeys: string[];
+  // Amendment A1 (PR32) — which version of PR10's timeline-order rule
+  // produced this document's stored `events` order; the boot migration
+  // (timeline-order-migration.ts) selects on this VALUE, never on field
+  // presence. Absent on any document written before this feature —
+  // `{ $ne: TIMELINE_ORDER_VERSION }` catches absence the same way it
+  // catches a stale value.
+  timelineOrderVersion?: number;
 }

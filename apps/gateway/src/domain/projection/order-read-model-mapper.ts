@@ -49,6 +49,13 @@ export interface OrderTimelineDocumentLike {
     readonly occurredAt: string;
     readonly summary: string;
     readonly detail?: Record<string, unknown>;
+    // Amendment A1 (PR33, gate ruling: public) — the recorded causal edge,
+    // optional because a document written before A1 has entries with none
+    // (PR35). Passed through UNMAPPED (`toOrderDetail` below), the same
+    // treatment `eventId` already gets — `causationId` is a first-class
+    // envelope field (R11), not a projector-derived artefact like the
+    // retired `statusRank`.
+    readonly causationId?: string;
   }[];
   readonly headerComplete: boolean;
   readonly updatedAt: string;
@@ -95,6 +102,13 @@ export interface OrderDetailLike {
     readonly occurredAt: string;
     readonly summary: string;
     readonly detail?: Record<string, unknown>;
+    // Amendment A1 (PR33, gate ruling: public) — the recorded causal edge,
+    // optional because a document written before A1 has entries with none
+    // (PR35). Passed through UNMAPPED (`toOrderDetail` below), the same
+    // treatment `eventId` already gets — `causationId` is a first-class
+    // envelope field (R11), not a projector-derived artefact like the
+    // retired `statusRank`.
+    readonly causationId?: string;
   }[];
   readonly headerComplete: boolean;
   readonly updatedAt: string;

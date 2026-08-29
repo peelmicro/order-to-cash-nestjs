@@ -206,6 +206,10 @@ function entryOf(envelope: Envelope, summary: string, detail?: Readonly<Record<s
     eventType: envelope.eventType,
     occurredAt: envelope.occurredAt,
     summary,
+    // Amendment A1 (PR30) — see TimelineEntryDelta's own comment
+    // (projection-delta.ts). Stored verbatim; NEVER derived from
+    // eventType or from anything else the fact implies.
+    causationId: envelope.causationId,
     ...(detail ? { detail } : {}),
   };
 }

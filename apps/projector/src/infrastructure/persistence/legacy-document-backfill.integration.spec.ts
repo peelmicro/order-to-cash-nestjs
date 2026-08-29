@@ -24,8 +24,13 @@ import { backfillLegacyDocuments } from './legacy-document-backfill';
 import { MongoReadModelWriter } from './mongo-read-model-writer';
 import type { OrderTimelineDocument } from './order-timeline.document';
 
-/** By-hand reproduction of apps/seed's `toTimelineDocument` OUTPUT SHAPE — see this file's header. Nine facts, `completed`, no `statusRank`/`processedEventKeys` (the pre-this-feature shape). */
-function seededCompletedDocument(orderId: string, eventIds: readonly string[]): Omit<OrderTimelineDocument, 'statusRank' | 'processedEventKeys'> {
+/** By-hand reproduction of apps/seed's `toTimelineDocument` OUTPUT SHAPE — see this file's header. Nine facts, `completed`, no `statusRank`/`processedEventKeys` document-level (PR29), and no `causationId`/`timelineOrderVersion` either (amendment A1 — the pre-PR30/PR34 shape every document written before A1 has). */
+function seededCompletedDocument(
+  orderId: string,
+  eventIds: readonly string[],
+): Omit<OrderTimelineDocument, 'statusRank' | 'processedEventKeys' | 'events' | 'timelineOrderVersion'> & {
+  events: Omit<OrderTimelineDocument['events'][number], 'causationId'>[];
+} {
   const [
     placedId,
     reservedId,

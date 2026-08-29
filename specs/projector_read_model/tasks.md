@@ -103,3 +103,24 @@
 - [x] **J5.** `progress/impl_projector_read_model.md` — what was built, the four armings (H5), the OI12 subversion probe (D7), the live-boot record (I1 – I4), the `E11000` and backfill behaviours as observed, and any open point whose decision changed during implementation.
 - [x] **J6.** `git diff --stat` shows **only**: `apps/projector/**`, `specs/projector_read_model/**`, `specs/shared/test-matrix.md`, `feature_list.json`, `progress/**`, `.env.example`, `pnpm-lock.yaml`, and — if and only if open point 1 was approved — `apps/seed/src/writers/mongo.writer.ts`. **`apps/orders` must be byte-unmodified**; check it explicitly and say so. Anything else is scope creep and is reverted.
 - [x] **J7.** Stop. Report what was done and how to test it manually. **Do not commit.**
+
+---
+
+## K — Amendment A1: causal timeline ordering (`PR10`, `PR15`, `PR30` – `PR34`)
+
+> **Human gate cleared** — open points 1, 2, 4, 5 and 6 of `progress/spec_projector_timeline_ordering.md` were approved as recommended (public `causationId`, the Billing causation edge, `apps/seed`). Section K below is complete; see `progress/impl_api_tests.md`'s "A1 — causal timeline ordering" section for the record.
+
+- [x] **K1.** Read `specs/projector_read_model/requirements.md` §6 (why the first attempt was rejected), then `PR10`, `PR30`, `PR31`, `PR32`, and `design.md` §5.5. Do not start from the working tree's `statusRank` code — it is the rejected attempt.
+- [x] **K2.** Remove the rejected attempt: `TimelineEntryDelta.statusRank`, `entryOf`'s `statusRank`, the `statusRank` sort key, `OrderTimelineDocument.events[].statusRank`, the Gateway's `events.statusRank` exclusion, and the `timeline-entry-rank-tiebreak` backfill and its spec. Leave the **document-level** `statusRank` (`PR12`) untouched.
+- [x] **K3.** `PR30` — carry `causationId` onto `TimelineEntryDelta` and `entryOf` (verbatim from the envelope) and onto `OrderTimelineDocument.events[]`. Unit test: *every entry carries the envelope's causationId verbatim*, and *no entry carries an eventType-derived ordering key*.
+- [x] **K4.** `PR10` — implement the causal order in `delta-to-pipeline.ts` per design §5.5.3: one `$set`, depth computed and discarded within the stage, `sortBy: { occurredAt: 1, __depth: 1, eventId: 1 }`. Unit test on the emitted pipeline shape.
+- [x] **K5.** `PR10` integration (`timeline-causal-order.integration.spec.ts`, real MongoDB): the **R28 compensation pair** and the **R24 completion triple**, each with `eventId`s chosen adversarially so the fallback alone would invert the result. Both cases must fail if the depth key is removed — arm and record.
+- [x] **K6.** `PR31` integration, same file: an edge pointing outside the tie group; an edge naming a fact never received; an entry with no `causationId`; a fabricated cycle (terminates, every entry present exactly once, deterministic); two siblings sharing one `causationId` (fallback, identical on a second run).
+- [x] **K7.** `PR15` — add to `replay-determinism.integration.spec.ts`: *a fact delivered BEFORE the fact that caused it produces the identical array as the reverse arrival*. This is the case that fails if the array is not re-sorted in full on every apply; arm it by placing the entry at the insertion point instead and record the failure.
+- [x] **K8.** `PR32` / `PR35` — `TIMELINE_ORDER_VERSION`, the version-stamped migration, and `timeline-order-migration.integration.spec.ts`: *a document stamped at VERSION − 1 IS re-sorted* (the case the rejected presence-filter could not pass), *a document at the current version is untouched*, *the retired entry-level statusRank is stripped*, *no causationId is invented*, and the two reported counts.
+- [x] **K9.** Re-run the migration against the human's dev stack and record before/after for the documents the rejected attempt already rewrote — they are the ones `PR32` exists for.
+- [x] **K10.** `PR33` — implement whichever half the gate ruled (public: mapper passes `causationId` through, plus the `openapi.yaml` addition once the gate has made it; internal: the Gateway excludes `events.causationId` on all three read paths). Test the ruled half only.
+- [x] **K11.** `PR34` — **only if approved**: `apps/seed` writes each entry's `causationId` and stamps `TIMELINE_ORDER_VERSION`.
+- [x] **K12.** Flip `PR10`, `PR15`, `PR30` – `PR34` in `requirements.md` §3 to `DONE` with real case names. **Do not touch `specs/shared/`** — its two consequences (the `openapi.yaml` addition, the `R24` matrix row) are the gate's, recorded in §6.4.
+- [x] **K13.** Record in `progress/impl_*.md`: the armings of K5 and K7 verbatim, the live re-check of both the compensation pair and the completion triple on fresh orders, and anything the gate's ruling changed.
+- [x] **K14.** Stop. Report what was done and how to test it manually. **Do not commit.**

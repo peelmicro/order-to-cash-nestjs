@@ -5,8 +5,17 @@
 // the contract itself says list/detail are served "from the read model
 // only". `{ projection: { statusRank: 0, processedEventKeys: 0 } }` is the
 // exact exclusion `read-model-indexes.ts`'s own comment anticipates this
-// feature performing — those two fields are projector-internal and must
-// never reach the wire.
+// feature performing — those two document-level fields are
+// projector-internal and must never reach the wire.
+//
+// Amendment A1 (PR33, gate ruling: public) — the entry-level exclusion
+// this file used to carry (`'events.statusRank': 0`, the R28 fix) is
+// REMOVED, not merely renamed: `events[].statusRank` no longer exists on
+// any entry the projector writes (PR30 retires it in favour of
+// `causationId`), and `causationId` is deliberately NOT excluded here —
+// it is a first-class envelope field (R11), not a projector-derived
+// artefact, and reaches the wire unmapped exactly as `eventId` does
+// (`order-read-model-mapper.ts`'s `events: doc.events` passthrough).
 import type { Collection } from 'mongodb';
 import type { OrderListFilter, OrderListResult, OrderReadModel } from '../../application/ports/order-read-model.port';
 import type { OrderTimelineDocumentLike } from '../../domain/projection/order-read-model-mapper';
