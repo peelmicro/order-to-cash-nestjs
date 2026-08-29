@@ -444,7 +444,7 @@
       "phase": 19,
       "title": "Playwright end-to-end tests against the composed stack",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "order reaches completed in the UI",
         ".99 order reaches cancelled with compensation visible"

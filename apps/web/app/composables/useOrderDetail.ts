@@ -1,6 +1,6 @@
-import { computed, type Ref } from 'vue';
+import { computed, watch, type Ref } from 'vue';
 import { useQuery, type QueryClient } from '@tanstack/vue-query';
-import type { OrderDetail, OrderStreamUpdate, ProjectionPending, TimelineStreamEntry } from '#shared/types/gateway';
+import type { OrderDetail, OrderStatus, OrderStreamUpdate, ProjectionPending, TimelineStreamEntry } from '#shared/types/gateway';
 
 export type OrderDetailResult =
   | { kind: 'pending'; pending: ProjectionPending }
@@ -9,6 +9,36 @@ export type OrderDetailResult =
 export function orderDetailQueryKey(orderId: string): unknown[] {
   return ['order-detail', orderId];
 }
+
+/**
+ * D8: `completed`/`cancelled` are the only two statuses from which an order
+ * can never change again — NOT, as an earlier version of this comment
+ * claimed, "the only two statuses the saga does not leave on its own".
+ * `invoiced` is also a status the saga rests at on its own (it waits for a
+ * human or n8n to register a payment) — but the document CAN still change
+ * from `invoiced`, which is exactly why `useOrderDetailQuery` keeps polling
+ * it. The accurate rule (CLAUDE.md's "never poll a state the correct saga
+ * leaves within a poll interval", mirrored): keep polling until the document
+ * can no longer change at all, terminal or not.
+ */
+const TERMINAL_ORDER_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>(['completed', 'cancelled']);
+
+export function isTerminalOrderStatus(status: OrderStatus): boolean {
+  return TERMINAL_ORDER_STATUSES.has(status);
+}
+
+/**
+ * D2 — the stale-page window's actual fix. Deliberately slow, and
+ * deliberately a *backstop* rather than the primary update path (the SSE
+ * stream stays that): the only way to guarantee convergence on "a stream
+ * frame was lost entirely" — no resend, no resumed:false, no gap the client
+ * can detect from the stream alone — is a source of truth the page consults
+ * again on its own, independent of whether the stream ever tells it to.
+ * `onResync` (stream.ready's `resumed:false` handler, `[id].vue`) already
+ * closes the common case fast; this closes it unconditionally, at the cost
+ * of one extra `GET` every few seconds while an order is still live.
+ */
+export const STALE_STATUS_BACKSTOP_MS = 5000;
 
 /**
  * `GET /orders/{id}` through the server proxy, read via `$fetch.raw` rather
@@ -29,17 +59,73 @@ async function fetchOrderDetail(orderId: string): Promise<OrderDetailResult> {
 /**
  * `GET /orders/{id}` (R54). While the answer is `202`/projection-pending
  * (R55), polls at the interval the Gateway itself suggests (`retryAfterMs`)
- * rather than a tight loop or a fixed guess — and stops polling entirely
- * once a real document has landed, since the live SSE stream takes over
- * from there.
+ * rather than a tight loop or a fixed guess.
+ *
+ * Once a real document has landed, the live SSE stream is the *primary*
+ * updater — but polling does not stop outright. **D2**: the page used to
+ * stop polling entirely the moment a `ready` document landed, relying on
+ * the stream alone from then on; a single fact projected in the window
+ * between this GET resolving and the page's `connect()` call (or, more
+ * generally, any single frame the stream loses entirely, for any reason,
+ * with no signal to the client that it did) left the page showing a stale
+ * status forever, with the connection indicator reading `Live` the whole
+ * time — it had no way to tell it was wrong. So instead: while the order is
+ * NOT yet in a terminal status (`completed`/`cancelled` — D8: the only two
+ * statuses from which the document can no longer change, not merely the
+ * only two the saga rests at on its own), keep refetching, slowly
+ * (`STALE_STATUS_BACKSTOP_MS`) — a deliberate backstop, not a fast poll,
+ * that guarantees convergence on the truth within one interval regardless
+ * of what the stream did or didn't deliver.
+ *
+ * **D7, the backstop's own residual hole.** Stopping dead the instant the
+ * cached status first reads terminal guards the *status* but not the
+ * *timeline*: if the status turns terminal live (an `order.updated` frame,
+ * or this very backstop's own GET) while a sibling fact of the same burst
+ * (e.g. `credit.released.v1`, sharing `occurredAt` with `order.completed.v1`
+ * to the millisecond) has not yet been separately projected or its own
+ * `timeline.appended` frame has been lost, polling stopping immediately
+ * leaves that entry out forever, permanently, with the badge reading
+ * correctly the whole time. A *single* refetch fired the instant the
+ * transition is observed does not close this: it would race the very same
+ * in-flight projection that produced the terminal status in the first
+ * place. So instead: once a transition into terminal is OBSERVED BY THIS
+ * CLIENT (as opposed to a document that was already terminal on its very
+ * first successful GET — nothing was live-transitioning then, so there is
+ * no burst to suspect), keep the backstop alive for exactly one further
+ * `STALE_STATUS_BACKSTOP_MS` interval, giving the projector time to settle,
+ * then stop for good. `observedNonTerminal`/`extraPollDone` below are local
+ * to this composable's own closure, reset per `orderId` (the `watch` below)
+ * so navigating between two order-detail pages without a full remount does
+ * not leak one order's polling history into another's.
  */
 export function useOrderDetailQuery(orderId: Ref<string>) {
+  let observedNonTerminal = false;
+  let extraPollDone = false;
+  watch(orderId, () => {
+    observedNonTerminal = false;
+    extraPollDone = false;
+  });
+
   return useQuery({
     queryKey: computed(() => orderDetailQueryKey(orderId.value)),
     queryFn: () => fetchOrderDetail(orderId.value),
     refetchInterval: (query) => {
       const data = query.state.data;
-      return data?.kind === 'pending' ? (data.pending.retryAfterMs ?? 2000) : false;
+      if (data?.kind === 'pending') return data.pending.retryAfterMs ?? 2000;
+      if (data?.kind !== 'ready') return false;
+      if (!isTerminalOrderStatus(data.detail.status)) {
+        observedNonTerminal = true;
+        return STALE_STATUS_BACKSTOP_MS;
+      }
+      // D7: terminal now. Only schedule the one-shot catch-up poll if this
+      // client actually watched the transition happen (never for a document
+      // that read terminal on its very first GET — see the doc comment
+      // above) and only once, ever, per order.
+      if (observedNonTerminal && !extraPollDone) {
+        extraPollDone = true;
+        return STALE_STATUS_BACKSTOP_MS;
+      }
+      return false;
     },
   });
 }

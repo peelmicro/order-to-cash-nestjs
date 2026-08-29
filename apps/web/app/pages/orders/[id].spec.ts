@@ -14,11 +14,12 @@
 // This file's job is to prove the Vue-layer wiring: real frames flowing
 // through the real composable reach the real rendered DOM.
 import { createError, setResponseStatus } from 'h3';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerEndpoint, renderSuspended } from '@nuxt/test-utils/runtime';
 import { screen, waitFor, within } from '@testing-library/vue';
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 import OrderDetailPage from './[id].vue';
+import { STALE_STATUS_BACKSTOP_MS } from '@/composables/useOrderDetail';
 import type { EventSourceLike } from '@/lib/order-stream-client';
 import type { OrderDetail, ProjectionPending } from '#shared/types/gateway';
 
@@ -87,7 +88,16 @@ function readyOrder(overrides: Partial<OrderDetail> = {}): OrderDetail {
 }
 
 describe('orders/[id].vue — order detail page with live SSE timeline', () => {
+  // D9: real-timer restoration lives HERE, not in a per-test try/finally —
+  // a test that times out before reaching its own `finally` (exactly what
+  // happened under the D2 mutation below, pass 2 of this feature) leaks
+  // fake timers into whichever test runs next. `afterEach` runs regardless
+  // of how the test exits, so a timing-out test can no longer poison the
+  // ones after it. Calling `vi.useRealTimers()` when real timers are
+  // already active is a documented no-op, so this is safe for every test,
+  // not only the fake-timer ones.
   afterEach(() => {
+    vi.useRealTimers();
     FakeEventSource.instances = [];
   });
 
@@ -179,6 +189,126 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
 
     await waitFor(() => expect(callCount).toBe(2));
     await waitFor(() => expect(screen.getByTestId('order-detail-status')).toHaveTextContent('confirmed'));
+  });
+
+  it('D2 — a stream frame missed entirely still converges on the true terminal status, via the backstop refetch, without any SSE frame ever reporting the completion', async () => {
+    vi.useFakeTimers();
+    let callCount = 0;
+    registerEndpoint('/api/orders/order-1', {
+      method: 'GET',
+      handler: () => {
+        callCount += 1;
+        // The FIRST GET lands mid-saga ("paid"). Every later GET (only the
+        // backstop refetch can produce one here — no stream frame is ever
+        // emitted for the completion below) reports the true terminal
+        // status, simulating a fact whose SSE frame is lost ENTIRELY —
+        // not delayed, not a `resumed: false` (that path is already
+        // covered by the "resumed:false re-fetches" test above) — so the
+        // only way this page can ever show `completed` is the backstop.
+        return readyOrder(callCount === 1 ? { status: 'paid' } : { status: 'completed' });
+      },
+    });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    expect(screen.getByTestId('order-detail-status')).toHaveTextContent('paid');
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(callCount).toBe(1);
+
+    // The stream connects and reports ready (a genuine resume, not a
+    // resync signal) — but no `order.updated`/`timeline.appended` frame
+    // for the completion is ever emitted on this fake transport, at any
+    // point in this test. If the page still converges, it did so without
+    // the stream's help, by construction.
+    FakeEventSource.instances[0]!.emit('stream.ready', { cursor: 'c0', resumed: true });
+
+    await vi.advanceTimersByTimeAsync(STALE_STATUS_BACKSTOP_MS + 50);
+
+    await waitFor(() => expect(screen.getByTestId('order-detail-status')).toHaveTextContent('completed'));
+    expect(callCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it('D2 — once a terminal status is reached, the backstop stops refetching (no unbounded polling after completion)', async () => {
+    vi.useFakeTimers();
+    let callCount = 0;
+    registerEndpoint('/api/orders/order-1', {
+      method: 'GET',
+      handler: () => {
+        callCount += 1;
+        return readyOrder({ status: 'completed' });
+      },
+    });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    expect(screen.getByTestId('order-detail-status')).toHaveTextContent('completed');
+    expect(callCount).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(STALE_STATUS_BACKSTOP_MS * 3);
+
+    expect(callCount).toBe(1);
+  });
+
+  it('D7 — a terminal order.updated frame whose sibling timeline.appended frame is lost still renders that entry, via one further backstop poll after the terminal transition', async () => {
+    vi.useFakeTimers();
+    let callCount = 0;
+    registerEndpoint('/api/orders/order-1', {
+      method: 'GET',
+      handler: () => {
+        callCount += 1;
+        // GET #1 lands mid-saga ("paid"), one event only. Every later GET
+        // (only D7's one-shot catch-up poll can produce one here — the
+        // `credit.released.v1` fact's own `timeline.appended` frame is
+        // NEVER emitted on the fake stream below, at any point in this
+        // test) reports the true terminal status AND the sibling fact,
+        // simulating a projector that finishes writing the burst's second
+        // document shortly after the first (the status) already landed.
+        return callCount === 1
+          ? readyOrder({ status: 'paid' })
+          : readyOrder({
+              status: 'completed',
+              events: [
+                { eventId: 'evt-0', eventType: 'order.placed.v1', occurredAt: '2026-08-27T10:00:00.000Z', summary: 'Order placed' },
+                { eventId: 'evt-9', eventType: 'credit.released.v1', occurredAt: '2026-08-27T10:10:00.000Z', summary: 'Credit released' },
+              ],
+            });
+      },
+    });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    expect(screen.getByTestId('order-detail-status')).toHaveTextContent('paid');
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    expect(callCount).toBe(1);
+
+    const source = FakeEventSource.instances[0]!;
+    source.emit('stream.ready', { cursor: 'c0', resumed: true });
+    // The order.updated frame for the completion DOES arrive live — but its
+    // sibling timeline.appended frame (credit.released.v1, same burst) is
+    // never emitted, at any point in this test.
+    source.emit('order.updated', { eventId: 'evt-10', orderId: 'order-1', status: 'completed', occurredAt: '2026-08-27T10:10:00.000Z' });
+
+    await waitFor(() => expect(screen.getByTestId('order-detail-status')).toHaveTextContent('completed'));
+    // The hole this test proves closes: right after the live status
+    // transition, the timeline is still one entry short — nothing on this
+    // fake transport will ever deliver credit.released.v1.
+    expect(within(screen.getByTestId('order-timeline')).getAllByTestId('timeline-entry')).toHaveLength(1);
+
+    // D7's fix: one further backstop-interval poll fires after the live
+    // terminal transition, closing the hole with a real GET.
+    await vi.advanceTimersByTimeAsync(STALE_STATUS_BACKSTOP_MS + 50);
+
+    await waitFor(() => expect(screen.getByText('Credit released')).toBeInTheDocument());
+    expect(within(screen.getByTestId('order-timeline')).getAllByTestId('timeline-entry')).toHaveLength(2);
+    expect(callCount).toBe(2);
+
+    // And polling stops for good after that one catch-up poll — no further,
+    // unbounded refetching once the timeline has had its chance to settle.
+    await vi.advanceTimersByTimeAsync(STALE_STATUS_BACKSTOP_MS * 3);
+    expect(callCount).toBe(2);
   });
 
   it('an entry whose causationId matches an earlier entry\'s eventId renders the causal indication, naming the causing event', async () => {

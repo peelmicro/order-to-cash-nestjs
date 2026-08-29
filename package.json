@@ -17,6 +17,7 @@
     "test": "pnpm -r --if-present run test",
     "test:coverage": "pnpm -r --if-present run test:coverage",
     "test:integration": "pnpm -r --if-present run test:integration",
+    "test:e2e": "pnpm -r --if-present run test:e2e",
     "quality": "pnpm run lint && pnpm run typecheck && pnpm run test",
     "contracts:generate": "pnpm --filter @otc/contracts run generate",
     "contracts:check": "pnpm --filter @otc/contracts run check",

@@ -279,7 +279,7 @@ async function submit() {
             <div class="flex flex-col gap-1.5">
               <Label>Company</Label>
               <Select v-if="companiesUsable" v-model="form.companyCode">
-                <SelectTrigger class="w-full min-w-0">
+                <SelectTrigger class="w-full min-w-0" data-testid="company-select-trigger">
                   <SelectValue class="truncate" placeholder="Select a company" :title="companyLabel ?? 'Select a company'" />
                 </SelectTrigger>
                 <SelectContent>
@@ -314,7 +314,7 @@ async function submit() {
               <div class="flex flex-col gap-1.5">
                 <Label>Product</Label>
                 <Select v-if="productsUsable" v-model="line.productCode">
-                  <SelectTrigger class="w-full min-w-0">
+                  <SelectTrigger class="w-full min-w-0" data-testid="product-select-trigger">
                     <SelectValue class="truncate" placeholder="Select a product" :title="productLabel(line.productCode) ?? 'Select a product'" />
                   </SelectTrigger>
                   <SelectContent>
@@ -331,6 +331,7 @@ async function submit() {
                   :model-value="line.quantity"
                   type="number"
                   min="1"
+                  data-testid="quantity-input"
                   @update:model-value="(v) => (line.quantity = Number(v))"
                 />
               </div>
