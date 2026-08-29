@@ -200,7 +200,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 15 | End-to-end saga verification | ✅ happy path, `.99`/`stock_rejected` compensation, redelivery, poison-to-DLQ, composed trace — all proven against real spawned services |
 | 16 | Nuxt 4 web app | ✅ auth (JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline, billing (invoices, credits, Register payment) and stock (on-hand/reserved, delta replenish) — plus an error sweep so every failure shows the server's real reason |
 | 17 | Web component tests | ✅ 59 tests / 14 files, written inside each feature loop rather than as a separate phase; SSE covered against a real `EventSource` over real HTTP. Coverage 85.8% statements, 87.0% lines |
-| 18 | API tests through the Gateway | ⬜ |
+| 18 | API tests through the Gateway | ✅ black-box over real HTTP against a real spawned Gateway + fleet (supertest as client only) — happy path, `.99` compensation, payment idempotency, and a general causal-ordering invariant asserted on every order |
 | 19 | Playwright end-to-end tests | ⬜ |
 | 20 | n8n demo workflows | ⬜ |
 | 21 | SonarQube + coverage gates | ⬜ |
