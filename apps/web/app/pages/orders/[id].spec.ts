@@ -181,6 +181,92 @@ describe('orders/[id].vue — order detail page with live SSE timeline', () => {
     await waitFor(() => expect(screen.getByTestId('order-detail-status')).toHaveTextContent('confirmed'));
   });
 
+  it('an entry whose causationId matches an earlier entry\'s eventId renders the causal indication, naming the causing event', async () => {
+    registerEndpoint('/api/orders/order-1', {
+      method: 'GET',
+      handler: () => readyOrder({
+        events: [
+          { eventId: 'evt-0', eventType: 'order.placed.v1', occurredAt: '2026-08-27T10:00:00.000Z', summary: 'Order placed' },
+          { eventId: 'evt-1', causationId: 'evt-0', eventType: 'stock.reserved.v1', occurredAt: '2026-08-27T10:00:01.000Z', summary: 'Stock reserved' },
+        ],
+      }),
+    });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    const entries = screen.getAllByTestId('timeline-entry');
+    expect(entries).toHaveLength(2);
+
+    const causedEntry = entries.find((entry) => entry.getAttribute('data-event-id') === 'evt-1')!;
+    const causation = within(causedEntry).getByTestId('timeline-causation');
+    expect(causation).toHaveTextContent(/caused by/i);
+    expect(within(causation).getByTestId('timeline-causation-link')).toHaveTextContent('order.placed.v1');
+    expect(within(causation).getByTestId('timeline-causation-link')).toHaveAttribute('href', '#timeline-entry-evt-0');
+
+    // The entry with no cause of its own renders no causal indication.
+    const originEntry = entries.find((entry) => entry.getAttribute('data-event-id') === 'evt-0')!;
+    expect(within(originEntry).queryByTestId('timeline-causation')).not.toBeInTheDocument();
+  });
+
+  it('an entry whose causationId matches nothing in the array renders no indication and no error', async () => {
+    registerEndpoint('/api/orders/order-1', {
+      method: 'GET',
+      handler: () => readyOrder({
+        events: [
+          // Points at a command requestId, not a fact eventId in this
+          // array — exactly the pre-A1-Billing `payment.received.v1`/
+          // `credit.released.v1` sibling case the brief names.
+          { eventId: 'evt-1', causationId: 'req-does-not-exist', eventType: 'credit.released.v1', occurredAt: '2026-08-27T10:00:00.000Z', summary: 'Credit released' },
+        ],
+      }),
+    });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    const entry = screen.getByTestId('timeline-entry');
+    expect(within(entry).queryByTestId('timeline-causation')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('order-detail-error')).not.toBeInTheDocument();
+  });
+
+  it('an entry with no causationId (the pre-A1 shape) renders exactly as before', async () => {
+    registerEndpoint('/api/orders/order-1', { method: 'GET', handler: () => readyOrder() });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    const entry = screen.getByTestId('timeline-entry');
+    expect(within(entry).queryByTestId('timeline-causation')).not.toBeInTheDocument();
+    expect(within(entry).getByText('Order placed')).toBeInTheDocument();
+  });
+
+  it('a live timeline.appended frame carrying a causationId renders the same causal indication as a loaded entry', async () => {
+    registerEndpoint('/api/orders/order-1', { method: 'GET', handler: () => readyOrder() });
+
+    await renderOrderDetail({ orderId: 'order-1', streamFactory: fakeFactory });
+
+    await screen.findByText('ORD-000001');
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    const source = FakeEventSource.instances[0]!;
+
+    source.emit('stream.ready', { cursor: 'c0', resumed: true });
+    source.emit('timeline.appended', {
+      eventId: 'evt-1',
+      causationId: 'evt-0',
+      orderId: 'order-1',
+      eventType: 'stock.reserved.v1',
+      occurredAt: '2026-08-27T10:05:00.000Z',
+      summary: 'Stock reserved',
+    });
+
+    await screen.findByText('Stock reserved');
+    const entries = screen.getAllByTestId('timeline-entry');
+    const causedEntry = entries.find((entry) => entry.getAttribute('data-event-id') === 'evt-1')!;
+    const causation = within(causedEntry).getByTestId('timeline-causation');
+    expect(within(causation).getByTestId('timeline-causation-link')).toHaveTextContent('order.placed.v1');
+  });
+
   it('a failed GET /api/orders/{id} renders the server\'s real error text, not a generic fallback', async () => {
     registerEndpoint('/api/orders/order-error', {
       method: 'GET',

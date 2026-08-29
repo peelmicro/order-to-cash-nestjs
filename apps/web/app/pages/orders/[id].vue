@@ -10,7 +10,7 @@ import { useOrderStream } from '@/composables/useOrderStream';
 import { formatMoney } from '@/lib/money';
 import type { EventSourceFactory } from '@/lib/order-stream-client';
 import { describeFetchError } from '@/lib/problem';
-import type { OrderStatus } from '#shared/types/gateway';
+import type { OrderStatus, TimelineEntry } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
 
@@ -94,6 +94,25 @@ function connectionVariant(state: string): 'default' | 'secondary' | 'destructiv
 function retryConnection(): void {
   const current = data.value;
   connect(current?.kind === 'ready' ? current.detail.events.map((event) => event.eventId) : []);
+}
+
+/**
+ * Resolves a timeline entry's `causationId` (amendment A1) to the entry it
+ * names, within THIS order's own `events[]` only. Two ways this can come
+ * back empty, both intentional and both required to render nothing at all,
+ * never a broken link or a placeholder:
+ *
+ * - The entry has no `causationId` at all — every entry projected before A1
+ *   landed (e.g. `ORD-000030` in the running seed data). Absence is normal.
+ * - The entry HAS a `causationId`, but it does not match any `eventId` in
+ *   this array — it names a *command* `requestId` instead of a fact
+ *   `eventId` (the pre-A1-Billing sibling case the brief names explicitly,
+ *   `payment.received.v1`/`credit.released.v1`). An unresolved id must
+ *   never surface as a dangling reference.
+ */
+function causingEvent(entry: TimelineEntry, events: TimelineEntry[]): TimelineEntry | undefined {
+  if (!entry.causationId) return undefined;
+  return events.find((candidate) => candidate.eventId === entry.causationId);
 }
 </script>
 
@@ -203,10 +222,11 @@ function retryConnection(): void {
         <ol class="flex flex-col gap-2" data-testid="order-timeline">
           <li
             v-for="event in data.detail.events"
+            :id="`timeline-entry-${event.eventId}`"
             :key="event.eventId"
             data-testid="timeline-entry"
             :data-event-id="event.eventId"
-            class="flex items-start justify-between gap-4 rounded-md border p-3 text-sm"
+            class="flex items-start justify-between gap-4 rounded-md border p-3 text-sm target:bg-muted transition-colors"
           >
             <div>
               <p class="font-medium">
@@ -214,6 +234,24 @@ function retryConnection(): void {
               </p>
               <p class="text-xs text-muted-foreground">
                 {{ event.eventType }}
+              </p>
+              <!-- Amendment A1's causal edge (§ design constraint 1-2 of this
+                   pass): only rendered when `causationId` resolves to a fact
+                   genuinely present in this order's own timeline. Absent
+                   `causationId` (pre-A1 orders) and an unresolvable
+                   `causationId` (points at a command requestId, not a fact
+                   eventId) both fall through to rendering nothing here. -->
+              <p
+                v-if="causingEvent(event, data.detail.events)"
+                class="text-xs text-muted-foreground"
+                data-testid="timeline-causation"
+              >
+                caused by
+                <a
+                  :href="`#timeline-entry-${causingEvent(event, data.detail.events)!.eventId}`"
+                  class="underline decoration-dotted underline-offset-2 hover:text-foreground"
+                  data-testid="timeline-causation-link"
+                >{{ causingEvent(event, data.detail.events)!.eventType }}</a>
               </p>
             </div>
             <span class="whitespace-nowrap text-xs text-muted-foreground">{{ new Date(event.occurredAt).toLocaleString() }}</span>

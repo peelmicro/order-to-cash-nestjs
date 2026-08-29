@@ -593,3 +593,81 @@ Probes 5–7 confirm Passes 5 and 6 survived this pass's edits to `place.vue` an
 ## Defects found
 
 None blocking. Two test-coverage gaps (Concerns 1 and 2) and one tooling gap (Concern 3) to fold into the next pass.
+
+---
+
+# Pass 8 review — causal links in the order timeline
+
+**Verdict: APPROVED.**
+
+Scope of this review: the three points the leader flagged (unresolvable ids, the SSE reducer fix, pre-A1 rendering), re-armed mutation probes, the three quality gates, and live verification in a real browser against the running stack. I did not re-review the seven earlier passes.
+
+## What I ran myself
+
+| Gate | Result |
+|---|---|
+| `pnpm --filter @otc/web run lint` | exit 0, clean |
+| `pnpm --filter @otc/web run typecheck` (`nuxi typecheck`) | exit 0, clean |
+| `pnpm --filter @otc/web exec vitest run` | **14 files, 63 tests passed**, exit 0 — matches the implementer's claim exactly |
+
+## Concern 1 — unresolvable `causationId` renders nothing, safely
+
+The resolution genuinely checks membership; it does not assume a match. `apps/web/app/pages/orders/[id].vue:110-113`:
+
+```ts
+function causingEvent(entry: TimelineEntry, events: TimelineEntry[]): TimelineEntry | undefined {
+  if (!entry.causationId) return undefined;
+  return events.find((candidate) => candidate.eventId === entry.causationId);
+}
+```
+
+Two guards, both load-bearing: absence (`!entry.causationId`) and non-membership (`events.find(...)` returning `undefined`). The template renders the whole `<p data-testid="timeline-causation">` under `v-if="causingEvent(event, data.detail.events)"` (`[id].vue:245`), so an unresolved id produces no element at all — no placeholder, no empty `<p>`, no `href="#undefined"`.
+
+**Probe (mine, not the implementer's).** I removed the membership guard specifically — kept the absence check, replaced the `find` result with a synthetic fallback entry (`?? { eventId: entry.causationId, eventType: 'unknown', ... }`), the exact "assume it matches" bug this guard exists to prevent. Result: `app/pages/orders/[id].spec.ts` — `1 failed | 9 passed`, the failure being *`an entry whose causationId matches nothing in the array renders no indication and no error`* at line 229, with the diff showing the dangling `href="#timeline-entry-req-does-not-exist"` and link text `unknown` that the guard suppresses. The spec test bites on precisely the mutation it claims to cover; it is not vacuous.
+
+**This case is real in production data, not hypothetical.** Live against the running stack, ORD-000049 carries 4 `causationId`s that resolve to nothing in their own `events[]` (they name command `requestId`s), and ORD-000050 carries 6. In the real rendered DOM, every one of them renders no causation node, zero console errors or warnings across all three pages. Every `causationId` that *does* resolve renders a link whose `href` anchor I resolved with `document.getElementById` — all `anchorResolves: true`. I computed the expected link text independently from the `GET /api/orders/{id}` JSON and diffed it against the DOM: **zero mismatches on all three orders**.
+
+## Concern 2 — the SSE reducer fix
+
+**Complete. It drops nothing else.** I compared the object `applyTimelineAppended` constructs (`useOrderDetail.ts:96`) against both schemas in `specs/shared/openapi.yaml`:
+
+- `TimelineStreamEntry` (line 1587) carries `eventId, causationId, orderId, orderReference, eventType, occurredAt, summary`. The reducer maps all five that are also `TimelineEntry` fields; `orderId`/`orderReference` are stream-envelope fields with no place on a `TimelineEntry` and are correctly omitted.
+- `TimelineEntry` (line 1455) has one field the stream frame cannot supply: `detail`. That is not a web-side drop — the projector's signal payload does not carry it either (`apps/projector/src/infrastructure/signal/nats-update-signal.publisher.ts:60-71` publishes exactly the seven fields above), and nothing in `[id].vue` renders `detail`. No finding.
+
+**Probe.** Re-armed the original bug (removed `causationId:` from the constructed entry): whole suite `1 failed | 62 passed`, failing test *`a live timeline.appended frame carrying a causationId renders the same causal indication as a loaded entry`*, `Unable to find an element by: [data-testid="timeline-causation"]`. The fix is guarded.
+
+**Live proof, stronger than the unit test.** I placed a real order (`ORD-000053`, `35a704e9-…`) through the running stack, waited for `INV-000020`, opened `/orders/{id}` in a real browser, snapshotted the loaded timeline, then registered a real payment (`201 accepted`) with the page still open. Within 1s three entries arrived **live**:
+
+```
++1s ARRIVED LIVE: [["payment.received.v1",null,null,null],
+                   ["credit.released.v1","payment.received.v1","#timeline-entry-c2770219-…",true],
+                   ["order.completed.v1","credit.released.v1","#timeline-entry-c662b415-…",true]]
+```
+
+I instrumented the network: **no `GET /api/orders/{id}` occurred after the initial load** (`network AFTER first load: []`), so those entries came through the SSE stream and the reducer, not a refetch. Both causal links rendered, both anchors resolved. I then reloaded the page and diffed the full rendered entry list — `IDENTICAL LIVE vs RELOAD: true`, zero page errors. The brief's "renders identically after a reload" is verified against the real system, not only against a fake `EventSource`.
+
+*Non-blocking observation (pre-existing, not introduced by this pass):* those last three entries share one identical `occurredAt` (`10:23:05.945Z`) — a genuine A1 tie group, which the projector orders causally. The reducer's `.sort((a,b) => a.occurredAt.localeCompare(b.occurredAt))` (`useOrderDetail.ts:97`) has no causal tie-break; it relies on `Array.prototype.sort` stability plus per-order NATS arrival order to reproduce the server's causal order. It did so exactly here, and the sort line is untouched by this pass, so this is not a defect — but if a tie group ever arrived out of emission order, live and reloaded orderings could diverge within that group. Worth a line in a future pass, not a blocker.
+
+## Concern 3 — pre-A1 entries render exactly as before
+
+Verified live on **ORD-000030** (`b4123193-…`), whose five entries all have `causationId: null` in the wire JSON. Every `<li>`: `causationText: null`, `pCount: 2` (summary + event type, the pre-pass structure), `emptyPs: 0`, and **`liHeight: 61.96875` on all five — identical to the non-caused entries on ORD-000049/ORD-000050**, whose caused entries measure `77.95`. So the extra height appears only where a link actually renders; there is no reserved slot, no "unknown", no layout shift on pre-A1 data. Console: no errors, no warnings.
+
+## Re-armed implementer evidence
+
+Broke `causingEvent` to `return undefined` as the implementer described. Running the whole spec file (they ran only the first test) gives `2 failed | 8 passed` — the two the change should break — both with `TestingLibraryElementError: Unable to find an element by: [data-testid="timeline-causation"]` at `[id].spec.ts:202` and `:266`. Their reported evidence is accurate.
+
+## Restoration and scope
+
+All four probes restored from byte-exact backups; `md5sum` of `[id].vue` and `useOrderDetail.ts` matches the pre-probe copies, and `git diff --stat apps/web/` is unchanged from before I started (`132 insertions(+), 3 deletions(-)` across the three files). `git status --porcelain apps/web` shows exactly `useOrderDetail.ts`, `[id].spec.ts`, `[id].vue` — the pass's declared scope. `packages/contracts` shows only the pre-existing `src/generated/openapi.types.ts` from the A1 landing; `git check-ignore` confirms `packages/contracts/dist/` is ignored (`.gitignore:7`), so the rebuild produced **no tracked diff**. Everything else in the working tree is pre-existing A1 amendment work and was ignored per the brief. No commit made; `feature_list.json` untouched by me.
+
+## Regression — Pass 3's dedup guarantees
+
+Still hold and are still guarded. Removed the `events.some(existing => existing.eventId === entry.eventId)` early-return from `applyTimelineAppended`: suite goes `1 failed | 62 passed`, failing *`a redelivered frame (same eventId already present) leaves the events array unchanged — no duplicate entry`*. Restored; green.
+
+## Defects
+
+None. No blocking issues.
+
+## Stack
+
+Left running and healthy — all 17 containers `healthy` (`otc-web` on `WEB_PORT=3010`). Two orders were placed and one payment registered during live verification (`ORD-000052`, `ORD-000053`/`INV-000020`); this is the dev stack and the data is additive.

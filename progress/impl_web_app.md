@@ -932,3 +932,74 @@ Restore was done from a pre-taken copy rather than `git checkout --`, because `a
 None of the three was vacuous. No spec file needed fixing; no `.spec.ts` was changed in this pass.
 
 After restore, `git status --porcelain -- apps/web` shows no `.vue` file modified beyond the ones already modified before this pass began. Full suite from `apps/web` (`pnpm exec vitest run`): **14 files passed, 59 tests passed, exit 0**.
+
+## Pass 8 — causal links in the order timeline
+
+Scope per the leader's brief: amendment A1 added a `causationId` field to every `TimelineEntry`/`TimelineStreamEntry` (public in `specs/shared/openapi.yaml`, already reaching the browser in the wire response), but nothing in `apps/web` rendered it. This pass makes the causal edge visible on `apps/web/app/pages/orders/[id].vue`'s timeline, resolving a child entry's `causationId` against the `eventId`s actually present in that order's own `events[]`, rendering nothing when it doesn't resolve (a command `requestId`, or no `causationId` at all — the pre-A1 shape). Bounded to `apps/web/**`; `feature_list.json`, `specs/`, every backend app confirmed untouched by this pass (see the `git status --porcelain` block below — every other listed change was already present, uncommitted, before this pass started, from the just-landed A1 amendment work).
+
+### What was built
+
+- **`apps/web/app/pages/orders/[id].vue`** — a `causingEvent(entry, events)` helper resolves `entry.causationId` against the `eventId`s in the same order's `data.detail.events` array (design constraint 1: only renders when the parent is genuinely present in *this* timeline, never a dangling reference). Where it resolves, a small `data-testid="timeline-causation"` line renders beneath the summary/event-type — `caused by <a>{{eventType}}</a>` (design constraint 4: names the causing event, not a raw UUID) — styled `text-xs text-muted-foreground` to match the page's existing muted-secondary convention (design constraint 3), no layout restructuring. The anchor's `href` points at `#timeline-entry-<causingEventId>`, and every `<li>` gained a matching `id="timeline-entry-<eventId>"` plus Tailwind's built-in `target:` pseudo-class variant (`target:bg-muted transition-colors`, confirmed a real Tailwind v4 core variant — `r("target",["&:target"])` in `tailwindcss@4.3.3`'s compiled `lib.js`) so clicking the link jumps to and highlights the causing entry — the "cheap and it points to the parent" affordance the brief names, with zero new JS interaction code. Where it doesn't resolve (no `causationId`, or one that names a command `requestId` not present in `events[]`), nothing renders at all — no empty slot, no "unknown", confirmed both by test and live against `ORD-000030`.
+- **`apps/web/app/composables/useOrderDetail.ts`** — `applyTimelineAppended` (the live-SSE `timeline.appended` reducer) previously *dropped* `causationId` when constructing the appended entry object, even though `TimelineStreamEntry` already carries it (the brief's "should require no extra work if you render from the same shape" turned out to need this one-field fix — the shape wasn't actually identical until this line changed). Now carries `entry.causationId` through verbatim, so a live-arriving entry's causal link renders identically to one that arrived via the initial `GET`. Covered by a new test (see below) that emits a `timeline.appended` frame with a `causationId` through the page's `streamFactory` test seam and asserts the same rendered link as a loaded entry.
+
+### An out-of-scope, minimal, necessary touch — `packages/contracts`'s stale build output
+
+`pnpm --filter @otc/web run typecheck` initially failed: `Property 'causationId' does not exist on type '{ eventId: string; eventType: string; ... }'`. Root cause, confirmed by direct inspection, not assumed: `packages/contracts/src/generated/openapi.types.ts` had already been regenerated with `causationId?` on both `TimelineEntry` and `TimelineStreamEntry` (part of the A1 amendment landing, `mtime` 2026-08-29, already uncommitted before this pass started) — but `packages/contracts/dist/generated/openapi.types.d.ts`, the file `apps/web` actually imports through `@otc/contracts`'s `"types": "dist/index.d.ts"` package export, was a stale build (`mtime` 2026-08-27) that predated the regeneration and had no `causationId` field at all. `dist/` is gitignored (confirmed in `.gitignore`), so this is a build-artifact staleness, not a source edit — ran `pnpm --filter @otc/contracts run build` (`tsc -p tsconfig.build.json`) to bring the compiled output back in sync with its own already-modified source, exactly the equivalent of what a normal `pnpm build`/CI run would have done anyway. No file under `packages/contracts/src/**` was touched by this pass; `git status --porcelain packages/contracts` shows only the pre-existing `src/generated/openapi.types.ts` modification (not authored by this pass), confirming the rebuild produced no tracked diff of its own. Flagging clearly per the same convention Pass 1 used for the `vue-demi` build-approval touch.
+
+### Tests — `apps/web/app/pages/orders/[id].spec.ts`, 4 new cases
+
+1. `an entry whose causationId matches an earlier entry's eventId renders the causal indication, naming the causing event` (R: the brief's constraint 1 + 4) — two-entry order, `evt-1.causationId = evt-0`; asserts `timeline-causation` renders on `evt-1` naming `order.placed.v1` with `href="#timeline-entry-evt-0"`, and asserts `evt-0` (which has no `causationId` of its own) renders no causal indication.
+2. `an entry whose causationId matches nothing in the array renders no indication and no error` (constraint 1, the command-`requestId` case named explicitly in the brief) — `causationId: 'req-does-not-exist'`; asserts no `timeline-causation` node and no `order-detail-error`.
+3. `an entry with no causationId (the pre-A1 shape) renders exactly as before` (constraint 2) — the existing `readyOrder()` fixture (no `causationId` anywhere, matching `ORD-000030`'s real shape); asserts no `timeline-causation` node, timeline otherwise unchanged.
+4. `a live timeline.appended frame carrying a causationId renders the same causal indication as a loaded entry` — emits a `timeline.appended` SSE frame (via the existing `FakeEventSource` seam) with `causationId: 'evt-0'`, asserts the same rendered link as case 1 — the proof that `applyTimelineAppended`'s fix is load-bearing, not just the initial-`GET` path.
+
+### Armed-test evidence (verbatim, as required)
+
+Broke `causingEvent` to always return `undefined` (`function causingEvent(_entry, _events) { return undefined; }`), ran only the first test:
+
+```
+❯ app/pages/orders/[id].spec.ts:202:43
+    200|
+    201|     const causedEntry = entries.find((entry) => entry.getAttribute('da…
+    202|     const causation = within(causedEntry).getByTestId('timeline-causat…
+       |                                           ^
+    203|     expect(causation).toHaveTextContent(/caused by/i);
+    204|     expect(within(causation).getByTestId('timeline-causation-link')).t…
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 9 skipped (10)
+```
+
+(`TestingLibraryElementError: Unable to find an element by: [data-testid="timeline-causation"]` — real, specific, not vacuous.) Restored `causingEvent` to its real implementation immediately after capturing this; reran — `10/10` green again, `git diff apps/web/app/pages/orders/[id].vue` confirmed only the genuine implementation diff remained (no leftover probe).
+
+### Quality gates (all commands run for real, exit codes and counts verbatim)
+
+- `pnpm --filter @otc/web exec vitest run app/pages/orders/[id].spec.ts` — `Test Files 1 passed (1)`, `Tests 10 passed (10)`, exit 0.
+- `pnpm --filter @otc/web exec vitest run` (whole app) — `Test Files 14 passed (14)`, `Tests 63 passed (63)`, exit 0 (59 pre-existing + 4 new).
+- `pnpm --filter @otc/web run lint` (`cd ../.. && eslint apps/web`) — clean, exit 0.
+- `pnpm --filter @otc/web run typecheck` (`nuxi typecheck`) — clean, exit 0 (only passed once `packages/contracts`'s stale `dist/` was rebuilt, see above).
+- `./init.sh` — exits 0; `feature_list.json`/`specs/` diffs confirmed unrelated to this pass (pre-existing from the A1 landing, not touched here).
+
+### Live verification — real browser, `WEB_PORT=3010`
+
+`otc-web` rebuilt from this pass's code (`WEB_PORT=3010 docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml build web` then `... up -d --no-deps web`; every other container left running and `healthy` throughout, confirmed via `docker ps` before and after). Verified with a real headless Chrome session (Puppeteer, ephemeral scratchpad install, not a repo dependency — same technique earlier passes used), logging in through the real `/login` form with the real `.env` operator credentials, then navigating to each order's real `/orders/{id}` page and reading the actual rendered DOM (plus screenshots):
+
+- **ORD-000049** (`73c6427c-...`, cancelled): timeline shows `order.placed.v1` → `stock.reserved.v1` → `credit.rejected.v1` → `stock.released.v1` → `order.cancelled.v1`, and the last entry renders "caused by **stock.released.v1**" with `href="#timeline-entry-<stock.released.v1's eventId>"` — exactly as named in the brief.
+- **ORD-000050** (`5e64b0db-...`, completed): `credit.released.v1` renders "caused by **payment.received.v1**"; `order.completed.v1` renders "caused by **credit.released.v1**" — both exactly as named in the brief.
+- **ORD-000030** (`b4123193-...`, pre-A1, cancelled): all five entries (`order.placed.v1`, `stock.reserved.v1`, `credit.rejected.v1`, `order.cancelled.v1`, `stock.released.v1`) render with **no** causal indication anywhere — no empty slots, no "unknown", no visual noise, confirming the pre-A1-shape design constraint against the one real order in the running stack that actually has it. (Its `order.cancelled.v1`/`stock.released.v1` pair is also visibly in the openapi-documented fallback tie-break order — `eventId` ascending, not causal — since it predates the causal edge entirely; expected, not a defect.)
+
+Screenshots taken and inspected directly (not just DOM-scraped) confirm the styling is genuinely subtle — small muted-gray text beneath the event type, no layout change to the timeline's card/spacing.
+
+`otc-web` and every other container left running and `healthy` at the end of this pass (confirmed via `docker ps`, all `healthy`).
+
+### Files touched this pass
+
+Modified:
+- `apps/web/app/pages/orders/[id].vue` — `causingEvent` helper, `timeline-causation`/`timeline-causation-link` template block, `id`/`target:` styling on each `<li>`.
+- `apps/web/app/composables/useOrderDetail.ts` — `applyTimelineAppended` now carries `causationId` through onto the appended live entry.
+- `apps/web/app/pages/orders/[id].spec.ts` — 4 new tests (see above).
+
+Build-artifact-only, no source diff:
+- `packages/contracts/dist/**` — rebuilt via `pnpm --filter @otc/contracts run build` to pick up the already-uncommitted `causationId` field in its own `src/generated/openapi.types.ts` (gitignored, not part of any tracked diff; documented above).
+
+Untouched, per the brief's bounded scope: `feature_list.json`, `specs/`, every backend app's source, `packages/contracts/src/**`. No commit made.

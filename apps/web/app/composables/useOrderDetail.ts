@@ -79,6 +79,11 @@ export function applyOrderStreamUpdate(queryClient: QueryClient, orderId: string
  * a fresh `GET` and the stream), the reducer itself refuses to append a
  * second entry — the guarantee holds regardless of which layer a bug might
  * appear in.
+ *
+ * `causationId` (amendment A1) is carried through onto the appended entry
+ * verbatim, so a live-arriving entry's causal-link rendering in `[id].vue`
+ * behaves identically to one that arrived via the initial `GET` — the same
+ * `TimelineEntry`-shaped object either way, resolved the same way.
  */
 export function applyTimelineAppended(queryClient: QueryClient, orderId: string, entry: TimelineStreamEntry): void {
   queryClient.setQueryData<OrderDetailResult>(orderDetailQueryKey(orderId), (current) => {
@@ -88,7 +93,7 @@ export function applyTimelineAppended(queryClient: QueryClient, orderId: string,
     }
     const events = [
       ...current.detail.events,
-      { eventId: entry.eventId, eventType: entry.eventType, occurredAt: entry.occurredAt, summary: entry.summary },
+      { eventId: entry.eventId, causationId: entry.causationId, eventType: entry.eventType, occurredAt: entry.occurredAt, summary: entry.summary },
     ].sort((a, b) => a.occurredAt.localeCompare(b.occurredAt));
     return { kind: 'ready', detail: { ...current.detail, events } };
   });
