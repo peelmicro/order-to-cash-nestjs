@@ -4,8 +4,11 @@
 // ONE interface, swappable by a single provider binding in app.module.ts.
 // `ConsoleNotificationSender` (infrastructure/notification/
 // console-notification-sender.ts) is bound in every automated test and by
-// default; `MailtrapNotificationSender` (same folder) is bound only when
-// mailtrap.config.ts finds a valid-looking, complete SMTP credential pair.
+// default; `SmtpNotificationSender` (same folder) is bound only when
+// smtp.config.ts finds a valid-looking, complete SMTP credential pair —
+// provider-neutral by construction (Mailpit locally, any SMTP host,
+// Mailtrap included, elsewhere; see docker-compose.infra.yml's `mailpit`
+// service header).
 //
 // Unlike `CreditDecisionPort`, this port performs real I/O (an SMTP
 // round-trip, or a console write) — there is no in-transaction/no-I/O
@@ -24,10 +27,10 @@ export interface NotificationMessage {
    * by `NotificationDispatchService.dispatch` from the fact's own
    * `eventId`. DEFENCE IN DEPTH ONLY, never the dedup mechanism (that is
    * the durable `processed_events` ledger, N1/N2): it makes each of the
-   * seven sends individually attributable in the Mailtrap inbox, and any
-   * duplicate visible to a human at a glance, but it prevents nothing by
-   * itself — SMTP has no dedup and Mailtrap's sandbox does not enforce
-   * uniqueness on this header.
+   * seven sends individually attributable in the inbox (Mailpit locally),
+   * and any duplicate visible to a human at a glance, but it prevents
+   * nothing by itself — SMTP has no dedup and Mailpit does not enforce
+   * uniqueness on this header either.
    */
   readonly messageId?: string;
 }

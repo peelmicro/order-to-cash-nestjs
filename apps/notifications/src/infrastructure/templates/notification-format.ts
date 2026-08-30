@@ -29,10 +29,11 @@ export function formatMoney(amountMinorUnits: number, currency: string): string 
  * `Party` is `{ code, name, country, vat?, gln, currency, enabled }`, and no
  * fact payload in `asyncapi.types.ts` carries one either (grepped for
  * `email`, zero hits). This is a demo affordance, not a real address book:
- * Mailtrap's sandbox inbox accepts and captures any address without
- * delivering it externally, so a deterministic, human-readable synthetic
- * address is sufficient to prove "the party for this order was notified" in
- * the sandbox inbox — see progress/impl_notifications_service.md.
+ * Mailpit (the local SMTP sink, docker-compose.infra.yml's `mailpit`
+ * service) accepts and captures any address without delivering it
+ * externally, so a deterministic, human-readable synthetic address is
+ * sufficient to prove "the party for this order was notified" in its inbox
+ * — see progress/impl_notifications_service.md.
  */
 export function recipientFor(identifier: string): string {
   return `${identifier.toLowerCase()}@retailer.order-to-cash.example`;

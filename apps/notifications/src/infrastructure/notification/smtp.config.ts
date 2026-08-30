@@ -1,10 +1,17 @@
 // Decides which `NotificationSender` adapter `app.module.ts` binds — the
 // ONE place this decision is made, read from the process environment (see
-// .env.example § Mailtrap, lines ~195-201; already populated there with
+// .env.example § SMTP, lines ~195-201; already populated there with
 // `replace_me` placeholders and never touched by this feature).
 //
-// Binding rule (stated once, here): the Mailtrap adapter binds when
-// `MAILTRAP_USER` AND `MAILTRAP_PASSWORD` are BOTH present and neither is
+// Provider-neutral by design (Mailpit migration, docker-compose.infra.yml's
+// `mailpit` service header has the full "why"): this is a plain nodemailer-
+// over-SMTP adapter — Mailpit locally, any real SMTP provider (Mailtrap
+// included) in another environment, by pointing SMTP_HOST/SMTP_PORT
+// elsewhere. Nothing in this file or `smtp-notification-sender.ts` is
+// vendor-specific.
+//
+// Binding rule (stated once, here): the SMTP adapter binds when
+// `SMTP_USER` AND `SMTP_PASSWORD` are BOTH present and neither is
 // the literal placeholder `replace_me` left by `.env.example`; the console
 // adapter binds when BOTH are absent/placeholder (the expected default dev
 // state — not a misconfiguration). A PARTIAL pair — one real, one
@@ -17,9 +24,9 @@
 // the console adapter.
 //
 // Never logs, echoes or returns the raw credential values anywhere other
-// than inside the returned `MailtrapConfig` itself, which the caller passes
-// straight to `MailtrapNotificationSender` and nowhere else.
-export interface MailtrapConfig {
+// than inside the returned `SmtpConfig` itself, which the caller passes
+// straight to `SmtpNotificationSender` and nowhere else.
+export interface SmtpConfig {
   readonly host: string;
   readonly port: number;
   readonly user: string;
@@ -29,7 +36,7 @@ export interface MailtrapConfig {
 
 export type NotificationSenderBinding =
   | { readonly kind: 'console' }
-  | { readonly kind: 'mailtrap'; readonly config: MailtrapConfig };
+  | { readonly kind: 'smtp'; readonly config: SmtpConfig };
 
 const PLACEHOLDER_VALUE = 'replace_me';
 
@@ -44,8 +51,8 @@ function isConfigured(value: string | undefined): boolean {
 export function resolveNotificationSenderBinding(
   env: NodeJS.ProcessEnv = process.env,
 ): NotificationSenderBinding {
-  const userConfigured = isConfigured(env.MAILTRAP_USER);
-  const passwordConfigured = isConfigured(env.MAILTRAP_PASSWORD);
+  const userConfigured = isConfigured(env.SMTP_USER);
+  const passwordConfigured = isConfigured(env.SMTP_PASSWORD);
 
   if (!userConfigured && !passwordConfigured) {
     return { kind: 'console' };
@@ -53,32 +60,32 @@ export function resolveNotificationSenderBinding(
 
   if (userConfigured !== passwordConfigured) {
     throw new Error(
-      'MAILTRAP_USER and MAILTRAP_PASSWORD must both be set to real values (or both left unset/"replace_me") — ' +
-        'a partially configured Mailtrap credential pair is refused rather than silently falling back to the console adapter.',
+      'SMTP_USER and SMTP_PASSWORD must both be set to real values (or both left unset/"replace_me") — ' +
+        'a partially configured SMTP credential pair is refused rather than silently falling back to the console adapter.',
     );
   }
 
-  const host = env.MAILTRAP_HOST?.trim();
+  const host = env.SMTP_HOST?.trim();
   if (!host) {
-    throw new Error('MAILTRAP_HOST must be set when MAILTRAP_USER/MAILTRAP_PASSWORD are configured');
+    throw new Error('SMTP_HOST must be set when SMTP_USER/SMTP_PASSWORD are configured');
   }
 
-  const fromEmail = env.MAILTRAP_FROM_EMAIL?.trim();
+  const fromEmail = env.SMTP_FROM_EMAIL?.trim();
   if (!fromEmail) {
-    throw new Error('MAILTRAP_FROM_EMAIL must be set when MAILTRAP_USER/MAILTRAP_PASSWORD are configured');
+    throw new Error('SMTP_FROM_EMAIL must be set when SMTP_USER/SMTP_PASSWORD are configured');
   }
 
-  const portRaw = env.MAILTRAP_PORT?.trim();
+  const portRaw = env.SMTP_PORT?.trim();
   if (!portRaw) {
-    throw new Error('MAILTRAP_PORT must be set when MAILTRAP_USER/MAILTRAP_PASSWORD are configured');
+    throw new Error('SMTP_PORT must be set when SMTP_USER/SMTP_PASSWORD are configured');
   }
   const port = Number(portRaw);
   if (!Number.isFinite(port) || !Number.isInteger(port) || port <= 0) {
-    throw new Error(`MAILTRAP_PORT must be a positive integer; got ${JSON.stringify(portRaw)}`);
+    throw new Error(`SMTP_PORT must be a positive integer; got ${JSON.stringify(portRaw)}`);
   }
 
   return {
-    kind: 'mailtrap',
-    config: { host, port, user: env.MAILTRAP_USER!, password: env.MAILTRAP_PASSWORD!, fromEmail },
+    kind: 'smtp',
+    config: { host, port, user: env.SMTP_USER!, password: env.SMTP_PASSWORD!, fromEmail },
   };
 }

@@ -36,9 +36,9 @@ async function bootstrap(): Promise<void> {
   // Kafka volume reset, a first-ever deploy against topics that already
   // carry months of history) would re-send a real email for every
   // historical order the moment this service starts — exactly what
-  // happened live against real Kafka and real Mailtrap credentials before
-  // this fix (see progress/impl_notifications_service.md's N3 entry for the
-  // corrected account of that incident). The durable `processed_events`
+  // happened live against real Kafka and real SMTP credentials (Mailtrap,
+  // at the time) before this fix (see progress/impl_notifications_service.md's
+  // N3 entry for the corrected account of that incident). The durable `processed_events`
   // ledger (N1/N2) prevents a DUPLICATE send for a fact this service has
   // already processed, but it cannot prevent a FIRST send for a fact this
   // service has genuinely never seen before — `fromBeginning: false` is

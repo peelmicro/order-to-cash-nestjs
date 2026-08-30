@@ -25,7 +25,7 @@
 # defaults to `localhost`/host-network values on purpose, for `pnpm dev:*`
 # run outside a container (see .env.example) — inside this compose stack,
 # each service reaches its dependencies by container/service name instead.
-# Everything else (DB credentials, JWT secret, Mailtrap SMTP creds, saga
+# Everything else (DB credentials, JWT secret, SMTP creds, saga
 # retry tuning, gateway operator identity, ...) is read straight from `.env`
 # via `env_file:` — never hardcoded here, never duplicated.
 
@@ -230,6 +230,23 @@ services:
       NOTIFICATIONS_DB_HOST: mysql
       KAFKA_BROKERS: "${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      # In-network Mailpit address — overrides .env's host-oriented
+      # SMTP_HOST=localhost default (same "outside vs inside compose" split
+      # as NOTIFICATIONS_DB_HOST/KAFKA_BROKERS above). See docker-compose
+      # .infra.yml's `mailpit` service and .env.example § SMTP.
+      SMTP_HOST: mailpit
+      # SMTP_PORT/SMTP_USER/SMTP_PASSWORD/SMTP_FROM_EMAIL default here too
+      # (same `${VAR:-default}` pattern the n8n service uses for
+      # GATEWAY_OPERATOR_*) so `docker compose up` sends real mail to
+      # Mailpit on first run with NO .env edit required — genuinely "no
+      # account, no credential", the whole point of the Mailpit migration.
+      # Mailpit does not enforce SMTP AUTH, so the default USER/PASSWORD
+      # are accepted as-is. Set real values in .env to override (a real
+      # provider, Mailtrap included).
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-mailpit}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-mailpit}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@order-to-cash.example}
     ports:
       - "${NOTIFICATIONS_PORT:-3005}:${NOTIFICATIONS_PORT:-3005}"
     networks:
@@ -239,6 +256,8 @@ services:
         condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
+      mailpit:
+        condition: service_healthy
 
   # ── projector — MongoDB read model, Kafka consumer (fromBeginning: true),
   #    outbound NATS (publish-only stream-update signal). Bootstraps its OWN

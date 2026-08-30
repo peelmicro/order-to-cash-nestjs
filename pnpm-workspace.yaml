@@ -99,7 +99,9 @@ catalog:
   # NestJS) and `apps/seed` (plain `tsx`, no DI container) are unaffected
   # and keep their existing dev scripts.
   tsc-watch: ^7.2.1
-  # notifications_service (feature 23) — the Mailtrap adapter's SMTP client.
+  # notifications_service (feature 23) — the SMTP adapter's client (Mailpit
+  # locally since the Mailpit migration, any SMTP provider elsewhere,
+  # Mailtrap included — provider-neutral by construction).
   # `@types/nodemailer` is versioned independently of `nodemailer` itself at
   # DefinitelyTyped (same non-1:1 numbering as `@types/node` vs `node`); 8.x
   # is the current types major for the installed 9.x runtime package.

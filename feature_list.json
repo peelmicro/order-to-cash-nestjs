@@ -318,11 +318,11 @@
       "id": 23,
       "name": "notifications_service",
       "phase": 11,
-      "title": "Notifications: notification port, Mailtrap adapter, console adapter",
+      "title": "Notifications: notification port, SMTP (Mailpit) adapter, console adapter",
       "sdd": false,
       "status": "done",
       "acceptance": [
-        "real email verified in the Mailtrap inbox for each notified fact",
+        "real email verified in the Mailpit inbox for each notified fact",
         "console adapter used in tests via the same port",
         "idempotent by eventId"
       ]

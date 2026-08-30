@@ -385,7 +385,9 @@ services:
   #
   #    No env_file (review fix D3, progress/impl_n8n_workflows.md, "Review
   #    fixes"). `env_file: [.env]` used to hand this container every secret
-  #    in `.env` — MYSQL_ROOT_PASSWORD, JWT_SECRET, a real MAILTRAP_PASSWORD —
+  #    in `.env` — MYSQL_ROOT_PASSWORD, JWT_SECRET, a real SMTP_PASSWORD
+  #    (MAILTRAP_PASSWORD at the time, before the Mailpit migration removed
+  #    the vendor credential outright — progress/impl_mailpit_migration.md) —
   #    verified present with `docker exec otc-n8n env`. Combined with
   #    N8N_BLOCK_ENV_ACCESS_IN_NODE=false (genuinely required — see below)
   #    and the unauthenticated-by-default UI on a published port, any Code
@@ -538,6 +540,48 @@ services:
     depends_on:
       n8n:
         condition: service_healthy
+
+  # ── Mailpit — self-hosted SMTP sink + web inbox for outbound notification
+  #    emails, replacing Mailtrap (leader decision, progress/impl_mailpit_
+  #    migration.md). Mailtrap's Email Sandbox free tier is 50 test
+  #    emails/month; this system sends ~4 per order, so the quota was
+  #    exhausted and 728 facts were dead-lettered before that was noticed
+  #    (progress/review_n8n_workflows.md). Beyond the quota: the adapter is
+  #    generic nodemailer-over-SMTP — Mailtrap demonstrates nothing Mailpit
+  #    does not, same code, different host; it requires an account and
+  #    credentials before anyone cloning this repo can run the stack; and
+  #    MAILTRAP_PASSWORD was one of the secrets leaked into the n8n
+  #    container (see the `n8n:` service comment above). Mailpit gives the
+  #    same demo artefact — a real inbox with rendered emails — with no
+  #    account, no quota and no secret: `apps/notifications` still speaks
+  #    plain SMTP via nodemailer (apps/notifications/src/infrastructure/
+  #    notification/smtp-notification-sender.ts) — nothing vendor-specific,
+  #    SMTP_HOST/SMTP_PORT can point it at any SMTP provider instead,
+  #    Mailtrap included (.env.example § SMTP). Default credentials
+  #    (`SMTP_USER=mailpit`/`SMTP_PASSWORD=mailpit`) are accepted as-is —
+  #    Mailpit does not enforce SMTP AUTH by default — so the stack sends
+  #    real mail on first `docker compose up`, no signup required. ─────────
+  mailpit:
+    image: axllent/mailpit:v1.27.5
+    container_name: otc-mailpit
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Madrid}
+      MP_MAX_MESSAGES: ${MAILPIT_MAX_MESSAGES:-500}
+    ports:
+      - "${MAILPIT_SMTP_HOST_PORT:-1025}:1025"
+      - "${MAILPIT_UI_HOST_PORT:-8025}:8025"
+    networks:
+      - otc-net
+    healthcheck:
+      # Mailpit's own built-in healthcheck endpoint (`mailpit readyz`
+      # subcommand's underlying HTTP route) — same "CMD wget --spider"
+      # shape every other HTTP-fronted service in this file uses.
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8025/readyz"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
 
   # ── SonarQube — opt-in only: `pnpm dc:up:sonar` (profile "sonar"). Not
   #    started by `pnpm dc:up:infra` — ~1.5 GB RAM is too much to pay by

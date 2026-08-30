@@ -143,7 +143,7 @@ SonarQube reports 12.3% duplication, concentrated in every service's `infrastruc
 The application services arrive in later phases; the infrastructure stack runs now:
 
 ```bash
-pnpm dc:up:infra   # 11 containers + a one-shot kafka-init job
+pnpm dc:up:infra   # 12 containers + a one-shot kafka-init job
 ./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
 ```
 
@@ -156,9 +156,12 @@ Poke at the running stack by hand with the [`http/`](http/) files and the REST C
 | Grafana | http://localhost:3030 |
 | Prometheus | http://localhost:9090 |
 | n8n | http://localhost:5678 |
+| Mailpit (notification emails) | http://localhost:8025 |
 | SonarQube (optional) | http://localhost:9000 — `pnpm dc:up:sonar` |
 
-Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2, `danielqsj/kafka-exporter` v1.9.0) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
+Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2, Mailpit v1.27.5, `danielqsj/kafka-exporter` v1.9.0) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
+
+**Notifications' SMTP adapter is provider-neutral.** `apps/notifications` sends outbound email via plain nodemailer-over-SMTP (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`SMTP_FROM_EMAIL` — `.env.example` § SMTP) — nothing in the adapter is vendor-specific. The default stack points it at **Mailpit**, self-hosted above with no account, no quota and no secret to leak. `SMTP_*` can equally point at Mailtrap, or any other real SMTP provider, by supplying real host/credentials — Mailtrap is documented here as one option among many, not a dependency this repo requires anyone to sign up for.
 
 Grafana auto-provisions one dashboard, **"Order To Cash — Overview"** ([`infra/grafana/dashboards/order-to-cash-overview.json`](infra/grafana/dashboards/order-to-cash-overview.json)) — saga duration, per-service latency, Kafka consumer lag, outbox lag and DLQ depth, all against live PromQL (`infra/grafana/provisioning/dashboards/`). Consumer lag is the one metric no service under `apps/` computes itself: `kafka-exporter` (a new container, `docker-compose.infra.yml`) queries the broker's own real consumer-group offsets, scraped by Prometheus as `kafka_consumergroup_lag` (`infra/prometheus/prometheus.yml`). Measured resource cost: **7.4 MiB RSS, 0.00% CPU** — negligible against Grafana's 256 MiB and Prometheus' 33 MiB — see `progress/impl_observability_dashboards.md` for the full decision and every panel's verified query.
 
@@ -184,7 +187,7 @@ Always pass **both** compose files together (`dc:up:apps` already does) — `doc
 | Orders | http://localhost:3002/health/ready | its own `orders-migrate` job, Kafka topics, NATS |
 | Fulfillment | http://localhost:3003/health/ready | its own `fulfillment-migrate` job, Kafka topics, NATS |
 | Billing | http://localhost:3004/health/ready | its own `billing-migrate` job, Kafka topics, NATS |
-| Notifications | http://localhost:3005/health/ready | its own `notifications-migrate` job, Kafka topics |
+| Notifications | http://localhost:3005/health/ready | its own `notifications-migrate` job, Kafka topics, Mailpit (SMTP) |
 | Projector | http://localhost:3006/health/ready | MongoDB, Kafka topics, NATS |
 | Web (Nuxt 4) | http://localhost:3000 | Gateway |
 
@@ -313,7 +316,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 8 | Orders service + saga orchestrator | ✅ |
 | 9 | Fulfillment service | ✅ |
 | 10 | Billing service | ✅ buyer credit, `.99` simulator, invoicing, remittance intake |
-| 11 | Notifications service | ✅ port + Mailtrap/console adapters, seven facts, durable idempotency |
+| 11 | Notifications service | ✅ port + SMTP (Mailpit)/console adapters, seven facts, durable idempotency |
 | 12 | Projector service + MongoDB read model | ✅ every fact → one order timeline, idempotent, NATS update signal |
 | 13 | Gateway / BFF | ✅ 18 REST paths, JWT, NATS RPC, SSE stream (reconnect-safe heartbeat), Swagger at `/docs` |
 | 14 | Health checks, OTel propagation, retry + DLQ | ✅ requestId dedup, dead-letter (3 services), tracing, log correlation, metrics, health checks |

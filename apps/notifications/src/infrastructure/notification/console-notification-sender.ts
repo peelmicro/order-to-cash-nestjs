@@ -2,7 +2,7 @@ import type { NotificationMessage, NotificationSender } from '../../application/
 
 /**
  * Bound in every automated test and by default whenever
- * `mailtrap.config.ts` finds no complete, valid-looking Mailtrap credential
+ * `smtp.config.ts` finds no complete, valid-looking SMTP credential
  * pair. Logs one structured JSON line per message (CLAUDE.md § Logging) and
  * keeps every sent message in `sent` — the "call counter on the port" the
  * testing rules ask for: feature 21's N10 (a rolled-back or absent side

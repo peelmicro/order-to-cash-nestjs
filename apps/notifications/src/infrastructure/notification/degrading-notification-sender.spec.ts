@@ -37,8 +37,13 @@ function nodemailerError(message: string, extra: { code?: string; responseCode?:
   return Object.assign(new Error(message), extra);
 }
 
+// RFC 5321 §4.2.1's 535/5xx classification is provider-independent — see
+// send-failure-classifier.spec.ts's header. The message text below is
+// illustrative of the shape a quota-limited SMTP provider (Mailtrap's
+// free tier, the incident this wrapper exists for) returns; nothing here
+// asserts on the wording.
 const QUOTA_EXHAUSTED_ERROR = nodemailerError(
-  'Invalid login: 535 5.7.0 The email limit is reached. Please upgrade your plan https://mailtrap.io/billing/plans/testing',
+  'Invalid login: 535 5.7.0 The email limit is reached. Please upgrade your plan',
   { code: 'EAUTH', responseCode: 535 },
 );
 

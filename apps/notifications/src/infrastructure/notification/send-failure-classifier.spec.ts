@@ -12,9 +12,15 @@ function nodemailerError(message: string, extra: { code?: string; responseCode?:
 }
 
 describe('classifySendFailure', () => {
-  it('R-degrade — a real Mailtrap quota-exhausted rejection (535, EAUTH) classifies as permanent', () => {
+  // Provider-independent by construction (Mailpit migration): this is
+  // RFC 5321 §4.2.1's OWN 5xx/4xx split, not a vendor-specific rule — it
+  // does not change because the SMTP host does. The message text below
+  // (a quota-exhausted rejection, the shape a low-quota provider like
+  // Mailtrap's free tier returns) is illustrative only; the assertion is
+  // on `responseCode`/`code`, never on the wording.
+  it('R-degrade — an SMTP quota-exhausted rejection (535, EAUTH) classifies as permanent', () => {
     const error = nodemailerError(
-      'Invalid login: 535 5.7.0 The email limit is reached. Please upgrade your plan https://mailtrap.io/billing/plans/testing',
+      'Invalid login: 535 5.7.0 The email limit is reached. Please upgrade your plan',
       { code: 'EAUTH', responseCode: 535 },
     );
 

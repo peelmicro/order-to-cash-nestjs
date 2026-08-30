@@ -1,15 +1,19 @@
-// Graceful degradation for permanent send failures (Mailtrap quota
-// exhaustion is the live incident this exists for — see
-// progress/impl_notification_degradation.md).
+// Graceful degradation for permanent send failures (an SMTP provider's
+// quota exhaustion is the live incident this exists for — see
+// progress/impl_notification_degradation.md; the provider at the time was
+// Mailtrap, since replaced by Mailpit — progress/impl_mailpit_migration.md
+// — but the failure shape, and this wrapper's defence against it, is
+// provider-independent and stays exactly as it was).
 //
 // `app.module.ts`'s `NOTIFICATION_SENDER` binding used to be a ONE-TIME,
-// startup-only choice between `MailtrapNotificationSender` and
+// startup-only choice between `SmtpNotificationSender` and
 // `ConsoleNotificationSender` (`resolveNotificationSenderBinding`, decided
-// once from env vars). That choice is still made once — whether Mailtrap
+// once from env vars). That choice is still made once — whether SMTP
 // is configured AT ALL — but a quota exhausted, or credentials gone bad,
-// AFTER startup is invisible to it. This wrapper reconsiders on EVERY
-// send: it delegates to the real (`inner`) sender, and only on failure
-// asks `classifySendFailure` whether retrying could ever succeed.
+// or the SMTP host itself down (Mailpit is a container, and containers
+// stop), AFTER startup is invisible to it. This wrapper reconsiders on
+// EVERY send: it delegates to the real (`inner`) sender, and only on
+// failure asks `classifySendFailure` whether retrying could ever succeed.
 //
 //   - `'transient'` — rethrows the ORIGINAL error, completely unchanged.
 //     Every caller above this (`NotificationDispatchService.dispatch`'s

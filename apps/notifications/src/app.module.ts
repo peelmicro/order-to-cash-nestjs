@@ -32,8 +32,8 @@ import { loadKafkaConfig } from './infrastructure/messaging/kafka.config';
 import { DrizzleProcessedEventCompensation } from './infrastructure/messaging/processed-events-compensation';
 import { ConsoleNotificationSender } from './infrastructure/notification/console-notification-sender';
 import { DegradingNotificationSender } from './infrastructure/notification/degrading-notification-sender';
-import { MailtrapNotificationSender } from './infrastructure/notification/mailtrap-notification-sender';
-import { resolveNotificationSenderBinding } from './infrastructure/notification/mailtrap.config';
+import { SmtpNotificationSender } from './infrastructure/notification/smtp-notification-sender';
+import { resolveNotificationSenderBinding } from './infrastructure/notification/smtp.config';
 import { createNotificationsDb, createNotificationsPool, type NotificationsDb } from './infrastructure/persistence/client';
 import { loadNotificationsDbConfig } from './infrastructure/persistence/db-config';
 import { DrizzleUnitOfWork } from './infrastructure/persistence/drizzle-unit-of-work';
@@ -89,12 +89,15 @@ const DLQ_PUBLISHER = Symbol('DlqPublisher');
       inject: [NOTIFICATIONS_DB],
     },
     {
-      // The port-plus-two-adapters binding (feature 23's brief): Mailtrap
-      // when mailtrap.config.ts finds a complete, valid-looking credential
-      // pair; console otherwise (and always in every automated test, which
-      // never sets MAILTRAP_USER/MAILTRAP_PASSWORD to a real value).
+      // The port-plus-two-adapters binding (feature 23's brief, made
+      // provider-neutral by the Mailpit migration — see
+      // docker-compose.infra.yml's `mailpit` service header for the full
+      // "why"): SMTP (Mailpit locally, any SMTP provider elsewhere) when
+      // smtp.config.ts finds a complete, valid-looking credential pair;
+      // console otherwise (and always in every automated test, which
+      // never sets SMTP_USER/SMTP_PASSWORD to a real value).
       //
-      // Graceful-degradation addendum: when Mailtrap IS bound, it is never
+      // Graceful-degradation addendum: when SMTP IS bound, it is never
       // handed to the rest of the app directly — it is wrapped in
       // `DegradingNotificationSender`, which reconsiders on EVERY send
       // (not once at startup, this factory's own former limitation) and
@@ -102,13 +105,17 @@ const DLQ_PUBLISHER = Symbol('DlqPublisher');
       // failure (quota exhausted, bad credentials, malformed recipient)
       // while leaving a TRANSIENT failure's retry-then-DLQ behaviour
       // completely unchanged (see degrading-notification-sender.ts's
-      // header). Console-only binding has nothing to degrade from, so it
-      // is left unwrapped.
+      // header) — this includes the SMTP host itself being unreachable
+      // (Mailpit is a container and containers stop), which nodemailer
+      // surfaces as a transient connection error, so a down Mailpit still
+      // retries then dead-letters rather than degrading silently.
+      // Console-only binding has nothing to degrade from, so it is left
+      // unwrapped.
       provide: NOTIFICATION_SENDER,
       useFactory: (): NotificationSender => {
         const binding = resolveNotificationSenderBinding();
-        return binding.kind === 'mailtrap'
-          ? new DegradingNotificationSender(new MailtrapNotificationSender(binding.config), new ConsoleNotificationSender())
+        return binding.kind === 'smtp'
+          ? new DegradingNotificationSender(new SmtpNotificationSender(binding.config), new ConsoleNotificationSender())
           : new ConsoleNotificationSender();
       },
     },

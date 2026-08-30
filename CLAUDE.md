@@ -60,7 +60,7 @@ domain/          Aggregates, entities, value objects, domain events, state
                  machines, domain errors — ZERO framework imports
 infrastructure/  Drizzle repositories, MongoDB read repository, Kafka publisher
                  + consumers, NATS client, outbox relay, credit simulator,
-                 Mailtrap adapter, clock, OpenTelemetry
+                 SMTP adapter (Mailpit locally), clock, OpenTelemetry
 ```
 
 Dependencies point **inwards**: presentation → application → domain. Infrastructure implements the ports the application declares.

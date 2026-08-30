@@ -28,7 +28,7 @@ GET {{billing}}/
 ### Gateway — REST/OpenAPI + SSE (feature 25). The real requests are in gateway.http.
 GET {{gateway}}/
 
-### Notifications — Mailtrap/console notification port (feature 23).
+### Notifications — SMTP (Mailpit) / console notification port (feature 23).
 GET {{notifications}}/
 
 ### Projector — Kafka facts -> MongoDB order_timeline (feature 24).
