@@ -3,9 +3,23 @@
 // decorator: `runOnce()` is directly callable from a test without a Nest
 // application context, and `apps/seed`'s integration spec imports it to
 // prove the seeded databases have nothing to publish (H1).
+//
+// observability_dashboards (phase 22) widens this copy to ALSO create the
+// manual "outbox.publish" span apps/orders' own relay already does — a
+// genuine gap this phase's live-trace verification found: this service
+// forwarded a row's stored `trace_parent` verbatim as the outbound Kafka
+// header (a correct trace ID) but attached no span of its own to it, so
+// `credit.approved.v1`/`credit.rejected.v1` facts carried the right trace
+// but billing never appeared as a participant in Jaeger. Same shape,
+// same "only for a row that stored a traceParent" guard, same "the span's
+// OWN fresh span id, not the raw stored value, is what gets injected into
+// the outgoing header" contract as apps/orders' own relay — see that
+// file's header comment for the full reasoning.
+import { propagation, SpanKind, SpanStatusCode, type Span } from '@opentelemetry/api';
 import { asc, inArray, isNull } from 'drizzle-orm';
 import type { Clock } from '../../application/ports/clock.port';
 import type { FactPublisher, PublishableFact } from '../../application/ports/fact-publisher.port';
+import { contextFromTraceParent, startChildSpan } from '../observability/trace-context';
 import type { WriteModelDb } from '../persistence/client';
 import { outbox } from '../persistence/schema';
 import type { OutboxRelayConfig } from './outbox-relay.config';
@@ -93,22 +107,32 @@ export class OutboxRelay {
         return { claimed: 0, published: 0 };
       }
 
+      // observability_dashboards (phase 22) — the outbox relay's publish
+      // call is now, like apps/orders' own relay, one of this service's own
+      // manual span points (kafkajs has no OTel auto-instrumentation). A
+      // span is created only for a row that stored a `traceParent` at
+      // write time (`outbox-recorder.ts` — a caller that never extracted/
+      // continued a trace has none to continue here either, so the header
+      // is omitted, exactly the prior behaviour for an untraced row). The
+      // span's OWN (fresh) span id — not the raw stored value — is what
+      // gets injected into the outgoing Kafka header, so a consumer's
+      // extracted "parent" is this publish span, not the row's original
+      // writer.
+      const spans: Array<Span | undefined> = [];
       const facts: PublishableFact[] = claimed.map((row) => {
         const envelope = outboxRowToEnvelope(row);
         const headers: Record<string, string> = {
           'x-event-type': envelope.eventType,
           'content-type': 'application/json',
         };
-        // traceparent only if the stored/ambient context supplies one
-        // (design.md §3.3) — forwarded verbatim, a raw copy of the row's
-        // own `trace_parent` (no manual "publish" span here, unlike
-        // apps/orders' own relay). `outbox-recorder.ts` now populates this
-        // column from the active OTel context (saga_e2e_verification, Pass
-        // 1, A5c) instead of always writing NULL; the header is simply
-        // omitted for a row with no active trace at write time.
+        let span: Span | undefined;
         if (row.traceParent) {
-          headers.traceparent = row.traceParent;
+          const parentContext = contextFromTraceParent(row.traceParent);
+          const started = startChildSpan(`outbox.publish ${envelope.eventType}`, parentContext, SpanKind.PRODUCER);
+          span = started.span;
+          propagation.inject(started.spanContext, headers);
         }
+        spans.push(span);
         return { key: envelope.correlationId, envelope, headers };
       });
 
@@ -120,12 +144,18 @@ export class OutboxRelay {
         // publish failure below (OI8: left unstamped, retried unchanged).
         await withPublishTimeout(this.publisher.publish(facts), this.config.publishTimeoutMs, claimed.length);
       } catch (error) {
-        for (const row of claimed) {
+        claimed.forEach((row, index) => {
+          const traceId = spans[index]?.spanContext().traceId;
           this.logger.error('outbox-relay: publish failed, batch left unstamped for the next poll', {
             correlationId: row.correlationId,
             eventId: row.eventId,
             error: error instanceof Error ? error.message : String(error),
+            ...(traceId ? { traceId } : {}),
           });
+        });
+        for (const span of spans) {
+          span?.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) });
+          span?.end();
         }
         // Nothing was written before this point (the SELECT ... FOR UPDATE
         // above takes no rows out of the unpublished set), so letting the
@@ -133,6 +163,10 @@ export class OutboxRelay {
         // rollback for every column that matters (OI8): the same records
         // are found, in the same order, on the very next poll.
         return { claimed: claimed.length, published: 0 };
+      }
+
+      for (const span of spans) {
+        span?.end();
       }
 
       await tx

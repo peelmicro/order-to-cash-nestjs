@@ -481,7 +481,7 @@
       "phase": 22,
       "title": "Prometheus config + committed Grafana dashboard + verified Jaeger trace",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "panels: saga duration, per-service latency, consumer lag, outbox lag, DLQ depth",
         "dashboard auto-provisioned",

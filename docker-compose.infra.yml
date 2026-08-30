@@ -193,6 +193,42 @@ services:
       retries: 20
       start_period: 15s
 
+  # ── kafka-exporter — observability_dashboards (phase 22)'s consumer-lag
+  #    decision: NOT instrumented in-app (no service under `apps/` computes
+  #    or reports its own consumer lag — a genuine gap the phase found,
+  #    confirmed by grep before this container was added). Rather than add
+  #    ad hoc lag bookkeeping to four services' Kafka consumer paths (a much
+  #    larger, application-code change for a phase whose remit is dashboards
+  #    and config), this is the broker's OWN truth: `kafka_consumergroup_lag`
+  #    is `danielqsj/kafka-exporter` querying the real committed offsets of
+  #    each consumer group (`orders.saga`, `projector`, `notifications`)
+  #    against each fact topic's real high-water mark via the Kafka admin
+  #    API — the actual, textbook definition of consumer lag, not a proxy
+  #    metric relabelled to sound like one. `--kafka.server` points at the
+  #    SAME internal listener every service already uses (`kafka:29092`).
+  #    Measured resource cost: 7.4 MiB RSS, 0.00% CPU at rest — negligible
+  #    against Grafana's 256 MiB and Prometheus' 33 MiB (D3,
+  #    progress/review_observability_dashboards.md), which is what makes
+  #    this always-on container the right call over per-service bookkeeping.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    container_name: otc-kafka-exporter
+    restart: unless-stopped
+    command: ["--kafka.server=${KAFKA_INTERNAL_HOST:-kafka}:${KAFKA_INTERNAL_PORT:-29092}"]
+    ports:
+      - "${KAFKA_EXPORTER_HOST_PORT:-9308}:9308"
+    networks:
+      - otc-net
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9308/metrics"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+
   # ── NATS — RPC transport, core-only (NO JetStream: durability is Kafka's
   #    job, see specs/shared/asyncapi.yaml). Monitoring on 8222. ────────────
   nats:
@@ -289,9 +325,17 @@ services:
       retries: 20
       start_period: 10s
 
-  # ── Grafana — Prometheus + Jaeger datasources provisioned; no dashboards
-  #    (phase 22). Host port pinned to 3030 to avoid clashing with dev
-  #    servers that default to 3000. ───────────────────────────────────────
+  # ── Grafana — Prometheus + Jaeger datasources provisioned, PLUS (phase 22,
+  #    observability_dashboards) the committed "Order To Cash — Overview"
+  #    dashboard, auto-provisioned via `provisioning/dashboards/
+  #    dashboards.yml`'s `type: file` provider reading
+  #    `infra/grafana/dashboards/*.json` — a SECOND bind mount below (the
+  #    first, `./infra/grafana/provisioning`, only ever covered the
+  #    `provisioning/` tree itself; the dashboard JSON the provider `path:`
+  #    points at lives outside it, one level up in `infra/grafana/`, and
+  #    needs its own mount into the SAME `/var/lib/grafana/dashboards` path
+  #    referenced there). Host port pinned to 3030 to avoid clashing with
+  #    dev servers that default to 3000. ────────────────────────────────────
   grafana:
     image: grafana/grafana:13.2.0
     container_name: otc-grafana
@@ -302,6 +346,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-otc_grafana_dev_password}
     volumes:
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     ports:
       - "${GRAFANA_HOST_PORT:-3030}:3000"

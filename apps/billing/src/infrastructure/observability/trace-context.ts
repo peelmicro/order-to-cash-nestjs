@@ -6,7 +6,18 @@
 // and consumes no Kafka fact (no `@EventPattern` handler, saga.md §5), so
 // Orders' Kafka getter/injector and outbound-NATS injector functions have
 // no caller here and are deliberately not copied.
-import { context, propagation, trace, type Context, type TextMapGetter } from '@opentelemetry/api';
+//
+// `contextFromTraceParent`/`startChildSpan` (observability_dashboards,
+// phase 22) are the two exceptions to that "not copied" rule, added to
+// close a genuine gap the phase's live-trace verification found: this
+// service never created a single span of its own — `outbox-relay.ts`
+// forwarded a stored `trace_parent` verbatim as the outbound Kafka header
+// (a correct trace ID, continuing the caller's trace) but attached no span
+// of billing's own to it, so this service never appeared as a participant
+// in Jaeger even when it correctly held and forwarded the trace. Mirrors
+// apps/orders/src/infrastructure/observability/trace-context.ts's own
+// functions of the same name/shape verbatim.
+import { context, propagation, trace, type Context, type Span, type SpanKind, type TextMapGetter } from '@opentelemetry/api';
 import type { MsgHdrs } from 'nats';
 
 export const TRACER_NAME = 'billing';
@@ -33,4 +44,18 @@ export function activeTraceParent(): string | null {
   const carrier: Record<string, string> = {};
   propagation.inject(context.active(), carrier);
   return carrier.traceparent ?? null;
+}
+
+/** Builds a `Context` that continues from a stored `traceparent` string (the outbox relay's own manual "publish" span parents on this), or the current active context unchanged if none was stored (a pre-observability_dashboards row, or a fact produced with no active trace). Mirrors apps/orders' own function of the same name/shape verbatim. */
+export function contextFromTraceParent(traceParent: string | null | undefined): Context {
+  if (!traceParent) {
+    return context.active();
+  }
+  return propagation.extract(context.active(), { traceparent: traceParent });
+}
+
+/** Starts a child span under `parentContext` and returns both the span and a `Context` with it set active — this service's own `outbox-relay.ts` "publish" span. Mirrors apps/orders' own function of the same name/shape verbatim. */
+export function startChildSpan(name: string, parentContext: Context, kind: SpanKind): { span: Span; spanContext: Context } {
+  const span = tracer().startSpan(name, { kind }, parentContext);
+  return { span, spanContext: trace.setSpan(parentContext, span) };
 }

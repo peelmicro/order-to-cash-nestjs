@@ -49,34 +49,47 @@ const CANONICAL_APP = 'orders';
  * `outbox-relay.ts`/`outbox-recorder.ts` (A5, observability_reliability
  * feature 27, R57/OR4, design.md §4.3) — the two points this feature adds
  * MANUAL OTel spans/trace-context capture at: the outbox relay's publish
- * call, and the moment a domain event is pulled into an outbox row. This
- * pass's own bounded scope is `apps/gateway`/`apps/orders`/
+ * call, and the moment a domain event is pulled into an outbox row. Feature
+ * 27's own pass was bounded to `apps/gateway`/`apps/orders`/
  * `apps/projector`/`apps/notifications` ONLY — `apps/billing` and
- * `apps/fulfillment` (this family's other two owners) are explicitly out
- * of scope and gained no OTel bootstrap of their own this pass. Rather
- * than silently let this guard's byte-identity check rot (billing/
- * fulfillment would either have to gain a copy of tracing code with
- * nothing behind it, or this check would go vacuous/skip these two files
- * with no record of why), `orders` is registered here as a DOCUMENTED,
- * narrowly-scoped exception, for these two files only: billing and
- * fulfillment must still be byte-identical to EACH OTHER (proving neither
- * has drifted on its own), and `orders`'s own copy must provably contain
- * the OTel tracing addition (a positive marker), not merely "be allowed to
- * differ arbitrarily." A future pass that gives billing/fulfillment their
- * own OTel bootstrap should backport this wiring and retire this
- * exception.
+ * `apps/fulfillment` (this family's other two owners) were explicitly out
+ * of scope and gained no OTel bootstrap of their own then.
+ *
+ * observability_dashboards (feature 35) is the pass that PARTLY closed
+ * that gap, for `outbox-relay.ts` only: `runOnce()` in both `apps/billing`
+ * and `apps/fulfillment` now creates its own `outbox.publish` span per
+ * published row, copied near-verbatim from this file and guarded by each
+ * service's own `outbox-relay-trace-linkage.integration.spec.ts`. Neither
+ * service gained a `MeterProvider` bootstrap of its own, and
+ * `outbox-recorder.ts` was untouched — it still carries no OTel bootstrap
+ * in either service. Rather than silently let this guard's byte-identity
+ * check rot (billing/fulfillment would either have to gain a copy of
+ * tracing code with nothing behind it, or this check would go vacuous/skip
+ * these two files with no record of why), `orders` is registered here as a
+ * DOCUMENTED, narrowly-scoped exception, for these two files only: billing
+ * and fulfillment must still be byte-identical to EACH OTHER (proving
+ * neither has drifted on its own), and `orders`'s own copy must provably
+ * contain the OTel tracing addition (a positive marker), not merely "be
+ * allowed to differ arbitrarily." Retiring this exception now requires
+ * billing and fulfillment to ALSO gain their own `MeterProvider` bootstrap
+ * and the `recordOutboxLag`/`recordDlqDepth`/`DlqDepthPort` wiring
+ * described below — the span catch-up alone does not converge
+ * `outbox-relay.ts` to byte-identical with `orders`'s copy, because
+ * `orders`'s copy still carries the metrics half neither service has.
  *
  * A7 (metrics, R59/OR5, design.md §4.5) widens `outbox-relay.ts`'s OWN
  * divergence further (never touching `outbox-recorder.ts`, which A7 does
  * not modify): `recordOutboxLag()`, the `otc_outbox_lag_ms` gauge, reads
  * `../observability/metrics` — a module the SAME reasoning applies to
- * (only `apps/orders` owns a `Meter` bootstrap this pass; `billing`/
- * `fulfillment` are equally out of THIS pass's bounded scope). No new
- * exception needed — `outbox-relay.ts` was already exempted from the
- * strict canonical-only comparison above; this is simply more content
- * inside an exception that already exists, still checked against the SAME
- * positive marker (`OTEL_TRACING_MARKER`, unchanged and still present) and
- * still required to leave `billing`/`fulfillment` matching each other.
+ * (only `apps/orders` owns a `Meter` bootstrap; `billing`/`fulfillment`
+ * remain out of scope for it, unchanged by feature 35). No new exception
+ * needed — `outbox-relay.ts` was already exempted from the strict
+ * canonical-only comparison above; this is simply more content inside an
+ * exception that already exists, still checked against the SAME positive
+ * marker (`OTEL_TRACING_MARKER`, unchanged and still present) and still
+ * required to leave `billing`/`fulfillment` matching each other. This is
+ * now the ENTIRE remaining reason `orders`'s copy cannot converge with
+ * theirs — see the retirement condition above.
  */
 const TRACE_DIVERGENT_FILES: ReadonlySet<(typeof FAMILY_FILES)[number]> = new Set(['outbox-relay.ts', 'outbox-recorder.ts']);
 // Present in BOTH trace-divergent files' import lines (`outbox-relay.ts`
