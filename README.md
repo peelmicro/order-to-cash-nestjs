@@ -200,6 +200,28 @@ Other `dc:*:apps` scripts mirror the `dc:*:infra` ones already in use: `dc:down:
 
 Every app image is built **locally** (`pull_policy: build`, same discipline as `docker-compose.infra.yml`'s `otel-collector`/`kafka-init`) — none of these are published anywhere. Build context is always the **repo root** (`context: .`, never `apps/<service>`): pnpm workspaces need the full lockfile plus every `packages/*/package.json` to install correctly. Every NestJS service's Dockerfile ([`infra/docker/service/Dockerfile`](infra/docker/service/Dockerfile), shared across all six via a `SERVICE` build ARG) runs the real build — `tsc -p tsconfig.build.json`, never `tsx`/esbuild — for exactly the reason CLAUDE.md's DI-tokens rule exists: `emitDecoratorMetadata` only survives a real `tsc` compile, and this is the one place a wrong choice here would silently break every constructor-injected provider. `apps/web` ([`infra/docker/web/Dockerfile`](infra/docker/web/Dockerfile)) is a different shape — Nitro's `node-server` preset produces a self-contained `.output/` needing no monorepo `node_modules` at runtime — and `apps/seed` ([`infra/docker/seed/Dockerfile`](infra/docker/seed/Dockerfile)) keeps its own `tsx`-based script unchanged, per CLAUDE.md's explicit carve-out for that one app.
 
+## n8n demo workflows
+
+Four workflows, committed as JSON under [`n8n/workflows/`](n8n/workflows/), talk **only to the Gateway REST API** — never a database, a broker, or a service's internal port (see [`specs/shared/n8n-workflows.md`](specs/shared/n8n-workflows.md), the spec both #8 and #9 reuse verbatim). They are demo automation: no requirement `R1`–`R60` is satisfied by them, and no service knows they exist.
+
+| # | Workflow | Trigger | Default schedule |
+|---|---|---|---|
+| 1 | Order generator | Schedule | every 45s — places one order, ~15% engineered to a `.99` total (credit-refused, R42) |
+| 2 | Payment robot ("the bank") | Schedule | every 2 min — pays every invoice `issued` ≥2 min ago, deterministic `paymentReference` (R48) |
+| 3 | Stock replenishment | Schedule | every 5 min — tops up every product below its low-stock threshold |
+| 4 | Burst | Manual webhook (`POST /webhook/otc-burst`) | fires `BURST_ORDER_COUNT` (default 20) orders at `BURST_CONCURRENCY` in parallel, on demand |
+
+```bash
+pnpm n8n:import    # ./scripts/import-n8n-workflows.sh — imports the 4 committed workflows (always INACTIVE)
+pnpm n8n:export    # ./scripts/export-n8n-workflows.sh — writes n8n's own current copy back into n8n/workflows/
+```
+
+**Auto-import on startup.** The `n8n-init` one-shot container (same `restart: "no"` / `depends_on: service_healthy` shape as `kafka-init`) imports the four workflows on every `docker compose up`, gated by `N8N_WORKFLOWS_ENABLED` (`.env` — `false` skips it). Imports are always **inactive** regardless of that flag: activate a workflow from http://localhost:5678/workflows when you want its schedule/webhook to actually run — a live UI toggle takes effect immediately and survives restarts. **Scheduled** workflows (order generator, payment robot, stock replenishment) additionally need a full server restart before a *CLI-level* `publish:workflow --active=true` starts ticking — verified live: publishing `otcOrderGenerator` via the CLI produced zero executions against its own interval until `n8n` was restarted. The **webhook** workflow (burst) does not have this restriction — verified live: `publish:workflow --id=otcBurst` followed immediately by `POST /webhook/otc-burst`, no restart, returned `200` and executed. Either way, the UI toggle is the simplest path and needs no restart for either trigger type.
+
+**Removing n8n entirely.** The `n8n` and `n8n-init` services sit behind the `n8n` compose profile — `pnpm dc:up:infra`/`dc:up:apps` pass `--profile n8n` by default (today's behaviour, unchanged); `pnpm dc:up:infra:no-n8n` / `pnpm dc:up:apps:no-n8n` omit it, so neither container starts. Every other service comes up healthy and an order placed by hand (`pnpm order:place`, or the web UI) still runs the full saga to `completed` — n8n is a client of the Gateway, exactly like the web app, and nothing waits for it.
+
+Every tunable (`ORDER_GENERATOR_*`, `PAYMENT_ROBOT_*`, `STOCK_REPLENISH_*`, `BURST_*`, `OTC_GATEWAY_URL`) is an environment variable, documented with its default in `.env.example` — never hardcoded in the workflow JSON, including the three schedule periods and the burst webhook path, which the trigger nodes read via n8n expressions against `$env` (e.g. `secondsInterval: ={{ Number($env.ORDER_GENERATOR_INTERVAL_SECONDS) || 45 }}`). Changing one of these in `.env` takes effect after the workflow is republished and `n8n` is restarted (`docker compose restart n8n`) — same restart requirement as any other activation change on this n8n version, see above.
+
 ## End-to-end tests
 
 Playwright drives the real, already-running web UI (never `pnpm dev:web` — see the caveat below) through both saga scenarios end to end: the happy path to `completed` with a payment that flips the invoice to `paid`, and the `.99` credit-rejection path that compensates back to `cancelled`.
@@ -300,7 +322,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 17 | Web component tests | ✅ 59 tests / 14 files, written inside each feature loop rather than as a separate phase; SSE covered against a real `EventSource` over real HTTP. Coverage 85.8% statements, 87.0% lines |
 | 18 | API tests through the Gateway | ✅ black-box over real HTTP against a real spawned Gateway + fleet (supertest as client only) — happy path, `.99` compensation, payment idempotency, and a general causal-ordering invariant asserted on every order |
 | 19 | Playwright end-to-end tests | ✅ 3 scenarios in a real browser against the running stack — happy path to `completed`, `.99` compensation with the rendered causal link, invoice → `paid`. Found a real stale-page defect no lower test layer could reach |
-| 20 | n8n demo workflows | ⬜ |
+| 20 | n8n demo workflows | ✅ four workflows (order generator, payment robot, stock replenishment, burst), Gateway REST API only, committed JSON + auto-import; removing n8n entirely verified not to break the stack |
 | 21 | SonarQube + coverage gates | ✅ two-tier coverage enforced in `pnpm quality` (≥80% domain / ≥60% overall), proven to fail when violated and independent of SonarQube; SonarQube configured, run, quality gate **Passed** |
 | 22 | Prometheus, Grafana, Jaeger verification | ✅ auto-provisioned Grafana dashboard (5 panels, all reading live data), kafka-exporter for real consumer lag, and one trace genuinely spanning 6 services — the linkage was broken until this phase |
 | 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), all running non-root as uid 1000, verified healthy from a cold cycle against the live infra stack |
