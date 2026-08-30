@@ -236,7 +236,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phases 1–19, 21 and 23 complete — 37 of 41 features done.** The web app is finished: auth (the JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline showing what caused each entry, billing with payment registration, and stock with delta replenish. Phase 18 adds black-box API tests driving a real spawned Gateway in front of a real fleet — the first time those two halves of the test estate have met — and they found a genuine ordering defect on their first run, whose fix (amendment A1) went through the spec gate. Phase 17 closed as a byproduct rather than a separate phase, because the tests were written inside each feature loop. Phase 19's Playwright suite then found a defect only a real browser could reach — a page showing `Live` while permanently stale — which no lower layer had caught. Remaining: 20–22 (n8n, SonarQube, dashboards) and 24–25 (documentation, final checkpoint).
+**Position: Phases 1–19 and 21–23 complete — 38 of 41 features done.** The web app is finished: auth (the JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline showing what caused each entry, billing with payment registration, and stock with delta replenish. Phase 18 adds black-box API tests driving a real spawned Gateway in front of a real fleet — the first time those two halves of the test estate have met — and they found a genuine ordering defect on their first run, whose fix (amendment A1) went through the spec gate. Phase 17 closed as a byproduct rather than a separate phase, because the tests were written inside each feature loop. Phase 19's Playwright suite then found a defect only a real browser could reach — a page showing `Live` while permanently stale — which no lower layer had caught. Remaining: 20–22 (n8n, SonarQube, dashboards) and 24–25 (documentation, final checkpoint).
 
 | Phase | What | State |
 |---|---|---|
@@ -262,7 +262,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 19 | Playwright end-to-end tests — 3 scenarios in a real browser. Found a stale-page defect (a page showing `Live` while permanently out of date) that unit, integration and black-box API tests had all passed over | ✅ |
 | 20 | n8n demo workflows | pending |
 | 21 | SonarQube + quality gates — coverage enforced two-tier and proven to bite; first-ever scan found 20 real accessibility defects and 12 false positives | ✅ |
-| 22 | Prometheus, Grafana, Jaeger verification | pending |
+| 22 | Prometheus, Grafana, Jaeger verification — found every trace was a single span, fixed the linkage, and the new DLQ panel surfaced 728 dead letters nobody knew about | ✅ |
 | 23 | Full Docker Compose — all 7 application services containerized on top of the existing infrastructure compose, live-verified (built, migrated, healthy, seeded from a cold cycle), every container running non-root as uid 1000, and the CLI-apps/compose-infra alternative mode re-verified | ✅ |
 | 24–25 | Documentation, final checkpoint | pending |
 
@@ -281,9 +281,13 @@ The single most repeated failure in this project. Machinery that looks like enfo
 - **Tests whose names promised more than they asserted.** Three "loading state" specs claimed to assert a distinct loading state; deleting the loading branch from two components left the suite green. A test that overclaims is worse than no test, because it stops anyone looking.
 - **A coverage threshold over an empty directory.** One service's 80% domain tier was *vacuously satisfied* — proven by raising every service's tier to 100% and watching that one alone pass. Correct today; now guarded against the next rename, with the exemption written down rather than silent.
 - **The quality gate itself, inert since Phase 1.** `pnpm quality` ran the plain test script, not the coverage one, so thresholds specified for twenty phases had never once failed a build. The numbers happened to be fine, which is the uncomfortable part — nothing would have surfaced it until it mattered.
+- **A "flaky test" that was a real defect.** The gate went red once and green the next run; the reviewer refused to write it off and asked the sharper question — *can a genuinely concurrent duplicate surface as an internal error rather than a conflict?* It could, reproduced on demand across 220+ trials. A deadlock is not a conflict, and nothing in the codebase handled one.
 - **A test asserting a rolled-back side effect.** It claimed an unchanged database counter proved a request was rejected before any transaction opened. A transaction that opens, increments and rolls back leaves the counter equally unchanged — demonstrated by removing the check and watching the suite stay green.
 
 ### 11.2 What only running the real thing found
+
+- **Every distributed trace was a single span**, despite four services exporting and every service having tracing wired. Found by opening Jaeger, not by reading code. The context was propagating correctly all along — two services extracted it and then never created a span, so there was nothing for the next hop to parent onto. A dashboard built on that would have looked complete and shown nothing.
+- **728 dead letters nobody knew about**, surfaced by a DLQ panel on the first day it existed. The cause was in the dead letters' own headers: an exhausted third-party email quota. The retry-and-dead-letter machinery was working exactly as designed against a failure class it had no way to name.
 
 Each test layer has found defects the layers beneath it structurally could not reach. The pattern is consistent enough to state as a claim.
 

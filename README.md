@@ -36,7 +36,7 @@ Two things built here are meant to be reused verbatim by #8 and #9: the stack-ag
 | Testing | Vitest (the only runner), Testcontainers, Supertest, Vue Testing Library, Playwright |
 | Demo workflows | n8n — 4 pre-loaded workflows, Gateway REST API only |
 | Monorepo | pnpm workspaces |
-| Infrastructure | Docker Compose (~18 containers) |
+| Infrastructure | Docker Compose (~19 containers) |
 
 ## Prerequisites
 
@@ -143,7 +143,7 @@ SonarQube reports 12.3% duplication, concentrated in every service's `infrastruc
 The application services arrive in later phases; the infrastructure stack runs now:
 
 ```bash
-pnpm dc:up:infra   # 10 containers + a one-shot kafka-init job
+pnpm dc:up:infra   # 11 containers + a one-shot kafka-init job
 ./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
 ```
 
@@ -158,7 +158,9 @@ Poke at the running stack by hand with the [`http/`](http/) files and the REST C
 | n8n | http://localhost:5678 |
 | SonarQube (optional) | http://localhost:9000 — `pnpm dc:up:sonar` |
 
-Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
+Every image is **pinned to an exact version** (MySQL 8.4.11 LTS, MongoDB 8.3.8, Kafka 4.3.1 KRaft, NATS 2.14.5 **core-only — no JetStream**, Jaeger v2 2.20.0, Prometheus v3.14.0, Grafana 13.2.0, n8n 2.36.2, `danielqsj/kafka-exporter` v1.9.0) so the sibling assessments reproduce the same stack. The `kafka-init` one-shot container **derives the six topics (3 fact topics + 3 `.dlq`) from [`specs/shared/asyncapi.yaml`](specs/shared/asyncapi.yaml)** — the spec is the source of truth, and topic drift fails loudly instead of passing silently. Re-run it any time with `pnpm kafka:topics`.
+
+Grafana auto-provisions one dashboard, **"Order To Cash — Overview"** ([`infra/grafana/dashboards/order-to-cash-overview.json`](infra/grafana/dashboards/order-to-cash-overview.json)) — saga duration, per-service latency, Kafka consumer lag, outbox lag and DLQ depth, all against live PromQL (`infra/grafana/provisioning/dashboards/`). Consumer lag is the one metric no service under `apps/` computes itself: `kafka-exporter` (a new container, `docker-compose.infra.yml`) queries the broker's own real consumer-group offsets, scraped by Prometheus as `kafka_consumergroup_lag` (`infra/prometheus/prometheus.yml`). Measured resource cost: **7.4 MiB RSS, 0.00% CPU** — negligible against Grafana's 256 MiB and Prometheus' 33 MiB — see `progress/impl_observability_dashboards.md` for the full decision and every panel's verified query.
 
 With the infrastructure up, `pnpm seed` loads the demo data: master data (3 currencies, 12 products, 7 retailers and 22 suppliers with valid GS1 GLNs, credit limits, stock) plus six sample orders — five completed sagas and one cancelled by the `.99` credit rule — consistent across the three MySQL databases and the MongoDB `order_timeline`. Deterministic and idempotent: run it twice, nothing changes.
 
@@ -300,7 +302,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 19 | Playwright end-to-end tests | ✅ 3 scenarios in a real browser against the running stack — happy path to `completed`, `.99` compensation with the rendered causal link, invoice → `paid`. Found a real stale-page defect no lower test layer could reach |
 | 20 | n8n demo workflows | ⬜ |
 | 21 | SonarQube + coverage gates | ✅ two-tier coverage enforced in `pnpm quality` (≥80% domain / ≥60% overall), proven to fail when violated and independent of SonarQube; SonarQube configured, run, quality gate **Passed** |
-| 22 | Prometheus, Grafana, Jaeger verification | ⬜ |
+| 22 | Prometheus, Grafana, Jaeger verification | ✅ auto-provisioned Grafana dashboard (5 panels, all reading live data), kafka-exporter for real consumer lag, and one trace genuinely spanning 6 services — the linkage was broken until this phase |
 | 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), all running non-root as uid 1000, verified healthy from a cold cycle against the live infra stack |
 | 24 | Documentation + demo recording | ⬜ |
 | 25 | Final checkpoint | ⬜ |
