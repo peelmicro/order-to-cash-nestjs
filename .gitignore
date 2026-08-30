@@ -69,3 +69,7 @@ yarn-error.log*
 ._*
 Thumbs.db
 desktop.ini
+
+# Raw Playwright video from scripts/capture-demo.mjs (deleted on success;
+# left behind only if the run crashes before the ffmpeg step).
+.demo-video/

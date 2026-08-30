@@ -20,6 +20,48 @@ This is **assessment #7 of a three-part series** that implements the *same speci
 
 Two things built here are meant to be reused verbatim by #8 and #9: the stack-agnostic specification in `specs/shared/` and the agent harness (`AGENTS.md`, `feature_list.json`, `progress/`, `.claude/agents/`). The development **process is a deliverable**, not just the software.
 
+## What it looks like
+
+Every image below except the two n8n ones is regenerated from a live, seeded stack by **`pnpm media:capture`** (and **`pnpm media:demo`** for the GIF), so they are reproducible evidence rather than hand-cropped one-offs that rot silently as the UI changes. n8n 2.x authenticates with an owner account whose credentials are deliberately not in `.env`, so those two are captured by hand.
+
+### The `.99` compensation, end to end
+
+![Placing a .99 order and watching the saga compensate live](docs/screenshots/demo-compensation.gif)
+
+A total ending in `.99` makes the credit simulator reject the hold. The saga then releases the stock it had already reserved and cancels the order, and both compensation steps stay separately visible in the timeline rather than collapsing into one "failed" entry.
+
+### The order timeline
+
+The happy path to `completed`, and the same view for a compensated order — each entry naming the fact that caused it:
+
+![Order detail with the full timeline for a completed order](docs/screenshots/web-order-timeline-completed.png)
+
+![Order detail for a cancelled order, showing stock released then the order cancelled](docs/screenshots/web-order-timeline-compensated.png)
+
+### One order, one trace, six services
+
+![A single Jaeger trace spanning gateway, orders, fulfillment, billing, projector and notifications](docs/screenshots/jaeger-single-order-trace.png)
+
+22 spans, depth 11, across all six services — HTTP into the Gateway, NATS RPC, MySQL, the outbox relay, Kafka, and every consumer that reacted. The `traceparent` is carried on the message envelope, which is what joins the producer's span to the consumer's.
+
+### Grafana
+
+![The Order To Cash overview dashboard](docs/screenshots/grafana-overview.png)
+
+Saga duration (p50/p95, split by `completed` vs `cancelled`), per-service latency, Kafka consumer lag read from the broker's own offsets, outbox lag and DLQ depth. Note that **Saga duration is legitimately empty until an order reaches a terminal state in the current process** — OTel records that histogram only on completion or cancellation, so a freshly restarted stack shows "No data" until the first saga finishes.
+
+### Notifications, and the external world
+
+Mailpit receives every notification the system sends — no account, no quota, and no SMTP password anywhere in the repo:
+
+![The Mailpit inbox holding the order lifecycle emails](docs/screenshots/mailpit-inbox.png)
+
+The four n8n workflows that drive the system unattended, and their executions firing on their own schedules:
+
+![The four n8n workflows, all published](docs/screenshots/n8n-workflows.png)
+
+![n8n executions succeeding on schedule](docs/screenshots/n8n-executions.png)
+
 ## Tech stack
 
 | Layer | Technology |

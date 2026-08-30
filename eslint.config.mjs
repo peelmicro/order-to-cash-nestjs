@@ -111,12 +111,16 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   // Developer scripts run directly under Node (no bundler, no Nest), so they
   // legitimately use `process` and `console` — globals the app configs do not
-  // declare. Plain ESM JavaScript, so no type-aware linting either.
+  // declare. `fetch` is here for the same reason: it has been a Node global
+  // since 18 (this repo pins >=24), and `scripts/capture-media.mjs` calls it
+  // against the Jaeger and Gateway APIs rather than pulling in a HTTP client
+  // this repo would otherwise not depend on. Plain ESM JavaScript, so no
+  // type-aware linting either.
   {
     files: ["scripts/**/*.{mjs,js}"],
     languageOptions: {
       sourceType: "module",
-      globals: { process: "readonly", console: "readonly" },
+      globals: { process: "readonly", console: "readonly", fetch: "readonly" },
     },
   },
   // Vue-aware linting for apps/web (Nuxt 4). Before this block, `pnpm lint`
