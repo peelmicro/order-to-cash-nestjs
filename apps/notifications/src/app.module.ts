@@ -31,6 +31,7 @@ import { KafkaDlqPublisher } from './infrastructure/messaging/kafka-dlq-publishe
 import { loadKafkaConfig } from './infrastructure/messaging/kafka.config';
 import { DrizzleProcessedEventCompensation } from './infrastructure/messaging/processed-events-compensation';
 import { ConsoleNotificationSender } from './infrastructure/notification/console-notification-sender';
+import { DegradingNotificationSender } from './infrastructure/notification/degrading-notification-sender';
 import { MailtrapNotificationSender } from './infrastructure/notification/mailtrap-notification-sender';
 import { resolveNotificationSenderBinding } from './infrastructure/notification/mailtrap.config';
 import { createNotificationsDb, createNotificationsPool, type NotificationsDb } from './infrastructure/persistence/client';
@@ -92,11 +93,22 @@ const DLQ_PUBLISHER = Symbol('DlqPublisher');
       // when mailtrap.config.ts finds a complete, valid-looking credential
       // pair; console otherwise (and always in every automated test, which
       // never sets MAILTRAP_USER/MAILTRAP_PASSWORD to a real value).
+      //
+      // Graceful-degradation addendum: when Mailtrap IS bound, it is never
+      // handed to the rest of the app directly — it is wrapped in
+      // `DegradingNotificationSender`, which reconsiders on EVERY send
+      // (not once at startup, this factory's own former limitation) and
+      // falls back to a `ConsoleNotificationSender` for a PERMANENT
+      // failure (quota exhausted, bad credentials, malformed recipient)
+      // while leaving a TRANSIENT failure's retry-then-DLQ behaviour
+      // completely unchanged (see degrading-notification-sender.ts's
+      // header). Console-only binding has nothing to degrade from, so it
+      // is left unwrapped.
       provide: NOTIFICATION_SENDER,
       useFactory: (): NotificationSender => {
         const binding = resolveNotificationSenderBinding();
         return binding.kind === 'mailtrap'
-          ? new MailtrapNotificationSender(binding.config)
+          ? new DegradingNotificationSender(new MailtrapNotificationSender(binding.config), new ConsoleNotificationSender())
           : new ConsoleNotificationSender();
       },
     },
