@@ -52,7 +52,9 @@ services:
       MYSQL_DB_FULFILLMENT: ${MYSQL_DB_FULFILLMENT:-otc_fulfillment}
       MYSQL_DB_BILLING: ${MYSQL_DB_BILLING:-otc_billing}
       MYSQL_DB_NOTIFICATIONS: ${MYSQL_DB_NOTIFICATIONS:-otc_notifications}
-      MYSQL_DB_N8N: ${MYSQL_DB_N8N:-n8n}
+      # MYSQL_DB_N8N intentionally removed here (review fix D4): n8n has
+      # never connected to this database — see the n8n: service comment
+      # block below and progress/impl_n8n_workflows.md, "Review fixes".
     ports:
       - "${MYSQL_HOST_PORT:-3306}:3306"
     volumes:
@@ -366,20 +368,61 @@ services:
 
   # ── n8n — workflow automation, talks only to the Gateway REST API (never
   #    to a database or broker directly — see specs/shared/n8n-workflows.md).
-  #    Persists its own workflow state in the dedicated `n8n` MySQL database.
+  #
+  #    SQLite, not MySQL (review fix D4, progress/impl_n8n_workflows.md,
+  #    "Review fixes"). n8n 2.36.2's config schema only accepts `sqlite` or
+  #    `postgresdb` — MySQL support was dropped upstream in n8n's 2.0
+  #    breaking changes — so DB_TYPE is set to `sqlite` below, honestly, and
+  #    n8n persists to its own SQLite file inside the `n8n_data` volume. That
+  #    volume survives container restarts/recreates, so workflow state and
+  #    activation are NOT lost. A real MySQL-backed n8n would mean retargeting
+  #    at `postgresdb` (a different engine, still not MySQL) or pinning an
+  #    older n8n release; neither is a workflow-authoring decision, so this
+  #    stays on SQLite. Do not put `mysqldb` back here — that value doesn't
+  #    exist in n8n 2.x's schema and made every boot, import and export print
+  #    "Invalid value for DB_TYPE ... Falling back to default value" as
+  #    routine output, drowning out real errors the same way.
+  #
+  #    No env_file (review fix D3, progress/impl_n8n_workflows.md, "Review
+  #    fixes"). `env_file: [.env]` used to hand this container every secret
+  #    in `.env` — MYSQL_ROOT_PASSWORD, JWT_SECRET, a real MAILTRAP_PASSWORD —
+  #    verified present with `docker exec otc-n8n env`. Combined with
+  #    N8N_BLOCK_ENV_ACCESS_IN_NODE=false (genuinely required — see below)
+  #    and the unauthenticated-by-default UI on a published port, any Code
+  #    node authored here could read and exfiltrate them, which
+  #    specs/shared/n8n-workflows.md §1 states must be structurally
+  #    impossible ("they hold no database credential and no broker
+  #    credential, because they have nothing to connect to"). The
+  #    `environment:` block below is an explicit allowlist of exactly the
+  #    values the four committed workflows read via `$env.*` — every
+  #    OTC_*/GATEWAY_OPERATOR_*/ORDER_GENERATOR_*/PAYMENT_ROBOT_*/
+  #    STOCK_REPLENISH_*/BURST_*/N8N_WORKFLOWS_ENABLED variable in
+  #    specs/shared/n8n-workflows.md §2.5 and nothing this container has no
+  #    business holding. N8N_BLOCK_ENV_ACCESS_IN_NODE stays `false` — the
+  #    workflows only work by reading their tuning knobs via `$env`, and
+  #    flipping it to `true` would break all four — so the containment is
+  #    "the container's own env has nothing worth reading", not "Code nodes
+  #    can't read $env". OTC_GATEWAY_URL is overridden to the in-network
+  #    service name per specs/shared/n8n-workflows.md §1 ("Gateway REST API
+  #    only") — `.env`'s own default is host-oriented for tools run outside a
+  #    container, same "outside vs inside compose" split as ORDERS_DB_HOST
+  #    et al.
   n8n:
     image: n8nio/n8n:2.36.2
     container_name: otc-n8n
     restart: unless-stopped
+    # profiles: n8n_workflows (phase 20) — omit this profile entirely to
+    # verify the stack does not depend on the workflow engine at all
+    # (specs/shared/n8n-workflows.md §7.1's "no workflow engine at all"
+    # row): `pnpm dc:up:infra:no-n8n` / `pnpm dc:up:apps:no-n8n` start
+    # everything EXCEPT n8n and n8n-init. The default `dc:up:infra` /
+    # `dc:up:apps` scripts pass `--profile n8n` so existing behaviour (n8n
+    # present) is unchanged for everyone not deliberately testing removal.
+    profiles: ["n8n"]
     environment:
       TZ: ${TZ:-Europe/Madrid}
       GENERIC_TIMEZONE: ${TZ:-Europe/Madrid}
-      DB_TYPE: mysqldb
-      DB_MYSQLDB_HOST: mysql
-      DB_MYSQLDB_PORT: 3306
-      DB_MYSQLDB_DATABASE: ${MYSQL_DB_N8N:-n8n}
-      DB_MYSQLDB_USER: ${MYSQL_USER:-otc_app}
-      DB_MYSQLDB_PASSWORD: ${MYSQL_PASSWORD:-otc_app_dev_password}
+      DB_TYPE: sqlite
       N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-otc_n8n_dev_encryption_key_change_me}
       N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-false}
       N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
@@ -389,22 +432,112 @@ services:
       N8N_PROTOCOL: http
       WEBHOOK_URL: http://localhost:${N8N_HOST_PORT:-5678}/
       N8N_RUNNERS_ENABLED: "true"
+      # n8n 2.x blocks $env access from Code nodes/expressions by default —
+      # every workflow here reads its tunables via $env.* (see header note).
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      # In-network Gateway address — overrides .env's host-oriented default
+      # (same split as ORDERS_DB_HOST/MONGO_HOST/etc across this file).
+      OTC_GATEWAY_URL: "http://gateway:${GATEWAY_PORT:-3001}"
+      OTC_REQUEST_TIMEOUT_MS: ${OTC_REQUEST_TIMEOUT_MS:-10000}
+      # The one operator identity shared by a human, the UI and every demo
+      # workflow (feature 25) — no separate n8n-only login.
+      GATEWAY_OPERATOR_USERNAME: ${GATEWAY_OPERATOR_USERNAME:-operator}
+      GATEWAY_OPERATOR_PASSWORD: ${GATEWAY_OPERATOR_PASSWORD:-otc_operator_dev_password_change_me}
+      N8N_WORKFLOWS_ENABLED: ${N8N_WORKFLOWS_ENABLED:-true}
+      # Workflow 1 — order generator (specs/shared/n8n-workflows.md §3.4).
+      ORDER_GENERATOR_ENABLED: ${ORDER_GENERATOR_ENABLED:-true}
+      ORDER_GENERATOR_INTERVAL_SECONDS: ${ORDER_GENERATOR_INTERVAL_SECONDS:-45}
+      ORDER_GENERATOR_ORDERS_PER_RUN: ${ORDER_GENERATOR_ORDERS_PER_RUN:-1}
+      ORDER_GENERATOR_COMPENSATION_RATIO: ${ORDER_GENERATOR_COMPENSATION_RATIO:-0.15}
+      ORDER_GENERATOR_MAX_LINES: ${ORDER_GENERATOR_MAX_LINES:-4}
+      ORDER_GENERATOR_MAX_UNITS: ${ORDER_GENERATOR_MAX_UNITS:-10}
+      ORDER_GENERATOR_RETAILERS: ${ORDER_GENERATOR_RETAILERS:-}
+      ORDER_GENERATOR_COMPANIES: ${ORDER_GENERATOR_COMPANIES:-}
+      ORDER_GENERATOR_CATALOG_TTL_SECONDS: ${ORDER_GENERATOR_CATALOG_TTL_SECONDS:-600}
+      # Workflow 2 — payment robot (specs/shared/n8n-workflows.md §4.3).
+      PAYMENT_ROBOT_ENABLED: ${PAYMENT_ROBOT_ENABLED:-true}
+      PAYMENT_ROBOT_INTERVAL_SECONDS: ${PAYMENT_ROBOT_INTERVAL_SECONDS:-120}
+      PAYMENT_AGE_MINUTES: ${PAYMENT_AGE_MINUTES:-2}
+      PAYMENT_ROBOT_BATCH_SIZE: ${PAYMENT_ROBOT_BATCH_SIZE:-10}
+      PAYMENT_ROBOT_RETAILERS: ${PAYMENT_ROBOT_RETAILERS:-}
+      # Workflow 3 — stock replenishment (specs/shared/n8n-workflows.md §5.3).
+      STOCK_REPLENISH_ENABLED: ${STOCK_REPLENISH_ENABLED:-true}
+      STOCK_REPLENISH_INTERVAL_SECONDS: ${STOCK_REPLENISH_INTERVAL_SECONDS:-300}
+      STOCK_REPLENISH_TOP_UP_UNITS: ${STOCK_REPLENISH_TOP_UP_UNITS:-100}
+      STOCK_REPLENISH_BATCH_SIZE: ${STOCK_REPLENISH_BATCH_SIZE:-50}
+      STOCK_REPLENISH_COMPANIES: ${STOCK_REPLENISH_COMPANIES:-}
+      # Workflow 4 — burst, manual webhook (specs/shared/n8n-workflows.md §6.3).
+      BURST_ENABLED: ${BURST_ENABLED:-true}
+      BURST_ORDER_COUNT: ${BURST_ORDER_COUNT:-20}
+      BURST_CONCURRENCY: ${BURST_CONCURRENCY:-5}
+      BURST_COMPENSATION_RATIO: ${BURST_COMPENSATION_RATIO:-0.20}
+      BURST_WEBHOOK_PATH: ${BURST_WEBHOOK_PATH:-otc-burst}
     ports:
       - "${N8N_HOST_PORT:-5678}:5678"
     volumes:
       - n8n_data:/home/node/.n8n
+      # The four committed demo workflows (n8n_workflows, phase 20) —
+      # `pnpm n8n:import`/`pnpm n8n:export` read/write this same mount from
+      # inside the container, so the committed JSON in n8n/workflows/ IS
+      # what n8n itself produces (see scripts/import-n8n-workflows.sh /
+      # scripts/export-n8n-workflows.sh).
+      - ./n8n/workflows:/home/node/workflows
     networks:
       - otc-net
-    depends_on:
-      mysql:
-        condition: service_healthy
+    # No depends_on: mysql (review fix D4) — this service never contacts
+    # MySQL; see the SQLite note above.
     healthcheck:
-      # /healthz/readiness (not /healthz) also checks the MySQL connection.
+      # /healthz/readiness — n8n's own DB (SQLite, see above) and startup
+      # readiness. Not a MySQL check; this service has no MySQL connection.
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:5678/healthz/readiness"]
       interval: 5s
       timeout: 5s
       retries: 30
       start_period: 30s
+
+  # ── n8n-init — one-shot: imports the four committed demo workflows
+  #    (n8n/workflows/*.json) on every `docker compose up`, same
+  #    "restart: no, depends_on: service_healthy" one-shot shape as
+  #    kafka-init above. Uses the SAME image as the main `n8n` service (no
+  #    custom Dockerfile needed — the CLI import command and a POSIX shell
+  #    are already in the base image) and shares its `n8n_data` volume, so
+  #    it writes into the exact same SQLite store the running n8n process
+  #    reads (see the `n8n:` service's SQLite comment above — DB_TYPE is
+  #    `sqlite` here too, for the same reason). Idempotent: importing a
+  #    workflow with the same `id` overwrites it in place, so re-running this
+  #    on every `up` just re-asserts the four committed workflows match the
+  #    repo — never a duplicate. Gated by N8N_WORKFLOWS_ENABLED (see
+  #    infra/n8n/import-workflows-on-startup.sh and
+  #    specs/shared/n8n-workflows.md §7.1's "all workflows off" row). Always
+  #    leaves every workflow INACTIVE regardless of that flag or of the
+  #    committed JSON's own `active` field — see
+  #    scripts/import-n8n-workflows.sh's header and progress/impl_n8n_
+  #    workflows.md for why true auto-ACTIVATION isn't cleanly achievable on
+  #    this n8n version without an extra restart, and is intentionally not
+  #    attempted here.
+  #
+  #    No env_file here either (review fix D3) — this one-shot container only
+  #    imports workflow JSON; N8N_ENCRYPTION_KEY and N8N_WORKFLOWS_ENABLED are
+  #    the only two values import-workflows-on-startup.sh reads.
+  n8n-init:
+    image: n8nio/n8n:2.36.2
+    container_name: otc-n8n-init
+    restart: "no"
+    profiles: ["n8n"]
+    environment:
+      DB_TYPE: sqlite
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-otc_n8n_dev_encryption_key_change_me}
+      N8N_WORKFLOWS_ENABLED: ${N8N_WORKFLOWS_ENABLED:-true}
+    entrypoint: ["/bin/sh", "/import-workflows-on-startup.sh"]
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/workflows:/home/node/workflows:ro
+      - ./infra/n8n/import-workflows-on-startup.sh:/import-workflows-on-startup.sh:ro
+    networks:
+      - otc-net
+    depends_on:
+      n8n:
+        condition: service_healthy
 
   # ── SonarQube — opt-in only: `pnpm dc:up:sonar` (profile "sonar"). Not
   #    started by `pnpm dc:up:infra` — ~1.5 GB RAM is too much to pay by

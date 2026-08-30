@@ -2,9 +2,15 @@
 # Order-To-Cash — MySQL bootstrap.
 #
 # Creates one database per service (database-per-service, no cross-database
-# joins, no foreign keys crossing service boundaries — see CLAUDE.md) plus a
-# dedicated database for n8n so its workflow tables never mix with ours, and
-# grants the application user (MYSQL_USER) on all five.
+# joins, no foreign keys crossing service boundaries — see CLAUDE.md), and
+# grants the application user (MYSQL_USER) on all four.
+#
+# n8n review fix (D4, progress/impl_n8n_workflows.md, "Review fixes"): this
+# script used to also create a fifth `n8n` database. n8n 2.36.2 dropped
+# MySQL support upstream — its DB_TYPE only accepts sqlite/postgresdb, so it
+# has never once connected here; that database always had zero tables. Not
+# creating it any more, rather than leaving a database standing that nothing
+# will ever use.
 #
 # Why a .sh file and not a .sql file: docker-entrypoint-initdb.d executes
 # .sql files literally through the mysql client with NO shell/env-var
@@ -26,20 +32,17 @@ DB_ORDERS="${MYSQL_DB_ORDERS:-otc_orders}"
 DB_FULFILLMENT="${MYSQL_DB_FULFILLMENT:-otc_fulfillment}"
 DB_BILLING="${MYSQL_DB_BILLING:-otc_billing}"
 DB_NOTIFICATIONS="${MYSQL_DB_NOTIFICATIONS:-otc_notifications}"
-DB_N8N="${MYSQL_DB_N8N:-n8n}"
 
 mysql -uroot -p"${MYSQL_ROOT_PASSWORD}" <<-SQL
 	CREATE DATABASE IF NOT EXISTS \`${DB_ORDERS}\`      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 	CREATE DATABASE IF NOT EXISTS \`${DB_FULFILLMENT}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 	CREATE DATABASE IF NOT EXISTS \`${DB_BILLING}\`     CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 	CREATE DATABASE IF NOT EXISTS \`${DB_NOTIFICATIONS}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-	CREATE DATABASE IF NOT EXISTS \`${DB_N8N}\`         CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 	GRANT ALL PRIVILEGES ON \`${DB_ORDERS}\`.*      TO '${MYSQL_USER}'@'%';
 	GRANT ALL PRIVILEGES ON \`${DB_FULFILLMENT}\`.* TO '${MYSQL_USER}'@'%';
 	GRANT ALL PRIVILEGES ON \`${DB_BILLING}\`.*     TO '${MYSQL_USER}'@'%';
 	GRANT ALL PRIVILEGES ON \`${DB_NOTIFICATIONS}\`.* TO '${MYSQL_USER}'@'%';
-	GRANT ALL PRIVILEGES ON \`${DB_N8N}\`.*         TO '${MYSQL_USER}'@'%';
 
 	FLUSH PRIVILEGES;
 SQL

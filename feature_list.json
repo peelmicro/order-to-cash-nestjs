@@ -456,7 +456,7 @@
       "phase": 20,
       "title": "Four n8n demo workflows, Gateway REST API only, exported as JSON",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "order generator, bank robot, stock replenishment, burst",
         "auto-imported on container startup",
