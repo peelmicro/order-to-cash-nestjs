@@ -80,6 +80,81 @@ The four n8n workflows that drive the system unattended, and their executions fi
 | Monorepo | pnpm workspaces |
 | Infrastructure | Docker Compose (~19 containers) |
 
+## Architecture
+
+Six NestJS services, each owning its own MySQL database (MongoDB for the read model), talking over **two brokers with different jobs**. Clean Architecture inside every service — `presentation → application → domain`, with `infrastructure` implementing the ports the application declares, and `domain/` holding zero framework imports (enforced by an ESLint rule, not by convention).
+
+```mermaid
+flowchart TB
+    web["Web · Nuxt 4"] -->|REST + SSE| gw["Gateway / BFF"]
+    n8n["n8n · the external world"] -->|REST| gw
+
+    gw -->|NATS RPC| orders["Orders · saga orchestrator"]
+    gw -->|NATS RPC| ful["Fulfillment"]
+    gw -->|NATS RPC| bil["Billing"]
+    gw -->|NATS RPC| proj["Projector"]
+
+    orders -->|NATS RPC: stock.reserve, despatch.create| ful
+    orders -->|NATS RPC: credit.hold, invoice.issue| bil
+
+    orders -.->|facts| K(["Kafka · 3 fact topics + 3 DLQ"])
+    ful -.->|facts| K
+    bil -.->|facts| K
+    K -.->|consume| orders
+    K -.->|consume| proj
+    K -.->|consume| notif["Notifications"]
+
+    orders --- odb[("otc_orders")]
+    ful --- fdb[("otc_fulfillment")]
+    bil --- bdb[("otc_billing")]
+    notif --- ndb[("otc_notifications")]
+    proj --- mongo[("MongoDB read model")]
+    notif -->|SMTP| mail["Mailpit"]
+```
+
+Every service writes facts through a **transactional outbox** — the fact row and the state change commit in one transaction, and a relay publishes them afterwards. No service ever writes to Kafka and its database in the same breath.
+
+### Kafka carries facts, NATS carries RPC
+
+The single most-used rule in this codebase. Every inter-service interaction must be justifiable by one row of this table:
+
+| | **NATS (core, request-reply)** | **Kafka (fact topics)** |
+|---|---|---|
+| **Carries** | A *request* — "please do this" | A *fact* — "this happened" |
+| **Tense** | Imperative: `stock.reserve`, `credit.hold`, `invoice.issue` | Past: `order.placed.v1`, `credit.rejected.v1` |
+| **Caller wants** | An answer, now, or a timeout | Nothing — it has already committed |
+| **If nobody listens** | A legitimate error the caller handles | A bug; facts must always be consumable |
+| **Durability** | None, deliberately — no JetStream | Durable, replayable, partitioned by `correlationId` |
+| **Retried by** | The caller, against a durable `saga_commands` row | The consumer, then a `.dlq` topic after 3 attempts |
+| **Who may consume** | Exactly one responder | Anyone — Orders, Projector and Notifications all consume the same fact |
+
+**The rule that falls out of it, and the one worth internalising:** a command's response *never* advances the saga. The orchestrator uses the reply only to decide whether to retry. The saga moves only when the corresponding **fact** arrives — because only the fact is durable, replayable, and seen by the projector and the notifier too.
+
+So `credit.hold` returning "approved" over NATS changes nothing on its own; `credit.approved.v1` arriving over Kafka is what moves the order. That separation is why a Billing crash between the two loses nothing.
+
+### The saga
+
+Orchestrated, not choreographed — Orders owns the flow, so there is exactly one place to read it and one place to put compensation. Full step tables and sequence diagrams are in [`specs/shared/saga.md`](specs/shared/saga.md); this is the shape:
+
+```mermaid
+flowchart LR
+    P["placed"] -->|stock.reserved.v1| SR["stock_reserved"]
+    SR -->|credit.approved.v1| CA["credit_approved"]
+    CA -->|order.confirmed.v1| C["confirmed"]
+    C -->|order.despatched.v1| D["despatched"]
+    D -->|invoice.issued.v1| I["invoiced"]
+    I -->|payment.received.v1| PD["paid"]
+    PD --> DONE["completed"]
+
+    P -->|stock.rejected.v1| X1["cancelled<br/>nothing to undo"]
+    SR -->|credit.rejected.v1| REL["stock.release"]
+    REL -->|stock.released.v1| X2["cancelled<br/>credit_rejected"]
+```
+
+At `invoiced` the saga **stops and waits for the outside world** — no internal timer, no polling. A remittance arrives through the Gateway (the operator's button, an API test, or the n8n payment robot), and only then does it continue.
+
+Compensation is ordered and separately visible: on `credit.rejected.v1` the reserved stock is **released first**, and the order is cancelled only once `stock.released.v1` confirms it. Both steps appear as their own timeline entries rather than collapsing into one "failed" — see the compensation screenshot above.
+
 ## Prerequisites
 
 | Tool | Version | Notes |
@@ -245,6 +320,40 @@ Other `dc:*:apps` scripts mirror the `dc:*:infra` ones already in use: `dc:down:
 
 Every app image is built **locally** (`pull_policy: build`, same discipline as `docker-compose.infra.yml`'s `otel-collector`/`kafka-init`) — none of these are published anywhere. Build context is always the **repo root** (`context: .`, never `apps/<service>`): pnpm workspaces need the full lockfile plus every `packages/*/package.json` to install correctly. Every NestJS service's Dockerfile ([`infra/docker/service/Dockerfile`](infra/docker/service/Dockerfile), shared across all six via a `SERVICE` build ARG) runs the real build — `tsc -p tsconfig.build.json`, never `tsx`/esbuild — for exactly the reason CLAUDE.md's DI-tokens rule exists: `emitDecoratorMetadata` only survives a real `tsc` compile, and this is the one place a wrong choice here would silently break every constructor-injected provider. `apps/web` ([`infra/docker/web/Dockerfile`](infra/docker/web/Dockerfile)) is a different shape — Nitro's `node-server` preset produces a self-contained `.output/` needing no monorepo `node_modules` at runtime — and `apps/seed` ([`infra/docker/seed/Dockerfile`](infra/docker/seed/Dockerfile)) keeps its own `tsx`-based script unchanged, per CLAUDE.md's explicit carve-out for that one app.
 
+### Inspecting the dead-letter queues
+
+Each of the three fact topics has a `.dlq` sibling. A consumer that fails a fact three times dead-letters it rather than blocking its partition, and the dead letter carries a full diagnostic header set — including the **`traceparent`**, so a dead letter can be traced back to the order that produced it instead of being an orphan.
+
+The friendly way is **Redpanda Console** at http://localhost:8080 (topics → `*.dlq` → inspect headers). From the CLI:
+
+```bash
+docker exec otc-kafka sh -c \
+  "/opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 \
+   --topic otc.orders.facts.v1.dlq --from-beginning --max-messages 5 \
+   --formatter-property print.headers=true --timeout-ms 8000"
+```
+
+A real dead letter from this repository's own history — the notifications consumer while its SMTP host was deliberately stopped:
+
+```
+x-failed-consumer:notifications  x-attempts:3
+x-error:Error: connect EHOSTUNREACH 172.19.0.20:1025
+x-original-topic:otc.orders.facts.v1  x-event-type:order.placed.v1
+x-first-failed-at:2026-08-30T15:46:48.838Z  x-failed-at:2026-08-30T15:47:10.797Z
+traceparent:00-c8c87d5ec6b9ce721a473628325635dd-18aa934db1904c65-01
+```
+
+Paste that trace id into Jaeger and you get the whole order, retries included.
+
+To count what is sitting there:
+
+```bash
+docker exec otc-kafka sh -c \
+  "/opt/kafka/bin/kafka-get-offsets.sh --bootstrap-server localhost:9092 --topic otc.orders.facts.v1.dlq"
+```
+
+**Two honest caveats.** Grafana's *DLQ depth* panel plots a cumulative count, so a line that never falls looks identical whether the last dead letter arrived 30 seconds or 3 days ago. And **there is no replay tooling**: the messages are complete and replayable *in principle* — the payload is the original envelope, unmodified — but re-publishing them is a manual job today. That gap, and the fact that nothing alerts when either quiet ledger grows, is named in [Scaling and production extensions](#scaling-and-production-extensions) as the highest-value thing this system is missing.
+
 ## n8n demo workflows
 
 Four workflows, committed as JSON under [`n8n/workflows/`](n8n/workflows/), talk **only to the Gateway REST API** — never a database, a broker, or a service's internal port (see [`specs/shared/n8n-workflows.md`](specs/shared/n8n-workflows.md), the spec both #8 and #9 reuse verbatim). They are demo automation: no requirement `R1`–`R60` is satisfied by them, and no service knows they exist.
@@ -303,6 +412,45 @@ Do **not** use `pnpm run test:e2e -- --headed`. `pnpm` appends `-- --headed`, bu
 
 The suite targets a running, built stack and **cannot run against `pnpm dev:web`** — against a Nuxt dev server the login form's click lands pre-hydration on the cold dev bundle and the subsequent navigation never completes. Point it at the containerised stack (`WEB_PORT`) or at a local production build (`pnpm build && node apps/web/.output/server/index.mjs`) instead.
 
+## Trade-offs
+
+Every row is a decision that could defensibly have gone the other way. The alternative is named, not waved at.
+
+| Decision | Why | What it costs |
+|---|---|---|
+| **Orchestrated saga**, not choreography | One place to read the flow, one place to put compensation, one place to debug. The `saga_commands` table makes in-flight state inspectable in SQL | Orders knows the whole flow — a coupling choreography avoids, at the price of an emergent process nobody can read end to end |
+| **Two brokers** (Kafka facts + NATS RPC) | Each is used for what it is good at, and the distinction is the thing worth teaching | Two pieces of infrastructure, two client libraries, two OpenTelemetry propagation paths |
+| **NATS core, no JetStream** | Nothing in the RPC path needs durability or replay — a timeout is a legitimate answer | Would blur the matrix above by duplicating Kafka's job |
+| **Polling outbox**, not CDC/Debezium | No dual write, no extra infrastructure, and identical on all three stacks of the trilogy | ~500 ms publish latency and steady DB load. Debezium is the production answer |
+| **Topic per service**, not per event | 3 topics + 3 DLQs instead of 13 + 13; new facts need no broker administration; per-order ordering preserved by partition key | Consumers receive facts they filter out |
+| **Database per service** on one MySQL instance | Real logical isolation — no cross-database joins, no shared FKs, each service independently extractable | One instance is a single point of failure; production separates them |
+| **MongoDB read model**, not a relational replica | A denormalised document is the natural shape for "what happened to order X", and it proves the repository port abstracts the engine | Eventual consistency the UI must surface honestly, plus a second database technology to operate |
+| **Credit simulator + `.99` rule**, not a real PSP | Compensation must be demoable deterministically in five seconds | Demonstrates saga design rather than payment integration. Labelled an affordance in the spec, not a credit policy |
+| **n8n as the external world** | Payments and replenishment arrive from outside, as in reality — no hidden in-service timers faking demand. It speaks only the public REST API, so the same JSON serves #8 and #9 | One more container, demo-only |
+| **SSE**, not WebSocket | The push is one-directional and `Last-Event-ID` reconnection is free | Bidirectionality nothing here needs is unavailable |
+| **pnpm monorepo** | Shared contracts and kernel without publishing packages; one `quality` script | "Monorepo ≠ shared runtime code" must be enforced by lint rules and review, not by repo boundaries |
+| **Vitest everywhere, no Jest** | One runner, one config idiom across six services and a Nuxt app | Some NestJS examples assume Jest and need translating |
+| **SonarQube behind a profile** | ~1.5 GB RAM is a real cost on a dev laptop; coverage gates run in `pnpm quality` regardless | Quality never depends on it running |
+
+## Assumptions, and what I would do differently
+
+**Assumptions made explicit**, because each one would be wrong in some real deployment:
+
+- **One currency per order.** `Money` is integer minor units and never crosses currencies; a multi-currency order would need a rate at capture time and a policy for which rate.
+- **Business references are globally sequential** (`ORD-000001`). Real EDI often needs per-retailer or per-year sequences, and the counter row is a write bottleneck at volume.
+- **A credit hold is a simple ledger sum**, not a scoring model, and the `.99` rule stands in for a bureau call.
+- **Stock is a single logical warehouse.** No locations, no allocation strategy, no partial despatch.
+- **The operator is a single trusted role.** One JWT, no per-retailer authorisation — a real system scopes every query by the caller's own trading relationships.
+- **Facts are never schema-migrated.** Every event is `v1`; a real system needs an upcasting story before the first `v2`.
+
+**What I would do differently, with hindsight:**
+
+- **Surface the quiet ledgers from the start.** The DLQ and `saga_ignored_facts` are both correct, complete and invisible. 728 dead letters accumulated from an exhausted email quota before anyone noticed, and the fix was a dashboard panel, not code. Anything a system records because something went wrong should be visible by default.
+- **Write the black-box assertion before the feature, not after.** The timeline-ordering defect shipped green because the scenario asserted `status === 'completed'` and never looked at the events array. A general invariant ("every entry follows the entry its `causationId` names") cannot rot the way a hand-written expected sequence does.
+- **Treat a contract element with no requirement as a defect.** The `429` on `/auth/login` sat in the shared contract for months with nothing requiring it, because traceability runs requirement → test and cannot see a promise nobody made a requirement for. The reverse walk is cheap and would have caught it immediately.
+- **Validate every environment variable at the boundary.** `Number(env.X ?? default)` reads as safe and is not: it defends against *absent* and ignores *malformed*. One such loader would have disabled a security control silently; another would have taken login down entirely.
+- **Put the `Transport` on every message pattern from day one.** Hybrid apps register a bare pattern on *every* connected transport, which is invisible to a single-transport test and fatal at boot.
+
 ## Scaling and production extensions
 
 This is an assessment, and it runs as one instance per service on one machine. That is a deliberate scope, not an oversight — but "we did not build it" is a weak claim, so this section separates **what the system already supports and can prove** from **what a production deployment would add**.
@@ -342,11 +490,11 @@ The development **process is a deliverable here**, not just the software. This r
 |---|---|
 | [`AGENTS.md`](AGENTS.md) | Entry map — what to read, when, and the hard rules |
 | [`CLAUDE.md`](CLAUDE.md) | Leader role + project conventions |
-| [`feature_list.json`](feature_list.json) | Backlog state machine — 38 features, max one `in_progress` |
+| [`feature_list.json`](feature_list.json) | Backlog state machine — 41 features, max one `in_progress` |
 | [`init.sh`](init.sh) | State coherence check, run at the start of every session |
 | [`progress/`](progress/) | External memory: session state, and per-feature **effort records** |
 | [`CHECKPOINTS.md`](CHECKPOINTS.md) | Objective session-close criteria (C1–C7) |
-| [`.claude/agents/`](.claude/agents/) | leader, spec_author, implementer, reviewer, test_maintainer |
+| [`.claude/agents/`](.claude/agents/) | leader, spec_author, implementer, reviewer, test_maintainer, suite_runner |
 
 Large features go through the full loop with a **human approval gate**:
 
@@ -356,6 +504,25 @@ pending → [spec_author] → spec_ready → ⏸ HUMAN → in_progress
 ```
 
 Small features skip the spec ceremony but still traverse the state machine. Every agent definition declares which model it runs on. `progress/history.md` records per-feature effort — this repository is the **baseline** the two sibling assessments are measured against.
+
+### What the agents did, and what they got wrong
+
+The honest version, because a process section that only reports successes is marketing.
+
+**What ran autonomously.** Specification, implementation and review for 39 of 41 features, across 95 progress records. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
+
+**Where the human gates were.** Two, both load-bearing. Between `spec_ready` and `in_progress` — no code is written against an unapproved spec, and specs surface *open points with recommendations* rather than silently deciding (one contract pass ended with 13 of them, 5 flagged as needing conscious approval). And before every commit: **Claude never runs `git commit`**. Each phase stops, reports what was done and how to test it by hand, and the human tests it before the history records anything.
+
+**What the human caught that no agent did.** This is the part worth reading:
+
+- The **place-order and login buttons were permanently disabled** — nobody could place an order through the real UI. `<script setup>` only auto-unwraps a top-level ref, so `placeOrder.isPending` was a `Ref` object, and a `Ref` is always truthy. Neither `vue-tsc` nor ESLint could catch it, and the agent that "verified" the feature had curled the server routes without ever rendering a component.
+- **`pnpm dc:down:apps` never stopped SonarQube**, every time, because Docker Compose *excludes* a profile-gated service from the model rather than skipping it — so start and stop had been operating on different service sets since the phase was written.
+- **A laptop brought to its knees**: Docker Desktop's VM held 20.2 GB to run containers using 5.1 GB. Switching to the native engine reclaimed 20 GB — and dissolved a confusion carried since Phase 8, where Testcontainers and the compose stack had been running against *different daemons*.
+- **728 dead letters** from an email quota exhausted weeks earlier, found by reading logs, not by any test.
+
+**What the assistant got wrong, and how it was caught.** Twice it manufactured a cautious-sounding reason not to change something, and both evaporated on a single check — the human's "why would that matter?" was worth more than the reasoning that preceded it. It once relayed an implementer's confident, file-and-line-cited claim about a data-destroying script as fact; the reviewer tested it in an isolated project and it was simply false. It committed twice without authorisation and had to `git reset --soft`. And during the screenshot pass it captured a **1-span Jaeger trace**, reported success, and overwrote a good committed image — the query looked obviously correct and was picking up health checks.
+
+The pattern in every one of those: **a plausible claim, asserted without a check.** Caution that has not been verified is not caution, and confidence is not evidence — which is why the review discipline is "probe the claim", not "read the code and agree".
 
 ## The specification
 
