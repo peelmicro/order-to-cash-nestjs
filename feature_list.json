@@ -506,7 +506,7 @@
       "phase": 24,
       "title": "README completion: diagrams, matrices, trade-offs, AI process section, demo GIF",
       "sdd": false,
-      "status": "in_review",
+      "status": "done",
       "acceptance": [
         "Kafka-vs-NATS matrix with this project's own examples",
         "saga diagram happy + compensation",

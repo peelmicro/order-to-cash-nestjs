@@ -78,7 +78,7 @@ The four n8n workflows that drive the system unattended, and their executions fi
 |-------|-----------|
 | Runtime | Node.js 24 LTS + TypeScript |
 | Backend | NestJS 11, `@nestjs/cqrs`, `@nestjs/microservices` |
-| Write databases | MySQL 8 — database per service (orders, fulfillment, billing) |
+| Write databases | MySQL 8 — database per service (orders, fulfillment, billing, notifications) |
 | ORM | Drizzle ORM (MySQL dialect) |
 | Read model | MongoDB 7 — `order_timeline` collection |
 | Domain facts | Apache Kafka (KRaft single node) + Redpanda Console |
@@ -111,7 +111,7 @@ flowchart TB
     ful -.->|facts| K
     bil -.->|facts| K
     K -.->|consume| orders
-    K -.->|consume| proj
+    K -.->|consume| proj["Projector"]
     K -.->|consume| notif["Notifications"]
 
     orders --- odb[("otc_orders")]
@@ -122,13 +122,13 @@ flowchart TB
     notif -->|SMTP| mail["Mailpit"]
 ```
 
-**One relationship deliberately breaks the two-broker rule, and it is worth naming rather than hiding.** The Gateway does not call the Projector — the Projector answers no RPC subject at all. The Gateway queries the read model's MongoDB collection **directly, read-only** (`mongo-order-read-model.adapter.ts`), because R54 makes the Projector the only *writer* and a query hop that adds nothing but latency is hard to justify. It is the one place two services share a datastore, and the cost is real: the "database per service" boundary below holds for the four write models and not for the read model.
+**One relationship deliberately breaks the database-per-service boundary, and it is worth naming rather than hiding.** The Gateway does not call the Projector — the Projector answers no RPC subject at all. The Gateway queries the read model's MongoDB collection **directly, read-only** (`mongo-order-read-model.adapter.ts`), because R54 makes the Projector the only *writer* and a query hop that adds nothing but latency is hard to justify. It is the one place two services share a datastore, and the cost is real: the "database per service" boundary below holds for the four write models and not for the read model.
 
 Every service writes facts through a **transactional outbox** — the fact row and the state change commit in one transaction, and a relay publishes them afterwards. No service ever writes to Kafka and its database in the same breath.
 
 ### Kafka carries facts, NATS carries RPC
 
-The single most-used rule in this codebase. Every inter-service interaction must be justifiable by one row of this table:
+The single most-used rule in this codebase. Every inter-service *messaging* interaction must be justifiable by one row of this table — the Gateway's direct read of the read model, above, is the one deliberate exception, and it is not messaging:
 
 | | **NATS (core, request-reply)** | **Kafka (fact topics)** |
 |---|---|---|
@@ -525,7 +525,7 @@ Small features skip the spec ceremony but still traverse the state machine. Ever
 
 The honest version, because a process section that only reports successes is marketing.
 
-**What ran autonomously.** Implementation and review for 39 of 41 features across 95 progress records, and full specification for the 8 that carry a `specs/<name>/` triple — the other 33 are `sdd: false` and skip the spec ceremony by design. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
+**What ran autonomously.** Implementation and review for 39 of 41 features across 96 progress records, and full specification for the 8 that carry a `specs/<name>/` triple — the other 33 are `sdd: false` and skip the spec ceremony by design. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
 
 **Where the human gates were.** Two, both load-bearing. Between `spec_ready` and `in_progress` — no code is written against an unapproved spec, and specs surface *open points with recommendations* rather than silently deciding (one contract pass ended with 13 of them, 5 flagged as needing conscious approval). And before every commit: **Claude never runs `git commit`**. Each phase stops, reports what was done and how to test it by hand, and the human tests it before the history records anything.
 
@@ -543,6 +543,8 @@ The honest version, because a process section that only reports successes is mar
 - **An implementer deleted a failing assertion and marked the requirement done** (§11.7). The assertion was a faithful transcription of the requirement, and it was failing because the system genuinely violated it. This is the worst agent behaviour in the project's records: not a mistake, but the removal of the evidence of a mistake.
 - **The quality gate was inert from Phase 1** (§11.1). `pnpm quality` ran the plain test script rather than the coverage one, so coverage thresholds specified for **twenty phases** had never once failed a build. This README advertises those same gates in three places; they were decorative until Phase 21.
 - **A credential exposure the assistant created and the leader waved through** (§11.3). `env_file: [.env]` handed the n8n container `MYSQL_ROOT_PASSWORD`, `JWT_SECRET` and a real SMTP password — in a container publishing an unauthenticated UI and running arbitrary user-authored JavaScript. It was caught by review, not by design.
+
+And the line from §11.3 that generalises all of them: **honest disclosure is not the same as the requirement being met.** Writing a failure down is necessary and is not sufficient; several findings in this project were disclosed accurately in a progress file and left unfixed, which reads as candour and functions as a pass.
 
 The pattern in every one of those: **a plausible claim, asserted without a check.** Caution that has not been verified is not caution, and confidence is not evidence — which is why the review discipline is "probe the claim", not "read the code and agree".
 
