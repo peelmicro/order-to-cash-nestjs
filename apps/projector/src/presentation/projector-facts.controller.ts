@@ -31,7 +31,12 @@ import type { Envelope } from '@otc/contracts';
 import { UnknownFactTypeError } from '../domain/fact-projection';
 import { ProjectFactCommand } from '../application/commands/project-fact.command';
 import { FACT_RETRY_DISPATCHER, type DispatchesFactRetries } from '../infrastructure/messaging/fact-retry-dispatcher';
-import { extractKafkaTraceContext, startChildSpan, type KafkaHeaderCarrier } from '../infrastructure/observability/trace-context';
+import {
+  activeTraceId,
+  extractKafkaTraceContext,
+  startChildSpan,
+  type KafkaHeaderCarrier,
+} from '../infrastructure/observability/trace-context';
 import {
   BILLING_FACTS_TOPIC,
   FULFILLMENT_FACTS_TOPIC,
@@ -87,8 +92,20 @@ export interface ProjectorFactsControllerLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
 
+// R58 closeout (design.md §4.4, Phase 25 traceability audit
+// `progress/review_traceability_audit.md` §3) — alongside `message`/`meta`,
+// read from the ACTIVE span, same formula as `saga-facts.controller.ts`'s
+// own CONSOLE_LOGGER: `route`'s malformed-envelope branch below now
+// extracts-and-continues the inbound message's OWN trace context BEFORE
+// parsing, so a producer bug in an otherwise well-traced fact still logs
+// its real originating traceId; a message with no `traceparent` header (or
+// no OTel provider registered, e.g. a plain unit test) yields `undefined`,
+// and the key is omitted entirely.
 const CONSOLE_LOGGER: ProjectorFactsControllerLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 @Controller()
@@ -122,27 +139,45 @@ export class ProjectorFactsController {
   }
 
   private async route(topic: string, payload: unknown, kafkaContext: KafkaContext): Promise<void> {
+    // OR4/R57 (design.md §4.3), widened for R58 closeout (design.md §4.4,
+    // Phase 25 traceability audit
+    // `progress/review_traceability_audit.md` §3): extracted BEFORE
+    // `parseFactEnvelope` runs (not only after) — the inbound Kafka
+    // message's headers are readable regardless of whether ITS PAYLOAD
+    // parses, so a producer bug that still carried a real `traceparent`
+    // (every fact this fleet's own outbox relays publish does) lets even
+    // the malformed-envelope log-and-ack branch below log its real
+    // originating traceId — same widening `saga-facts.controller.ts`'s own
+    // R58 closeout already made.
+    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
+    const extracted = extractKafkaTraceContext(headers);
+
     let envelope: Envelope;
     try {
       envelope = parseFactEnvelope(payload);
     } catch (error) {
       // PR3 — log-and-ack: a malformed value cannot be projected, and
-      // redelivery cannot fix a producer bug.
-      this.logger.error(
-        'projector-facts.controller: malformed fact envelope, acknowledged without processing',
-        { topic, error: error instanceof Error ? error.message : String(error) },
-      );
+      // redelivery cannot fix a producer bug. No `correlationId` is logged
+      // here — a malformed envelope has no trustworthy `correlationId` to
+      // attach (same, pre-existing, by-design omission
+      // `saga-facts.controller.ts`'s own malformed-envelope branch
+      // documents), not a gap this closeout introduces.
+      await otelContext.with(extracted, async () => {
+        this.logger.error(
+          'projector-facts.controller: malformed fact envelope, acknowledged without processing',
+          { topic, error: error instanceof Error ? error.message : String(error) },
+        );
+      });
       return;
     }
 
     // OR4/R57 (design.md §4.3) — the fact-consume entry point is one of
-    // the two points this feature creates a manual span at. Extracts the
-    // `traceparent` the outbox relay of the PRODUCING service injected and
-    // wraps the whole retry-then-DLQ dispatch below in it, so every retry
-    // attempt AND any eventual DLQ publish (`kafka-dlq-publisher.ts`)
-    // share the same trace id as the fact that triggered them.
-    const headers = kafkaContext.getMessage().headers as KafkaHeaderCarrier | undefined;
-    const extracted = extractKafkaTraceContext(headers);
+    // the two points this feature creates a manual span at. Continues from
+    // the SAME `extracted` context above (the `traceparent` the outbox
+    // relay of the PRODUCING service injected) and wraps the whole
+    // retry-then-DLQ dispatch below in it, so every retry attempt AND any
+    // eventual DLQ publish (`kafka-dlq-publisher.ts`) share the same trace
+    // id as the fact that triggered them.
     const { span, spanContext } = startChildSpan(`fact.consume ${envelope.eventType}`, extracted, SpanKind.CONSUMER);
 
     // OR1/A4b — retried in-line with backoff, dead-lettered (offset still
@@ -158,9 +193,13 @@ export class ProjectorFactsController {
             if (error instanceof UnknownFactTypeError) {
               // PR4 — log-and-ack, NOT a silent discard: an unknown eventType is
               // visible in the logs, but is never repairable by redelivery.
+              // R58 closeout — `correlationId` is the parsed envelope's own
+              // (always present here, unlike the malformed-envelope branch
+              // above); `traceId` comes from the ACTIVE span this call
+              // still runs inside (CONSOLE_LOGGER's own `activeTraceId()`).
               this.logger.error(
                 'projector-facts.controller: unknown eventType, acknowledged without processing',
-                { topic, eventType: env.eventType, eventId: env.eventId },
+                { topic, eventType: env.eventType, eventId: env.eventId, correlationId: env.correlationId },
               );
               return;
             }

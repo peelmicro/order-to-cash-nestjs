@@ -67,8 +67,13 @@ describe('NotificationDispatchService', () => {
     expect(buildMessage).toHaveBeenCalledWith(ENVELOPE);
     expect(sender.send).toHaveBeenCalledTimes(1);
     // N4 — messageId is attached by dispatch itself, from the envelope's
-    // own eventId; defence in depth only, never the dedup mechanism.
-    expect(sender.send).toHaveBeenCalledWith({ ...MESSAGE, messageId: 'event-1@order-to-cash' });
+    // own eventId; defence in depth only, never the dedup mechanism. R58
+    // closeout (design.md §4.4) — correlationId attached the same way.
+    expect(sender.send).toHaveBeenCalledWith({
+      ...MESSAGE,
+      messageId: 'event-1@order-to-cash',
+      correlationId: 'order-1',
+    });
     expect(deletions).toEqual([]);
   });
 
@@ -176,6 +181,9 @@ describe('NotificationDispatchService', () => {
     expect(errorLog).toHaveBeenCalledTimes(1);
     const [, meta] = errorLog.mock.calls[0]!;
     expect(meta.eventId).toBe('event-1');
+    // R58 closeout (design.md §4.4) — `correlationId` is the envelope's
+    // own, always present.
+    expect(meta.correlationId).toBe('order-1');
     expect(meta.consumer).toBe('notifications');
     expect(meta.sendError).toBe('SMTP timeout');
     expect(meta.compensationError).toBe('MySQL connection reset');

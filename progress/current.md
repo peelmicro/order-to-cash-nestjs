@@ -4,33 +4,33 @@
 > end. On session close, move the summary into `progress/history.md` (with the
 > effort record) and reset this file to the template below.
 
-**Feature:** `documentation_demo` (id 37, phase 24, `sdd: false`)
-**Status:** `in_review` — REJECTED once (`progress/review_documentation_demo.md`, 6 blocking + 5 non-blocking); defects being closed.
-**Session started:** 2026-08-30
+**Feature:** `final_checkpoint` (id 38, phase 25, `sdd: false`)
+**Status:** `in_review` — REJECTED once (`progress/review_final_checkpoint.md`: 5 blocking + 1 blocking-nit + 6 non-blocking); defects being closed.
+**Session started:** 2026-08-31
 
-39 of 41 features `done`. Only 37 (`documentation_demo`) and 38 (`final_checkpoint`) remain.
+40 of 41 features `done`. Only 38 (`final_checkpoint`) remains.
 
 ## Goal
 
-Close Phase 24: reproducible media capture, then the documentation Phase 24 was always meant to be — architecture and saga diagrams, the Kafka-vs-NATS matrix built from this project's own examples, DLQ inspection, trade-offs, assumptions, and an AI-process section written to the honesty discipline rather than around it.
+Close Phase 25 honestly: every `R1`–`R63` traced to a green test, `progress/` snapshots versioned across genuinely different states, and `specs/shared/` clean enough that assessment #8 can start from it unchanged.
 
 ## Decisions taken this session
 
-- **Media capture is a script, not a ritual.** `scripts/capture-media.mjs` / `capture-demo.mjs` (`pnpm media:capture` / `media:demo`) regenerate 9 screenshots and the compensation GIF from a live stack, because #8 and #9 inherit tooling better than they inherit artefacts, and an un-regenerable screenshot becomes a lie as the UI moves. The two n8n images stay manual — n8n 2.x dropped `N8N_BASIC_AUTH_*` for an owner account whose credentials are not in `.env`.
-- **Mailtrap removed rather than worked around.** Its 50/month sandbox quota had silently dead-lettered 728 facts. The adapter was always generic nodemailer-over-SMTP, so Mailtrap demonstrated nothing a self-hosted sink does not, and it was the last real password in `.env`. Mailpit now runs in `docker-compose.infra.yml`.
-- **`.env` regenerated from `.env.example`.** 58 variables documented in the example were absent from the real file, including `KAFKA_BROKERS`, which had been working by accident off a code default rather than by configuration.
-- **The login rate limit closed a contract gap, not a feature request.** `openapi.yaml` had declared `429` on `POST /auth/login` since Pass B with nothing implementing it. Rejected once by review over a config loader where a stray space bricked login entirely and a typo silently disabled the limit.
-- **`R63` minted** — the `429` had no requirement above it and no matrix row. Traceability walks requirement → test, so it is structurally blind to a contract element with nothing requiring it. That is exactly why the promise survived unnoticed.
+- **Rule 3 amended to admit a `Scoped` class — with ratification as the bar, not disclosure.** A row whose shortfall is disclosed only by its own author is explicitly *not* ratified ("the author marking their own homework") and blocks the gate exactly as a `TODO` does. This was not theoretical: on its first real test it caught `R58`, flipped green by its own author on a carve-out that appeared in none of the prior records.
+- **`R56` ratified as a scoped deferral** at the human gate, with its three exclusions stated in the cell: no Gateway process in the test fleet, the Projector excluded, and no assertion of a span on fact consumption.
+- **`R58` closed in code rather than ratified.** The audit named four untraced log sites; sweeping the two services found **nine**.
+- **C7 reworded to hold the no-stack-specifics standard against the *reusable part*** — every normative rule plus columns 1–4 of the matrix — while exempting each assessment's own Status column and any paragraph explicitly labelled as one assessment's aside.
+- **The README was rewritten away from being an internal post-mortem**, on the human's instruction: Quick Start at the top, ASCII diagrams (GitHub failed to render Mermaid), no machine-specific measurements, no `R<n>` numbers in reader-facing prose, and the failure diary replaced by the three principles the discipline actually rests on.
 
 ## Blockers
 
-None. Awaiting the human's re-review call once the review defects are closed.
+None outstanding. Awaiting re-review once the six blocking findings are closed.
 
 ## Notes
 
-- **The leader's own error rate this session is the thing worth carrying forward.** A grep anchored to one indentation depth returned empty and was reported to `spec_author` as established fact ("no `headers:` block exists anywhere"); the file had six. A Jaeger query that looked obviously right captured a 1-span health-check trace, was reported as success, and overwrote a good committed screenshot. A README citation was written with a line number nobody opened. Each is the same shape: **a plausible claim, asserted without a check** — the exact pattern the README's own honesty section names.
-- **Two quiet ledgers remain unwatched**: the DLQ and `saga_ignored_facts`. Both correct, both complete, neither visible to any operator. The strongest remaining candidate before Phase 25.
-- n8n workflows 1–4 are Published and generating orders continuously; unpublish when demo capture is finished.
+- **The leader's error rate is again the thing worth carrying forward.** The coverage tallies in `test-matrix.md` were mis-parsed **four times** by ad-hoc regex, every attempt matching historical prose inside Status cells; an earlier filename matcher reported 144 missing test files that all existed. The reliable checks were the mechanical guard, the file owner's recount, and reading the cells by hand. A tool's output is a hypothesis, not evidence.
+- **The `R58` exclusion I verified and passed was only half the paragraph.** The malformed-envelope carve-out is legitimate and precedented; a second carve-out in the same sentence — the console notification sender, which is the *production degradation fallback* and already holds the `correlationId` on the object it is handed — was not. Checking one claim in a sentence is not checking the sentence.
+- Two ledgers remain unwatched: the DLQ and `saga_ignored_facts`. Correct, complete, and invisible to any operator.
 
 ---
 

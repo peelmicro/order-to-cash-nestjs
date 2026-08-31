@@ -53,7 +53,7 @@
 
 ## C7 — Trilogy reusability (assessment #7 only)
 
-- [ ] `specs/shared/` contains no NestJS, Drizzle, Nuxt or MySQL specifics — assessment #8 can start from it unchanged.
+- [ ] **The reusable part of `specs/shared/` contains no stack specifics** — no NestJS, Drizzle, Nuxt, MySQL, or any other technology particular to one assessment — so #8 can start from it unchanged. "Reusable part" means every normative rule and, in `test-matrix.md`, columns 1–4 (the id, the requirement, the test level and the stack-neutral *file › case* sketch). It deliberately excludes each assessment's own **Status column**, which records *that* assessment's realisation and is expected to name its own stack, test runner and file paths. It also excludes any paragraph **explicitly labelled as one assessment's own aside** — whether it records that assessment's mechanism or its evidence — which is acceptable **only** where the label makes clear the other two may delete it wholesale.
 - [ ] `n8n/workflows/*.json` reference only the Gateway REST API — no database, no broker — so they port to #8 and #9 with a base-URL change.
 - [ ] `progress/history.md` effort records are complete and honest.
 

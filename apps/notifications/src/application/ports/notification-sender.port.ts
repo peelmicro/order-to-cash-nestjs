@@ -33,6 +33,18 @@ export interface NotificationMessage {
    * uniqueness on this header either.
    */
   readonly messageId?: string;
+  /**
+   * R58 closeout (design.md §4.4, Phase 25 traceability audit
+   * `progress/review_traceability_audit.md` §3) — the fact's own
+   * `correlationId`, set by `NotificationDispatchService.dispatch` from
+   * the same envelope `messageId` above is built from. This is the ONLY
+   * way `degrading-notification-sender.ts`'s own structured log (fired on
+   * a permanent SMTP failure) can carry a `correlationId`: `send`'s own
+   * signature carries no envelope, only this message, mirroring
+   * `messageId`'s existing "defence in depth" precedent above rather than
+   * widening the port to accept a whole `Envelope` for one field.
+   */
+  readonly correlationId?: string;
 }
 
 export interface NotificationSender {

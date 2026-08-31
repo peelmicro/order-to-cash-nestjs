@@ -1,13 +1,19 @@
-import { JSONCodec } from 'nats';
+import { JSONCodec, type MsgHdrs } from 'nats';
 import { describe, expect, it, vi } from 'vitest';
 import { StreamHub } from '../../application/stream-hub';
 import { NatsStreamSignalAdapter, ORDER_UPDATED_WILDCARD_SUBJECT, TIMELINE_APPENDED_WILDCARD_SUBJECT } from './nats-stream-signal.adapter';
 
-function fakeSubscription(frames: Uint8Array[]) {
+interface FakeFrame {
+  data: Uint8Array;
+  subject?: string;
+  headers?: MsgHdrs;
+}
+
+function fakeSubscription(frames: (Uint8Array | FakeFrame)[], subject: string) {
   return {
     async *[Symbol.asyncIterator]() {
-      for (const data of frames) {
-        yield { data };
+      for (const frame of frames) {
+        yield frame instanceof Uint8Array ? { data: frame, subject } : { subject, ...frame };
       }
     },
     unsubscribe: vi.fn(),
@@ -17,8 +23,8 @@ function fakeSubscription(frames: Uint8Array[]) {
 describe('NatsStreamSignalAdapter', () => {
   it('R55 — decodes readmodel.order.updated frames and publishes them onto the StreamHub', async () => {
     const codec = JSONCodec<{ orderId: string; status: string }>();
-    const orderUpdatedSub = fakeSubscription([codec.encode({ orderId: 'order-1', status: 'placed' })]);
-    const timelineSub = fakeSubscription([]);
+    const orderUpdatedSub = fakeSubscription([codec.encode({ orderId: 'order-1', status: 'placed' })], 'readmodel.order.updated.order-1');
+    const timelineSub = fakeSubscription([], 'readmodel.timeline.appended.order-1');
     const connection = {
       subscribe: vi.fn((subject: string) => (subject === ORDER_UPDATED_WILDCARD_SUBJECT ? orderUpdatedSub : timelineSub)),
     };
@@ -38,12 +44,12 @@ describe('NatsStreamSignalAdapter', () => {
     expect((received[0] as { orderId: string }).orderId).toBe('order-1');
   });
 
-  it('a malformed frame is logged and skipped, without breaking consumption of the next well-formed frame', async () => {
+  it('a malformed frame is logged — as a structured JSON line naming its subject — and skipped, without breaking consumption of the next well-formed frame', async () => {
     const codec = JSONCodec<{ orderId: string }>();
     const malformed = new TextEncoder().encode('not json');
     const wellFormed = codec.encode({ orderId: 'order-2' });
-    const orderUpdatedSub = fakeSubscription([malformed, wellFormed]);
-    const timelineSub = fakeSubscription([]);
+    const orderUpdatedSub = fakeSubscription([malformed, wellFormed], 'readmodel.order.updated.order-2');
+    const timelineSub = fakeSubscription([], 'readmodel.timeline.appended.order-2');
     const connection = { subscribe: vi.fn((subject: string) => (subject === ORDER_UPDATED_WILDCARD_SUBJECT ? orderUpdatedSub : timelineSub)) };
     const hub = new StreamHub({ now: () => new Date('2026-08-18T10:00:00.000Z') }, 10);
     const received: unknown[] = [];
@@ -54,15 +60,19 @@ describe('NatsStreamSignalAdapter', () => {
     adapter.start();
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(errorSpy).toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const logged = JSON.parse(errorSpy.mock.calls[0]![0] as string) as Record<string, unknown>;
+    expect(logged.level).toBe('error');
+    expect(logged.message).toBe('gateway: nats-stream-signal — failed to decode a signal frame');
+    expect(logged.subject).toBe('readmodel.order.updated.order-2');
     expect(received).toHaveLength(1);
     expect((received[0] as { orderId: string }).orderId).toBe('order-2');
     errorSpy.mockRestore();
   });
 
   it('stop() unsubscribes both subscriptions', async () => {
-    const orderUpdatedSub = fakeSubscription([]);
-    const timelineSub = fakeSubscription([]);
+    const orderUpdatedSub = fakeSubscription([], 'readmodel.order.updated.*');
+    const timelineSub = fakeSubscription([], 'readmodel.timeline.appended.*');
     const connection = { subscribe: vi.fn((subject: string) => (subject === ORDER_UPDATED_WILDCARD_SUBJECT ? orderUpdatedSub : timelineSub)) };
     const hub = new StreamHub({ now: () => new Date() }, 10);
 

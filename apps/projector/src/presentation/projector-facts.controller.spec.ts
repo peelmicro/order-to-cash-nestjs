@@ -102,6 +102,9 @@ describe('ProjectorFactsController', () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(logger.error).toHaveBeenCalledTimes(1);
     expect(logger.error.mock.calls[0]![0]).toContain('unknown eventType');
+    // R58 closeout (design.md §4.4) — `correlationId` is the parsed
+    // envelope's own, always present for this branch.
+    expect(logger.error.mock.calls[0]![1]).toMatchObject({ correlationId: envelope.correlationId });
   });
 
   it('dispatches a well-formed, known fact to the CommandBus exactly once', async () => {

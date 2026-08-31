@@ -7,6 +7,7 @@
 // rather than an accident of error handling.
 import type { Envelope } from '@otc/contracts';
 import { projectFact } from '../domain/fact-projection';
+import { activeTraceId } from '../infrastructure/observability/trace-context';
 import { CONSUMER_NAMES, type ConsumerName } from './ports/consumer-name';
 import type { AppliedOrderTimeline, ApplyOutcome, ReadModelWriter } from './ports/read-model-writer.port';
 import type { UpdateSignalPublisher } from './ports/update-signal.port';
@@ -15,8 +16,23 @@ export interface ProjectionApplyServiceLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
 
+// R58 closeout (design.md §4.4, Phase 25 traceability audit
+// `progress/review_traceability_audit.md` §3) — the update-signal-
+// publication-failed log now carries `traceId`, read from the ACTIVE span
+// at the moment it logs (this method's own caller —
+// `projector-facts.controller.ts`'s `route` — wraps the whole
+// retry-then-DLQ dispatch, including this callback, in the fact-consume
+// span). `activeTraceId()` lives in `infrastructure/observability/` — a
+// direct cross-layer import from this application-layer file, the same
+// deliberate, narrow exception `notification-dispatch.service.ts` takes
+// for the identical reason (see that file's own comment): an OTel-only
+// helper with zero framework/driver coupling, reused via this repo's one
+// existing pattern rather than inventing a port for a single call site.
 const CONSOLE_LOGGER: ProjectionApplyServiceLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 const CONSUMER: ConsumerName = CONSUMER_NAMES[0];
@@ -51,6 +67,7 @@ export class ProjectionApplyService {
       } catch (error) {
         this.logger.error('projection-apply.service: update signal publication failed — logged and swallowed (PR19)', {
           eventId: envelope.eventId,
+          correlationId: envelope.correlationId,
           orderId: document.orderId,
           subjects: [`readmodel.order.updated.${document.orderId}`, `readmodel.timeline.appended.${document.orderId}`],
           error: error instanceof Error ? error.message : String(error),

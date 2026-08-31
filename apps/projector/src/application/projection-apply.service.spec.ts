@@ -72,7 +72,9 @@ describe('projection-apply.service', () => {
     expect(logger.error).toHaveBeenCalledTimes(1);
     const [message, meta] = (logger.error as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(message).toContain('PR19');
-    expect(meta).toMatchObject({ orderId: 'order-1', error: 'NATS unreachable' });
+    // R58 closeout (design.md §4.4) — `correlationId` is the envelope's
+    // own, always present (never derived from the writer's outcome).
+    expect(meta).toMatchObject({ orderId: 'order-1', correlationId: 'order-1', error: 'NATS unreachable' });
   });
 
   it('publishes nothing when the writer reports duplicate (PR18 suppress-on-duplicate)', async () => {

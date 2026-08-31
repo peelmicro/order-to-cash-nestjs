@@ -59,3 +59,19 @@ export function startChildSpan(name: string, parentContext: Context, kind: SpanK
   const span = tracer().startSpan(name, { kind }, parentContext);
   return { span, spanContext: trace.setSpan(parentContext, span) };
 }
+
+/**
+ * R58 closeout (design.md §4.4, Phase 25 traceability audit
+ * `progress/review_traceability_audit.md` §3) — the ACTIVE span's own real
+ * `traceId`, or `undefined` if none is active. Same formula, same shape as
+ * Orders' and the Gateway's own copies of this function
+ * (`trace.getActiveSpan()?.spanContext().traceId`) — not shared runtime
+ * code, per the same "~30 lines per service" reasoning `OI12`/design.md
+ * §4.6 already establish for other small, service-local helpers. Every
+ * caller omits the `traceId` key entirely rather than log the literal
+ * string `"undefined"` when nothing is active (no OTel provider
+ * registered, e.g. a plain unit test).
+ */
+export function activeTraceId(): string | undefined {
+  return trace.getActiveSpan()?.spanContext().traceId;
+}

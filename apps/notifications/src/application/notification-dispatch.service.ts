@@ -33,6 +33,7 @@
 // send whoever debugs the incident to the wrong subsystem, which is worse
 // than losing the orphaned-row cleanup automation for that one event.
 import type { Envelope } from '@otc/contracts';
+import { activeTraceId } from '../infrastructure/observability/trace-context';
 import { CONSUMER_NAMES, type ConsumerName } from './ports/consumer-name';
 import type { NotificationMessage, NotificationSender } from './ports/notification-sender.port';
 import type { TransactionContext } from './ports/unit-of-work.port';
@@ -57,8 +58,22 @@ export interface NotificationDispatchServiceLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
 
+// R58 closeout (design.md §4.4, Phase 25 traceability audit
+// `progress/review_traceability_audit.md` §3) — the compensating-delete-
+// failure log now carries `traceId`, read from the ACTIVE span at the
+// moment it logs (this method's own caller — `notification-facts.controller
+// .ts`'s `route` — wraps the whole retry-then-DLQ dispatch, including this
+// call, in the fact-consume span). `activeTraceId()` lives in
+// `infrastructure/observability/` — a direct cross-layer import from this
+// application-layer file, a deliberate, narrow exception: an OTel-only
+// helper with zero framework/driver coupling, reused via this repo's one
+// existing pattern (every presentation/infrastructure call site this
+// closeout touches) rather than inventing a port for a single call site.
 const CONSOLE_LOGGER: NotificationDispatchServiceLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 const CONSUMER: ConsumerName = CONSUMER_NAMES[0];
@@ -106,8 +121,14 @@ export class NotificationDispatchService {
       const message = buildMessage(envelope);
       // N4 — attach messageId here, once, so every one of the seven
       // templates stays free of this concern (NotificationMessage.messageId's
-      // doc: defence in depth only).
-      await this.sender.send({ ...message, messageId: `${envelope.eventId}@order-to-cash` });
+      // doc: defence in depth only). R58 closeout — `correlationId`
+      // attached the same way, for the same reason (see
+      // `NotificationMessage.correlationId`'s own doc).
+      await this.sender.send({
+        ...message,
+        messageId: `${envelope.eventId}@order-to-cash`,
+        correlationId: envelope.correlationId,
+      });
     } catch (sendError) {
       // N13 — the compensating delete's OWN failure must never replace
       // `sendError` as what this method throws (this file's header). Caught,
@@ -120,6 +141,7 @@ export class NotificationDispatchService {
           'notification-dispatch.service: compensating delete failed after a failed send — the ledger row is orphaned and must be cleared by hand',
           {
             eventId: envelope.eventId,
+            correlationId: envelope.correlationId,
             consumer: CONSUMER,
             sendError: sendError instanceof Error ? sendError.message : String(sendError),
             compensationError: compensationError instanceof Error ? compensationError.message : String(compensationError),

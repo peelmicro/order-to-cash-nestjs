@@ -4,17 +4,28 @@
 // (specs/observability_reliability/design.md §4.1), byte-identical (after
 // this banner) to the canonical, guarded by
 // idempotent-consumer.parity.spec.ts (OI12, widened for this second
-// canonical pair — A4f/A4g). `FactRetryDispatcher` has no store of its
-// own and no dependency on how this service's own idempotency ledger is
-// kept (MySQL here, MongoDB in the projector) — it sits one layer ABOVE
-// `IdempotentConsumer`/`NotificationDispatchService`, at
-// `notification-facts.controller.ts`'s own dispatch point, wrapping the
-// SAME `commandBus.execute(...)` call that already existed. If you are
-// editing this file, edit the canonical (apps/orders) and re-copy; never
-// fork it here.
+// canonical pair — A4f/A4g), EXCEPT for the R58 closeout below, which
+// `idempotent-consumer.parity.spec.ts`'s own comment on
+// `RETRY_DISPATCHER_TRACE_DIVERGENT_MARKER` already anticipates: "a future
+// pass that gives projector/notifications their own `activeTraceId()`
+// should backport these lines." This IS that pass — this copy now matches
+// its `apps/projector` peer byte-for-byte (both gained the identical
+// `activeTraceId()`/`correlationId` addition; the guard's own peer-parity
+// case, not equality against the canonical, is what protects this).
+// `FactRetryDispatcher` has no store of its own and no dependency on how
+// this service's own idempotency ledger is kept (MySQL here, MongoDB in
+// the projector) — it sits one layer ABOVE `IdempotentConsumer`/
+// `NotificationDispatchService`, at `notification-facts.controller.ts`'s
+// own dispatch point, wrapping the SAME `commandBus.execute(...)` call
+// that already existed. Deliberately does NOT also backport A7's
+// `otc_fact_processing_latency_ms` recording (out of R58's scope —
+// neither service owns a `Meter` bootstrap yet), so this copy still
+// diverges from the canonical on that one point; only the R58
+// traceId/correlationId lines are backported here.
 import type { Envelope } from '@otc/contracts';
 import type { Clock } from '../../application/ports/clock.port.js';
 import type { ConsumerName } from '../../application/ports/consumer-name.js';
+import { activeTraceId } from '../observability/trace-context.js';
 
 export interface FactRetryPolicy {
   readonly maxAttempts: number;
@@ -132,11 +143,14 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
       firstFailedAt,
       failedAt,
     });
+    const traceId = activeTraceId();
     this.logger.error('fact-retry-dispatcher: exhausted attempts, fact dead-lettered', {
       sourceTopic,
       consumer,
       eventType: envelope.eventType,
       eventId: envelope.eventId,
+      correlationId: envelope.correlationId,
+      ...(traceId ? { traceId } : {}),
       attempts: this.policy.maxAttempts,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     });

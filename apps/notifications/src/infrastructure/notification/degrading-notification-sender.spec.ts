@@ -103,6 +103,24 @@ describe('DegradingNotificationSender — in isolation', () => {
     expect(String(calls[0]!.meta.reason)).not.toContain('undefined');
   });
 
+  // R58 closeout (design.md §4.4, Phase 25 traceability audit
+  // `progress/review_traceability_audit.md` §3) — `correlationId` is
+  // threaded from the message's own field (set by
+  // `NotificationDispatchService.dispatch`, `notification-dispatch
+  // .service.spec.ts`'s own assertion) onto the degraded-send log line.
+  it('a permanent failure\'s log carries the message\'s OWN correlationId when present', async () => {
+    const inner: NotificationSender = { send: vi.fn().mockRejectedValue(QUOTA_EXHAUSTED_ERROR) };
+    const fallback: NotificationSender = { send: vi.fn().mockResolvedValue(undefined) };
+    const { logger, calls } = recordingLogger();
+    const sender = new DegradingNotificationSender(inner, fallback, logger);
+    const messageWithCorrelation: NotificationMessage = { ...MESSAGE, correlationId: 'order-1' };
+
+    await expect(sender.send(messageWithCorrelation)).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.meta.correlationId).toBe('order-1');
+  });
+
   it('a permanent failure is distinguishable in logs from a successful send — the log line only fires on degradation', async () => {
     const inner: NotificationSender = { send: vi.fn().mockResolvedValue(undefined) };
     const fallback: NotificationSender = { send: vi.fn().mockResolvedValue(undefined) };
@@ -228,7 +246,14 @@ describe('DegradingNotificationSender composed with the real NotificationDispatc
     // exactly the outcome this feature exists to avoid for a PERMANENT
     // failure.
     expect(deletions).toEqual([]);
-    expect(fallback.send).toHaveBeenCalledWith({ ...MESSAGE, messageId: 'event-degraded-1@order-to-cash' });
+    // R58 closeout (design.md §4.4) — `correlationId` is now attached
+    // alongside `messageId`, same "defence in depth" mechanism, from the
+    // envelope's own `correlationId`.
+    expect(fallback.send).toHaveBeenCalledWith({
+      ...MESSAGE,
+      messageId: 'event-degraded-1@order-to-cash',
+      correlationId: 'order-1',
+    });
   });
 
   it('a redelivered eventId after a permanent-failure degrade is a genuine duplicate — never sent twice', async () => {

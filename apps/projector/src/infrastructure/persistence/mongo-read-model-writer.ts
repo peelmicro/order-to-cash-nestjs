@@ -12,14 +12,27 @@ import type {
 } from '../../application/ports/read-model-writer.port';
 import { deltaToPipeline, dedupKeyOf, TIMELINE_ORDER_VERSION } from './delta-to-pipeline';
 import { MongoIdempotentConsumer } from '../messaging/idempotent-consumer';
+import { activeTraceId } from '../observability/trace-context';
 import type { OrderTimelineDocument } from './order-timeline.document';
 
 export interface ReadModelWriterLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
 
+// R58 closeout (design.md §4.4, Phase 25 traceability audit
+// `progress/review_traceability_audit.md` §3) — the lost-insert-race retry
+// log now carries `traceId`, read from the ACTIVE span at the moment it
+// logs (`apply`'s caller — `ProjectionApplyService.apply` — runs inside
+// the fact-consume span `projector-facts.controller.ts`'s `route` starts),
+// same formula every other call site this closeout touches uses.
+// `correlationId` is threaded from the call site below (`orderId` doubles
+// as this fact's own `correlationId` by construction — see
+// `upsertPlaceholder`'s own comment).
 const CONSOLE_LOGGER: ReadModelWriterLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 /**
@@ -130,8 +143,15 @@ export class MongoReadModelWriter implements ReadModelWriter {
       if (!MongoIdempotentConsumer.isDuplicateKeyError(error)) {
         throw error;
       }
+      // R58 closeout — `orderId` doubles as this fact's own `correlationId`
+      // by construction (PR15 above, `domain/fact-projection.ts`: `orderId:
+      // envelope.correlationId`; specs/shared/saga.md: "the order id is the
+      // correlationId of every fact"), so logging it under BOTH keys costs
+      // nothing and satisfies R58's "carries correlationId" clause without
+      // widening this port to carry a whole envelope just for one log line.
       this.logger.error('mongo-read-model-writer: placeholder upsert lost the insert race, retrying once', {
         orderId,
+        correlationId: orderId,
       });
       await this.collection.updateOne(
         { _id: orderId } as never,

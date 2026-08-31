@@ -33,14 +33,24 @@
 //     committed, nothing calls `compensation.delete`, the Kafka offset
 //     commits) exactly as if the send had genuinely succeeded.
 import type { NotificationMessage, NotificationSender } from '../../application/ports/notification-sender.port';
+import { activeTraceId } from '../observability/trace-context';
 import { classifySendFailure } from './send-failure-classifier';
 
 export interface DegradingNotificationSenderLogger {
   error(message: string, meta: Record<string, unknown>): void;
 }
 
+// R58 closeout (design.md §4.4, Phase 25 traceability audit
+// `progress/review_traceability_audit.md` §3) — alongside `message`/`meta`,
+// read from the ACTIVE span, same formula every other call site this
+// closeout touches uses. `correlationId` is threaded from the call site
+// below (`NotificationMessage.correlationId`, set by
+// `NotificationDispatchService.dispatch`).
 const CONSOLE_LOGGER: DegradingNotificationSenderLogger = {
-  error: (message, meta) => console.error(JSON.stringify({ level: 'error', message, ...meta })),
+  error: (message, meta) => {
+    const traceId = activeTraceId();
+    console.error(JSON.stringify({ level: 'error', message, ...meta, ...(traceId ? { traceId } : {}) }));
+  },
 };
 
 function describeError(error: unknown): { message: string; code?: unknown; responseCode?: unknown } {
@@ -82,6 +92,7 @@ export class DegradingNotificationSender implements NotificationSender {
           to: message.to,
           subject: message.subject,
           messageId: message.messageId,
+          correlationId: message.correlationId,
           reason: describeError(error),
         },
       );

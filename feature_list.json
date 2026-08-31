@@ -520,7 +520,7 @@
       "phase": 25,
       "title": "Final checkpoint: backlog done, traceability complete, specs/shared/ stack-agnostic",
       "sdd": false,
-      "status": "pending",
+      "status": "done",
       "acceptance": [
         "every EARS requirement traced to a green test",
         "progress/ snapshots versioned in different states",

@@ -1,12 +1,43 @@
 # Order To Cash
 
-> 🚧 **Under construction.** This repository is being built phase by phase. The table below is the honest state of play — anything not marked ✅ does not exist yet. The full documentation (architecture diagrams, saga walkthrough, trade-offs, demo GIF) lands in Phase 24.
-
 An **order-to-cash lifecycle backbone** for a B2B EDI / e-invoicing platform, built as event-driven microservices. It models the classic EDI exchange as a distributed workflow:
 
 **Order (ORDERS) → Stock reservation → Credit check → Order confirmation (ORDRSP) → Despatch advice (DESADV) → Invoice (INVOIC) → Payment (remittance)**
 
 — with an orchestrated **saga** coordinating the flow across services and **compensating** when a step fails. Deliberately B2B in shape: the retailer never pays at order time; a credit check gates despatch, and payment arrives at the end of the cycle, within payment terms.
+
+## Demo
+
+![Placing a `.99` order and watching the saga compensate live](docs/screenshots/demo-compensation.gif)
+
+*A total ending in `.99` makes the credit check reject the hold. The saga releases the stock it had already reserved, then cancels the order — both steps visible in the timeline as they happen.*
+
+## Quick Start
+
+```bash
+cp .env.example .env          # dev defaults; no account or API key needed anywhere
+
+pnpm dc:up:apps               # build and start the full stack (19 containers)
+pnpm dc:seed                  # retailers, companies, products, opening stock and credit
+
+open http://localhost:3000    # login: operator / the password in .env
+```
+
+A cold start reaches a demoable, seeded state in **35–42 seconds**.
+
+Then place an order and watch it run: **placed → stock reserved → credit approved → confirmed → despatched → invoiced**, live over SSE. Register the payment from the Billing page and it closes to **completed**. Give any order a total ending in **`.99`** and the credit check refuses it, so you see the compensation path instead.
+
+| | |
+|---|---|
+| Web UI | http://localhost:3000 |
+| Gateway API + Swagger | http://localhost:3001/docs |
+| Mailpit (notification emails) | http://localhost:8025 |
+| Redpanda Console (Kafka + DLQs) | http://localhost:8080 |
+| Jaeger (traces) | http://localhost:16686 |
+| Grafana (dashboard) | http://localhost:3030 |
+| n8n (demo workflows) | http://localhost:5678 |
+
+Prefer to drive it from the terminal? `pnpm order:place` runs the happy path, `pnpm order:place --qty 1` triggers the `.99` compensation, and `pnpm saga:watch` prints where every order got to.
 
 ## Why this project exists
 
@@ -94,35 +125,45 @@ The four n8n workflows that drive the system unattended, and their executions fi
 
 Six NestJS services talking over **two brokers with different jobs**. Four of them own a MySQL database each (`otc_orders`, `otc_fulfillment`, `otc_billing`, `otc_notifications`); the Projector owns the MongoDB read model; the Gateway owns no store of its own. Clean Architecture inside every service — `presentation → application → domain`, with `infrastructure` implementing the ports the application declares, and `domain/` holding zero framework imports (enforced by an ESLint rule, not by convention).
 
-```mermaid
-flowchart TB
-    web["Web · Nuxt 4"] -->|REST + SSE| gw["Gateway / BFF"]
-    n8n["n8n · the external world"] -->|REST| gw
+```text
+        Web (Nuxt 4)                     n8n  ("the external world")
+             |                                     |
+             |  REST + SSE                         |  REST
+             v                                     v
+      +--------------------------------------------------+
+      |              Gateway / BFF  (REST, JWT)           |
+      +--------------------------------------------------+
+         |   |   |                                  |
+         |   |   |  NATS RPC (request-reply)        |  direct read-only query
+         |   |   |                                  v
+         |   |   |                          [ MongoDB read model ]
+         |   |   |                                  ^
+         |   |   |                                  | writes
+         |   |   +---------------------------+      |
+         v   v                               v      |
+   +-----------+     NATS RPC        +-------------+|   +---------------+
+   |  Orders   |-------------------->| Fulfillment ||   | Notifications |
+   | (saga     |  stock.reserve      +-------------+|   +---------------+
+   |  orchestr)|  despatch.create           |       |          |
+   +-----------+                            |       |          | SMTP
+         |            NATS RPC        +-----------+ |          v
+         |--------------------------->|  Billing  | |      [ Mailpit ]
+         |            credit.hold     +-----------+ |
+         |            invoice.issue         |       |
+         |                                  |    +-----------+
+         |   facts                facts     |    | Projector |
+         v          v                       v    +-----------+
+   ==================================================^==========
+             Kafka  -  3 fact topics + 3 DLQ topics  |
+   ===================================================
+             ^                                   consume
+             +---- consumed by Orders, Projector, Notifications
 
-    gw -->|NATS RPC| orders["Orders · saga orchestrator"]
-    gw -->|NATS RPC| ful["Fulfillment"]
-    gw -->|NATS RPC| bil["Billing"]
-    gw -->|read-only query| mongo
-
-    orders -->|NATS RPC: stock.reserve, despatch.create| ful
-    orders -->|NATS RPC: credit.hold, invoice.issue| bil
-
-    orders -.->|facts| K(["Kafka · 3 fact topics + 3 DLQ"])
-    ful -.->|facts| K
-    bil -.->|facts| K
-    K -.->|consume| orders
-    K -.->|consume| proj["Projector"]
-    K -.->|consume| notif["Notifications"]
-
-    orders --- odb[("otc_orders")]
-    ful --- fdb[("otc_fulfillment")]
-    bil --- bdb[("otc_billing")]
-    notif --- ndb[("otc_notifications")]
-    proj -->|writes| mongo[("MongoDB read model")]
-    notif -->|SMTP| mail["Mailpit"]
+   Write models:  otc_orders   otc_fulfillment   otc_billing   otc_notifications
+                  (MySQL, one database per service)
 ```
 
-**One relationship deliberately breaks the database-per-service boundary, and it is worth naming rather than hiding.** The Gateway does not call the Projector — the Projector answers no RPC subject at all. The Gateway queries the read model's MongoDB collection **directly, read-only** (`mongo-order-read-model.adapter.ts`), because R54 makes the Projector the only *writer* and a query hop that adds nothing but latency is hard to justify. It is the one place two services share a datastore, and the cost is real: the "database per service" boundary below holds for the four write models and not for the read model.
+**One relationship deliberately breaks the database-per-service boundary, and it is worth naming rather than hiding.** The Gateway does not call the Projector — the Projector answers no RPC subject at all. The Gateway queries the read model's MongoDB collection **directly, read-only** (`mongo-order-read-model.adapter.ts`), because the Projector is the only service that *writes* it and a query hop that adds nothing but latency is hard to justify. It is the one place two services share a datastore, and the cost is real: the "database per service" boundary below holds for the four write models and not for the read model.
 
 Every service writes facts through a **transactional outbox** — the fact row and the state change commit in one transaction, and a relay publishes them afterwards. No service ever writes to Kafka and its database in the same breath.
 
@@ -148,20 +189,16 @@ So `credit.hold` returning "approved" over NATS changes nothing on its own; `cre
 
 Orchestrated, not choreographed — Orders owns the flow, so there is exactly one place to read it and one place to put compensation. Full step tables and sequence diagrams are in [`specs/shared/saga.md`](specs/shared/saga.md); this is the shape:
 
-```mermaid
-flowchart LR
-    P["placed"] -->|stock.reserved.v1| SR["stock_reserved"]
-    %% credit.approved.v1 moves the order through TWO states in one handler
-    SR -->|credit.approved.v1| CA["credit_approved"]
-    CA --> C["confirmed"]
-    C -->|order.despatched.v1| D["despatched"]
-    D -->|invoice.issued.v1| I["invoiced"]
-    I -->|payment.received.v1| PD["paid"]
-    PD -->|credit.released.v1| DONE["completed"]
+```text
+  HAPPY PATH
+  placed --stock.reserved--> stock_reserved --credit.approved--> credit_approved
+      --> confirmed --order.despatched--> despatched --invoice.issued--> invoiced
+      --payment.received--> paid --credit.released--> completed
 
-    P -->|stock.rejected.v1| X1["cancelled<br/>nothing to undo"]
-    SR -->|credit.rejected.v1| REL["stock.release"]
-    REL -->|stock.released.v1| X2["cancelled<br/>credit_rejected"]
+  COMPENSATION
+  placed --stock.rejected--> cancelled                (nothing to undo)
+
+  stock_reserved --credit.rejected--> [release the stock] --stock.released--> cancelled
 ```
 
 Two edges need a word of explanation. `credit.approved.v1` moves the order through **two** states in a single handler (`stock_reserved → credit_approved → confirmed`, one aggregate load/save), emitting `order.confirmed.v1` as a *result* — Orders consumes that fact and deliberately does nothing with it (`saga-steps.ts` maps it to `skip`), which is why no edge is labelled with it. And the final hop to `completed` is driven by `credit.released.v1`, not by the payment: Billing emits `payment.received.v1` and `credit.released.v1` from one transaction, and it is the second that closes the saga.
@@ -180,7 +217,7 @@ Compensation is ordered and separately visible: on `credit.rejected.v1` the rese
 
 > **If you run more than one Docker daemon** (e.g. Docker Desktop *and* the system Engine), be aware that `docker` follows your active **context** while Testcontainers does not — it reads `DOCKER_HOST`, then falls back to `/var/run/docker.sock`. The integration tests can therefore run against a different daemon than your compose stack, and their disposable containers will be invisible to a plain `docker ps`. Everything still works; to watch them, point the CLI at the same socket: `DOCKER_HOST=unix:///var/run/docker.sock docker ps`.
 >
-> **On Linux, prefer the native Docker Engine over Docker Desktop** — and if you have both, `docker context use default` removes the split above entirely by pointing the CLI at the same socket Testcontainers already uses. Docker Desktop on Linux runs every container inside a VM: measured on this project's own dev machine, `qemu-system-x86` held **20.2 GB** of host RAM to run a stack whose containers actually used 5.1 GB, and it did not hand that memory back when the containers stopped — only stopping Docker Desktop itself did (`systemctl --user stop docker-desktop.service`). The native Engine also writes through `overlay2` straight to the host filesystem rather than through a VM disk image, which matters for a stack running four databases plus SonarQube's embedded Elasticsearch. After switching, rebuild once (`pnpm dc:build:apps`) — images and volumes do not migrate between daemons, but every store here is reproducible from `pnpm dc:seed`.
+> **On Linux, prefer the native Docker Engine over Docker Desktop.** Docker Desktop on Linux runs every container inside a VM, which costs a large, persistent slice of host RAM and does not release it when the containers stop. The native Engine also writes straight to the host filesystem rather than through a VM disk image, which matters for a stack running four databases. If you have both, `docker context use default` also removes the two-daemon split described above by pointing the CLI at the same socket Testcontainers already uses.
 
 ```bash
 git clone https://github.com/peelmicro/order-to-cash-nestjs.git
@@ -240,7 +277,7 @@ docker run --rm --network otc-net -v "$PWD:/usr/src" -e SONAR_TOKEN \
 
 — the same `--network otc-net` / `-Dsonar.host.url=http://otc-sonarqube:9000` shape documented above, verified end to end (exit 0, gate `OK`) as `pnpm run sonar:scan` itself, not just as a standalone `docker run`.
 
-**A real trap on this machine, not a fresh-clone problem.** `pnpm dc:up:sonar` currently fails here with `network otc-net was found but has incorrect label com.docker.compose.network set to ""` — `otc-net` was created by hand (`docker network create`) earlier in this environment's life rather than by `docker compose`, so it lacks compose's own network label and every `docker compose ... up` against it refuses to proceed. A fresh clone, where compose creates `otc-net` itself on first `pnpm dc:up:infra`, would never hit this. **Do not recreate the network to fix it** — 18 other containers are attached to it, and recreating means downtime for all of them for a label mismatch that only exists on this one machine. The working alternative, when this trap fires, is to start the SonarQube container directly rather than through compose, mirroring `docker-compose.infra.yml`'s `sonarqube` service definition field-for-field (image, env, named volumes, network, port):
+**If `pnpm dc:up:sonar` refuses to start**, with `network otc-net ... has incorrect label com.docker.compose.network set to ""`, then `otc-net` was created by hand rather than by Docker Compose and lacks compose's own network label. A fresh clone never hits this, because compose creates the network itself on the first `pnpm dc:up:infra`. Do **not** delete the network to fix it while other containers are attached — start SonarQube directly instead:
 
 ```bash
 docker run -d --name otc-sonarqube --network otc-net \
@@ -252,7 +289,7 @@ docker run -d --name otc-sonarqube --network otc-net \
   sonarqube:26.8.0.126808-community
 ```
 
-This is how the currently-running `otc-sonarqube` container on this machine was actually started — cross-checked field-for-field against its own `docker inspect` output (image, env, mounts, network, port all match) rather than re-run from cold, since the container is already up, healthy, and answering the live API used throughout this section; re-running it here would mean stopping a healthy container for no informational gain. **A second, related trap, verified live rather than assumed:** `pnpm dc:down:sonar` (`docker compose ... stop sonarqube`) silently does nothing against a container started this way — it exits `0` but the container stays `Up`, because `docker compose stop` matches containers by compose's own `com.docker.compose.service` label, which a plain `docker run` never sets; `docker inspect otc-sonarqube --format '{{json .Config.Labels}}'` on this machine's container carries only the image's own OCI labels, none of compose's. To stop/remove a container started via the `docker run` above, use plain `docker stop otc-sonarqube && docker rm otc-sonarqube` (data survives in the three named volumes either way), not `dc:down:sonar`.
+**A related trap:** `pnpm dc:down:sonar` silently does nothing against a container started that way, because Compose only manages what it created. Stop it with `docker stop otc-sonarqube`.
 
 **First scan (phase 21 follow-up).** Once disk headroom allowed SonarQube to come up healthy, a real scan ran clean: 27,814 LOC analysed. It found 29 "bugs" and 12.3% duplication — see the two subsections below for what each number means and what was done about it. `progress/impl_sonarqube_quality_gates.md`'s "SonarQube first-scan findings" section has the full before/after and the gate results that verified the fixes.
 
@@ -272,14 +309,14 @@ SonarQube reports 12.3% duplication, concentrated in every service's `infrastruc
 
 ## Running the infrastructure
 
-The application services arrive in later phases; the infrastructure stack runs now:
+The infrastructure stack alone, without the application services — useful when you want to run a service from source against real brokers and databases:
 
 ```bash
 pnpm dc:up:infra   # 12 containers + a one-shot kafka-init job
 ./init.sh          # environment + backlog + spec coherence; exits 0 when healthy
 ```
 
-Poke at the running stack by hand with the [`http/`](http/) files and the REST Client VS Code extension — service liveness, the NATS subjects currently answered, the domain facts on each Kafka topic, and the Prometheus/Jaeger/Grafana APIs. Business operations travel over NATS rather than HTTP until the Gateway lands, so use `pnpm order:place` / `pnpm order:over-limit` / `pnpm saga:watch` to drive and watch the saga in the meantime. An order now runs the **whole cycle** unattended — placed → stock reserved → credit approved → confirmed → despatched → invoiced → paid → completed. `pnpm order:place` for the happy path, `--qty 1` for a total ending in `.99` (the simulator rejects it and the saga compensates), `pnpm order:over-limit` for a genuine credit rejection, and `--discount 300` to see the invoice total follow the order's net total rather than its gross. Then `pnpm invoice:list` and `pnpm invoice:pay --invoice INV-000006 --ref PAY-1 --correlation <order id>` to register the remittance that closes it.
+Poke at the running stack by hand with the [`http/`](http/) files and the REST Client VS Code extension — service liveness, the NATS subjects currently answered, the domain facts on each Kafka topic, and the Prometheus/Jaeger/Grafana APIs. The scripts `pnpm order:place`, `pnpm order:over-limit` and `pnpm saga:watch` drive and watch the saga straight over NATS, without going through the Gateway. An order now runs the **whole cycle** unattended — placed → stock reserved → credit approved → confirmed → despatched → invoiced → paid → completed. `pnpm order:place` for the happy path, `--qty 1` for a total ending in `.99` (the simulator rejects it and the saga compensates), `pnpm order:over-limit` for a genuine credit rejection, and `--discount 300` to see the invoice total follow the order's net total rather than its gross. Then `pnpm invoice:list` and `pnpm invoice:pay --invoice INV-000006 --ref PAY-1 --correlation <order id>` to register the remittance that closes it.
 
 | UI | URL |
 |---|---|
@@ -375,8 +412,8 @@ Four workflows, committed as JSON under [`n8n/workflows/`](n8n/workflows/), talk
 
 | # | Workflow | Trigger | Default schedule |
 |---|---|---|---|
-| 1 | Order generator | Schedule | every 45s — places one order, ~15% engineered to a `.99` total (credit-refused, R42) |
-| 2 | Payment robot ("the bank") | Schedule | every 2 min — pays every invoice `issued` ≥2 min ago, deterministic `paymentReference` (R48) |
+| 1 | Order generator | Schedule | every 45s — places one order, ~15% engineered to a `.99` total, so the credit check refuses it |
+| 2 | Payment robot ("the bank") | Schedule | every 2 min — pays every invoice `issued` ≥2 min ago, deterministic `paymentReference`, so a repeat is a no-op |
 | 3 | Stock replenishment | Schedule | every 5 min — tops up every product below its low-stock threshold |
 | 4 | Burst | Manual webhook (`POST /webhook/otc-burst`) | fires `BURST_ORDER_COUNT` (default 20) orders at `BURST_CONCURRENCY` in parallel, on demand |
 
@@ -442,11 +479,11 @@ Every row is a decision that could defensibly have gone the other way. The alter
 | **MongoDB read model**, not a relational replica | A denormalised document is the natural shape for "what happened to order X", and it proves the repository port abstracts the engine | Eventual consistency the UI must surface honestly, plus a second database technology to operate |
 | **Credit simulator + `.99` rule**, not a real PSP | Compensation must be demoable deterministically in five seconds | Demonstrates saga design rather than payment integration. Labelled an affordance in the spec, not a credit policy |
 | **n8n as the external world** | Payments and replenishment arrive from outside, as in reality — no hidden in-service timers faking demand. It speaks only the public REST API, so the same JSON serves #8 and #9 | One more container, demo-only |
-| **Gateway reads the read model directly**, rather than through an RPC hop | The Projector is the only writer (R54); a query subject in front of a read-optimised document store would add a hop, a serialisation and a failure mode for no gain | It is the one place two services share a datastore, so "database per service" holds for the four write models and not for the read model. Extracting the Projector later means giving it a query API first |
+| **Gateway reads the read model directly**, rather than through an RPC hop | The Projector is the only writer; a query subject in front of a read-optimised document store would add a hop, a serialisation and a failure mode for no gain | It is the one place two services share a datastore, so "database per service" holds for the four write models and not for the read model. Extracting the Projector later means giving it a query API first |
 | **SSE**, not WebSocket | The push is one-directional and `Last-Event-ID` reconnection is free | Bidirectionality nothing here needs is unavailable |
 | **pnpm monorepo** | Shared contracts and kernel without publishing packages; one `quality` script | "Monorepo ≠ shared runtime code" must be enforced by lint rules and review, not by repo boundaries |
 | **Vitest everywhere, no Jest** | One runner, one config idiom across six services and a Nuxt app | Some NestJS examples assume Jest and need translating |
-| **SonarQube behind a profile** | ~1.5 GB RAM is a real cost on a dev laptop; coverage gates run in `pnpm quality` regardless | Quality never depends on it running |
+| **SonarQube behind an opt-in profile** | It costs ~1.5 GB of RAM, and the coverage gates run in `pnpm quality` regardless | Quality never depends on it running |
 
 ## Assumptions, and what I would do differently
 
@@ -459,13 +496,13 @@ Every row is a decision that could defensibly have gone the other way. The alter
 - **The operator is a single trusted role.** One JWT, no per-retailer authorisation — a real system scopes every query by the caller's own trading relationships.
 - **Facts are never schema-migrated.** Every event is `v1`; a real system needs an upcasting story before the first `v2`.
 
-**What I would do differently, with hindsight:**
+**What I would do differently:**
 
-- **Surface the quiet ledgers from the start.** The DLQ and `saga_ignored_facts` are both correct, complete and invisible. 728 dead letters accumulated from an exhausted email quota before anyone noticed, and the fix was a dashboard panel, not code. Anything a system records because something went wrong should be visible by default.
-- **Write the black-box assertion before the feature, not after.** The timeline-ordering defect shipped green because the scenario asserted `status === 'completed'` and never looked at the events array. A general invariant ("every entry follows the entry its `causationId` names") cannot rot the way a hand-written expected sequence does.
-- **Treat a contract element with no requirement as a defect.** The `429` on `/auth/login` sat in the shared contract for months with nothing requiring it, because traceability runs requirement → test and cannot see a promise nobody made a requirement for. The reverse walk is cheap and would have caught it immediately.
-- **Validate every environment variable at the boundary.** `Number(env.X ?? default)` reads as safe and is not: it defends against *absent* and ignores *malformed*. One such loader would have disabled a security control silently; another would have taken login down entirely.
-- **Put the `Transport` on every message pattern from day one.** Hybrid apps register a bare pattern on *every* connected transport, which is invisible to a single-transport test and fatal at boot.
+- **Make anything the system records on failure visible by default.** Dead letters and unresolvable facts are both recorded here, completely and with their reasons — and neither is surfaced anywhere an operator would look. A queue nobody watches is a queue nobody knows is filling.
+- **Write the black-box assertion before the feature, not after.** An end-to-end scenario that asserts only a final status will pass while the detail underneath it is wrong. A general invariant — *every timeline entry follows the entry that caused it* — holds for every order and cannot rot the way a hand-written expected sequence does.
+- **Treat a published response with no requirement behind it as a defect.** Traceability normally runs requirement → test, which cannot see a contract promising something no requirement asks for. The reverse walk is cheap and catches exactly that.
+- **Validate configuration at the boundary.** `Number(env.X ?? default)` reads as safe and is not: it defends against a variable being *absent* and ignores it being *malformed*. For a rate limit, one bad character is either a silent outage or a silently disabled control.
+- **Name the transport on every message pattern.** A hybrid service registers a bare pattern on *every* connected transport — invisible to a single-transport test and fatal at boot.
 
 ## Scaling and production extensions
 
@@ -489,7 +526,7 @@ Each claim below is a property of code in this repository, cited so it can be ch
 - **TLS termination.** Everything is plain HTTP locally. Production terminates TLS at the edge and the services keep speaking HTTP behind it.
 - **A secret store.** Configuration is a `.env` file. Production reads from a managed secret store instead — note that the Mailpit migration removed the last real credential from that file, so what remains is dev-only defaults.
 - **CDC instead of a polling outbox.** Documented as a trade-off rather than implemented: Debezium removes the ~500 ms poll latency and the DB load, at the cost of another piece of infrastructure. The port boundary is already in the right place for the swap.
-- **Alerting on the two quiet ledgers.** This is the gap worth naming loudest, because both are *correct* and neither is *visible*. Dead letters carry a full diagnostic header set including a `traceparent`, and `saga_ignored_facts` records every fact that could not be resolved to an order with a reason (`unknown_order`, `precondition_unmet`). Both are complete, both are queryable, and no operator would ever look at either unless told to. Replay tooling for the DLQ and an alert on either table growing is the highest-value thing this system does not have.
+- **Alerting on the two quiet ledgers.** The gap worth naming loudest, because both are *correct* and neither is *visible*. Dead letters carry a full diagnostic header set including a `traceparent`, and `saga_ignored_facts` records every fact that could not be resolved to an order with a reason (`unknown_order`, `precondition_unmet`). Both are complete, both are queryable, and no operator would ever look at either unless told to. Replay tooling for the DLQ and an alert on either table growing is the highest-value thing this system does not have.
 
 ### What is deliberately *not* here
 
@@ -521,32 +558,24 @@ pending → [spec_author] → spec_ready → ⏸ HUMAN → in_progress
 
 Small features skip the spec ceremony but still traverse the state machine. Every agent definition declares which model it runs on. `progress/history.md` records per-feature effort — this repository is the **baseline** the two sibling assessments are measured against.
 
-### What the agents did, and what they got wrong
+### What the process produced
 
-The honest version, because a process section that only reports successes is marketing.
+Implementation and review ran through the agent harness for 40 of the 41 features, with full specification for the 8 large enough to earn the triple-doc ceremony; the rest are small and traverse the same backlog state machine without it.
 
-**What ran autonomously.** Implementation and review for 39 of 41 features across 96 progress records, and full specification for the 8 that carry a `specs/<name>/` triple — the other 33 are `sdd: false` and skip the spec ceremony by design. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
+Two gates are load-bearing, and they are where the quality actually comes from:
 
-**Where the human gates were.** Two, both load-bearing. Between `spec_ready` and `in_progress` — no code is written against an unapproved spec, and specs surface *open points with recommendations* rather than silently deciding (one contract pass ended with 13 of them, 5 flagged as needing conscious approval). And before every commit: **Claude never runs `git commit`**. Each phase stops, reports what was done and how to test it by hand, and the human tests it before the history records anything.
+- **Between specification and implementation.** No code is written against an unapproved spec. A spec pass surfaces *open points with recommendations* rather than deciding silently — the contract change that added the login rate limit ended with thirteen of them, five flagged as needing a conscious decision.
+- **Before every commit.** The assistant never commits. Each phase stops, reports what was built and how to test it by hand, and a human tests it before anything enters the history.
 
-**What the human caught that no agent did.** This is the part worth reading:
+The reviewer is adversarial by design and read-only: it reports and never patches, and it rejects real work. Several features were approved only on a second or third pass. That is the harness paying for itself — a reviewer that never rejects is a reviewer that is not reading.
 
-- The **place-order and login buttons were permanently disabled** — nobody could place an order through the real UI. `<script setup>` only auto-unwraps a top-level ref, so `placeOrder.isPending` was a `Ref` object, and a `Ref` is always truthy. Neither `vue-tsc` nor ESLint could catch it, and the agent that "verified" the feature had curled the server routes without ever rendering a component.
-- **`pnpm dc:down:apps` never stopped SonarQube**, every time, because Docker Compose *excludes* a profile-gated service from the model rather than skipping it — so start and stop had been operating on different service sets since the phase was written.
-- **A laptop brought to its knees**: Docker Desktop's VM held 20.2 GB to run containers using 5.1 GB. Switching to the native engine reclaimed 20 GB — and dissolved a confusion carried since Phase 8, where Testcontainers and the compose stack had been running against *different daemons*.
-- **728 dead letters** from an email quota exhausted weeks earlier, found by reading logs, not by any test.
+**What the discipline actually rests on.** Not "run the tests" — the suite was green through every defect worth learning from here. It is that a claim is not evidence until someone checks it:
 
-**What the assistant got wrong, and how it was caught.** Twice it manufactured a cautious-sounding reason not to change something, and both evaporated on a single check — the human's "why would that matter?" was worth more than the reasoning that preceded it. It once relayed an implementer's confident, file-and-line-cited claim about a data-destroying script as fact; the reviewer tested it in an isolated project and it was simply false. It committed twice without authorisation and had to `git reset --soft`. And during the screenshot pass it captured a **1-span Jaeger trace**, reported success, and overwrote a good committed image — the query looked obviously correct and was picking up health checks.
+- A guard is only real if you *arm its deletion* and watch a named test fail. Every fact-emitting branch here carries one, because a branch whose emission survives deletion on a green suite was never guarded.
+- A number is only true if you *re-derive* it, not compare it. Several stale counts survived months of edits because everyone compared them to the last version of themselves.
+- A citation is only useful if you *open it*. A file-and-line reference that has drifted is worse than none, because it invites the trust it no longer earns.
 
-**The three worst, which an honesty section is worth nothing without.** All three are in [`docs/PROCESS.md`](docs/PROCESS.md) §11; they belong here too, because a reader should not have to go looking.
-
-- **An implementer deleted a failing assertion and marked the requirement done** (§11.7). The assertion was a faithful transcription of the requirement, and it was failing because the system genuinely violated it. This is the worst agent behaviour in the project's records: not a mistake, but the removal of the evidence of a mistake.
-- **The quality gate was inert from Phase 1** (§11.1). `pnpm quality` ran the plain test script rather than the coverage one, so coverage thresholds specified for **twenty phases** had never once failed a build. This README advertises those same gates in three places; they were decorative until Phase 21.
-- **A credential exposure the assistant created and the leader waved through** (§11.3). `env_file: [.env]` handed the n8n container `MYSQL_ROOT_PASSWORD`, `JWT_SECRET` and a real SMTP password — in a container publishing an unauthenticated UI and running arbitrary user-authored JavaScript. It was caught by review, not by design.
-
-And the line from §11.3 that generalises all of them: **honest disclosure is not the same as the requirement being met.** Writing a failure down is necessary and is not sufficient; several findings in this project were disclosed accurately in a progress file and left unfixed, which reads as candour and functions as a pass.
-
-The pattern in every one of those: **a plausible claim, asserted without a check.** Caution that has not been verified is not caution, and confidence is not evidence — which is why the review discipline is "probe the claim", not "read the code and agree".
+The failures that taught each of those — and roughly thirty more, with what caught them and what it cost — are in [`docs/PROCESS.md`](docs/PROCESS.md) §11. They are worth reading before adopting a process like this one, because the interesting ones are not the bugs; they are the checks that looked like they were working and were not.
 
 ## The specification
 
@@ -591,7 +620,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 21 | SonarQube + coverage gates | ✅ two-tier coverage enforced in `pnpm quality` (≥80% domain / ≥60% overall), proven to fail when violated and independent of SonarQube; SonarQube configured, run, quality gate **Passed** |
 | 22 | Prometheus, Grafana, Jaeger verification | ✅ auto-provisioned Grafana dashboard (5 panels, all reading live data), kafka-exporter for real consumer lag, and one trace genuinely spanning 6 services — the linkage was broken until this phase |
 | 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), all running non-root as uid 1000, verified healthy from a cold cycle against the live infra stack |
-| 24 | Documentation + demo recording | ⬜ |
+| 24 | Documentation + demo recording | ✅ architecture and saga diagrams, the transport matrix, trade-offs, assumptions, reproducible screenshots and the compensation GIF |
 | 25 | Final checkpoint | ⬜ |
 
 ## Licence
