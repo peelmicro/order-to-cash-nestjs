@@ -1353,3 +1353,29 @@ The second review did not take the green suite as evidence, because a green run 
 **Findings open at close (all non-blocking, all disclosed):** N3 and N4 from the first review, Round 1 open point 6 (eight rows carry citations the mechanical guard cannot check, so it validates 55 of 63), and N7. The single ratified deferral is `R56`.
 
 **Verdict:** see `progress/review_final_checkpoint.md`. `pnpm quality` exit 0 / 1500 tests; `./init.sh` exit 0; matrix 62 green / 1 scoped / 0 not-yet-green; guard 6/6.
+
+---
+
+## Shared amendment SA-1 (post-close, incoming from assessment #8) — 2026-08-31
+
+**Effort:** n/a — an amendment received, not a feature of this assessment
+**Raised by:** assessment #8 (`peelmicro/order-to-cash-dotnet`), Phase 3, while executing this repository's own reset recipe for the first time
+**Touches:** `specs/shared/test-matrix.md` only — the reset-recipe paragraph in the header. No requirement, no row, no column 1–4, no Status cell.
+
+**What was wrong:**
+
+The four-step reset recipe told a new assessment which prose to delete by **listing the specific paragraphs in this copy** — the two labelled per-assessment asides named individually (`#7 mechanism`, `#7 evidence`), and "In this copy that prose is: the two paragraphs under the coverage table … and the two `R56` amendment notes in §8".
+
+Correct at the moment it is read; **false the moment it has been followed.** Once #8 executed the recipe, its copy contained an inventory of content that copy no longer had. #9 inheriting the file from #8 would read a list of things already gone and be unable to tell a completed step from a missed one.
+
+A normative instruction invalidated by its own execution is a defect in the instruction, not in the reader. It is not a stack leak, so it never breached `CHECKPOINTS.md` C7 — which is exactly why it survived Phase 25's audit: the audit was looking for stack terms, and this is a self-reference defect.
+
+**The fix:**
+
+Steps 3 and 4 reworded from an *inventory of this copy* into a *description of the class* — "every paragraph explicitly labelled as a per-assessment aside", and the two recurring classes of realisation-narrating prose described by what they do rather than by where they sit. Self-stable under copying: the instruction now reads the same, and stays true, in every assessment.
+
+The amendment paragraph is byte-identical in `order-to-cash-nestjs` and `order-to-cash-dotnet`. This repository's own Status cells, coverage counts and executed content are untouched; the diff here is one line.
+
+**Why it is recorded here at all, after this assessment closed:**
+
+The trilogy's rule is that a shared-spec change is never a silent fork. #8 found it, #8 and #7 were fixed in the same session, and both repositories carry the same record. This is the first cross-repository amendment of the trilogy and sets the pattern: an id (`SA-n`), the same bytes in every repo, and an entry in each repo's own history explaining what was wrong rather than only what changed.
