@@ -1,4 +1,5 @@
 import { BadRequestException, type ArgumentsHost } from '@nestjs/common';
+import { ThrottlerException } from '@nestjs/throttler';
 import { RpcError } from '@otc/contracts';
 import { describe, expect, it, vi } from 'vitest';
 import { context, trace } from '@opentelemetry/api';
@@ -60,6 +61,27 @@ describe('ProblemJsonExceptionFilter — R58 (every non-2xx is application/probl
 
     expect(status).toHaveBeenCalledWith(401);
     expect(json.mock.calls[0][0].code).toBe('INVALID_CREDENTIALS');
+  });
+
+  // Contract-implementation gap closure (openapi.yaml `POST /auth/login`'s
+  // `components.responses.TooManyRequests` — progress/impl_auth_rate_limit.md).
+  // `ThrottlerException` extends `HttpException`, so it MUST be classified
+  // BEFORE the generic `instanceof HttpException` fallback below — proves
+  // it does not fall through to a title of the raw class name or a detail
+  // of the library's own internal wording.
+  it('maps a ThrottlerException (POST /auth/login rate limit) to 429 TOO_MANY_REQUESTS, never the generic HttpException fallback', () => {
+    const filter = new ProblemJsonExceptionFilter(clock);
+    const { host, status, type, json } = fakeHost();
+
+    filter.catch(new ThrottlerException(), host);
+
+    expect(status).toHaveBeenCalledWith(429);
+    expect(type).toHaveBeenCalledWith('application/problem+json');
+    const body = json.mock.calls[0][0];
+    expect(body.code).toBe('TOO_MANY_REQUESTS');
+    expect(body.status).toBe(429);
+    expect(body.title).not.toBe('ThrottlerException');
+    expect(body.detail).not.toContain('ThrottlerException');
   });
 
   it('maps InvoiceNotFoundError to 404', () => {

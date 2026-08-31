@@ -303,6 +303,35 @@ Do **not** use `pnpm run test:e2e -- --headed`. `pnpm` appends `-- --headed`, bu
 
 The suite targets a running, built stack and **cannot run against `pnpm dev:web`** — against a Nuxt dev server the login form's click lands pre-hydration on the cold dev bundle and the subsequent navigation never completes. Point it at the containerised stack (`WEB_PORT`) or at a local production build (`pnpm build && node apps/web/.output/server/index.mjs`) instead.
 
+## Scaling and production extensions
+
+This is an assessment, and it runs as one instance per service on one machine. That is a deliberate scope, not an oversight — but "we did not build it" is a weak claim, so this section separates **what the system already supports and can prove** from **what a production deployment would add**.
+
+### What it already supports
+
+Each claim below is a property of code in this repository, cited so it can be checked rather than taken on trust.
+
+- **The write path is safe to run at N instances.** All three outbox relays claim their batch with `SELECT … FOR UPDATE SKIP LOCKED` ([orders](apps/orders/src/infrastructure/outbox/outbox-relay.ts#L128), [billing](apps/billing/src/infrastructure/outbox/outbox-relay.ts#L104), [fulfillment](apps/fulfillment/src/infrastructure/outbox/outbox-relay.ts#L104)), so two relays polling the same table take disjoint batches and a fact is never published twice because a second instance started.
+- **The saga sweeper claims the same way** ([drizzle-saga-command-store.ts:100](apps/orders/src/infrastructure/saga/drizzle-saga-command-store.ts#L100)) — parked and timed-out saga commands are swept exactly once no matter how many Orders instances are running.
+- **Business references stay unique under concurrency.** `ORD-`/`DES-`/`INV-`/`CR-` numbers come from a counter row incremented under `SELECT … FOR UPDATE` ([order-number-allocator.ts:84](apps/orders/src/infrastructure/persistence/order-number-allocator.ts#L84)); the second caller blocks rather than racing.
+- **Fact consumption scales with partitions, not with instances.** Every consumer joins a named Kafka consumer group, so adding an instance redistributes partitions instead of duplicating delivery. Per-order ordering is preserved because the partition key is the envelope's `correlationId` ([outbox-relay.ts:136](apps/orders/src/infrastructure/outbox/outbox-relay.ts#L136)), which `specs/shared/saga.md` fixes equal to the order id — so every fact about one order lands on one partition.
+- **SSE survives a load balancer.** The Gateway subscribes to the projector's read-model signal with a plain core-NATS subscription and **no queue group** ([nats-stream-signal.adapter.ts:33-34](apps/gateway/src/infrastructure/messaging/nats-stream-signal.adapter.ts#L33-L34)), so *every* Gateway instance receives *every* signal and pushes it to the clients it happens to hold. This is the one that is easy to get wrong: a queue group here would look tidier and would silently break the feature, because each signal would go to exactly one instance and the clients connected to the others would simply never update.
+- **Database per service.** No cross-database joins and no foreign keys across service boundaries, so each service is independently extractable onto its own instance.
+
+### What production would add
+
+- **A load balancer / horizontal replicas.** Not application code, which is why it is absent here; the section above is the evidence the services would tolerate it. The one thing to size deliberately is the MySQL connection pool, which is untuned and fine for one instance per service but needs checking against `max_connections` before replicating.
+- **Rate limiting beyond the login route.** `openapi.yaml` declares `429` on `POST /auth/login`; a public deployment would extend a policy across the write routes and put a quota in front of the read model.
+- **TLS termination.** Everything is plain HTTP locally. Production terminates TLS at the edge and the services keep speaking HTTP behind it.
+- **A secret store.** Configuration is a `.env` file. Production reads from a managed secret store instead — note that the Mailpit migration removed the last real credential from that file, so what remains is dev-only defaults.
+- **CDC instead of a polling outbox.** Documented as a trade-off rather than implemented: Debezium removes the ~500 ms poll latency and the DB load, at the cost of another piece of infrastructure. The port boundary is already in the right place for the swap.
+- **Alerting on the two quiet ledgers.** This is the gap worth naming loudest, because both are *correct* and neither is *visible*. Dead letters carry a full diagnostic header set including a `traceparent`, and `saga_ignored_facts` records every fact that could not be resolved to an order with a reason (`unknown_order`, `precondition_unmet`). Both are complete, both are queryable, and no operator would ever look at either unless told to. Replay tooling for the DLQ and an alert on either table growing is the highest-value thing this system does not have.
+
+### What is deliberately *not* here
+
+- **A cache.** The MongoDB read model already is one — a denormalised projection of "what happened to order X", maintained so queries never touch the write model. Adding Redis in front of it would put a cache in front of a cache and introduce a third consistency story to reason about.
+- **JetStream.** Nothing in the RPC path needs durability or replay; a timeout is a legitimate answer. Adding it would duplicate Kafka's job and blur the Kafka-vs-NATS distinction this project exists to demonstrate.
+
 ## How this is being built
 
 > **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. What follows is the short version.

@@ -167,6 +167,14 @@ catalog:
   # above). Peer-compatible with `api@1.9.1` (`sdk-metrics@2.10.0` requires
   # `api` `>=1.9.0 <1.10.0`), verified before pinning.
   "@opentelemetry/sdk-metrics": ^2.10.0
+  # Rate limiting `POST /auth/login` (openapi.yaml's own contract:
+  # `components.responses.TooManyRequests` was declared on that route with
+  # NOTHING implementing it — see progress/impl_auth_rate_limit.md). Applied
+  # route-scoped (`@UseGuards(ThrottlerGuard)` on the one handler), never as
+  # a global `APP_GUARD` — every other route stays unthrottled. 6.5.0 is the
+  # current major; its peerDependencies accept Nest `^11.0.0` and
+  # `reflect-metadata` `^0.2.0`, both already pinned above.
+  "@nestjs/throttler": ^6.5.0
 
 minimumReleaseAgeExclude:
   - '@nuxt/test-utils@4.2.0'

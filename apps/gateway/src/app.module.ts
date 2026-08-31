@@ -14,6 +14,7 @@
 import { type MiddlewareConsumer, Module, type NestModule, type OnApplicationShutdown } from '@nestjs/common';
 import { CorrelationIdMiddleware } from './presentation/correlation-id.middleware';
 import { CqrsModule } from '@nestjs/cqrs';
+import { ThrottlerModule, type ThrottlerModuleOptions } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { RequestLatencyInterceptor } from './presentation/request-latency.interceptor';
 import type { Collection, Db } from 'mongodb';
@@ -50,6 +51,7 @@ import { loadSseConfig } from './infrastructure/messaging/sse.config';
 import { connectMongo, orderTimelineCollection, type MongoHandle } from './infrastructure/persistence/mongo-client';
 import { loadMongoConfig } from './infrastructure/persistence/mongo.config';
 import { loadIssuedOrderWindowConfig } from './infrastructure/orders/issued-order-window.config';
+import { loadLoginThrottleConfig } from './infrastructure/auth/login-throttle.config';
 import { MongoOrderReadModelAdapter } from './infrastructure/persistence/mongo-order-read-model.adapter';
 import { MongoHealthCheck } from './infrastructure/health/mongo-health-check';
 import { NatsHealthCheck } from './infrastructure/health/nats-health-check';
@@ -96,7 +98,22 @@ class StreamSignalCloser implements OnApplicationShutdown {
 }
 
 @Module({
-  imports: [CqrsModule.forRoot()],
+  imports: [
+    CqrsModule.forRoot(),
+    // Rate limiting `POST /auth/login` (openapi.yaml's own
+    // `components.responses.TooManyRequests` on that route —
+    // progress/impl_auth_rate_limit.md). Registered here (a `@Global()`
+    // Nest module, so its providers/`ThrottlerGuard` resolve anywhere in
+    // this app) but applied ONLY via `@UseGuards(ThrottlerGuard)` on
+    // `AuthController.login()` — never as an `APP_GUARD`, so no other
+    // route is throttled.
+    ThrottlerModule.forRootAsync({
+      useFactory: (): ThrottlerModuleOptions => {
+        const config = loadLoginThrottleConfig();
+        return [{ name: 'default', ttl: config.ttlMs, limit: config.limit }];
+      },
+    }),
+  ],
   controllers: [
     AuthController,
     // StreamController's `GET /orders/stream` MUST be registered before

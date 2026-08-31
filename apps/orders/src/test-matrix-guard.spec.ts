@@ -326,7 +326,7 @@ describe('test-matrix-guard — H2 (traceability spine of specs/shared/test-matr
     // it cannot catch — so this is smaller than the 53 the Round 3 review
     // counted by reading every backtick span in the document, not just
     // those in the `›` citation position).
-    expect(rows.length).toBe(62); // R1–R62, per the matrix's own "Verification" section (R62 minted by observability_reliability)
+    expect(rows.length).toBe(63); // R1–R63, per the matrix's own "Verification" section (R63 minted by the login rate-limit contract pass)
     expect(uniqueAppsPaths.size).toBeGreaterThan(40);
     expect(allCitations.length).toBeGreaterThan(100);
   });

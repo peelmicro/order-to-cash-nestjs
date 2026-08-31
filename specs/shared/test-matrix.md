@@ -1,4 +1,4 @@
-# Shared Test Matrix — `R1`–`R62` → named tests
+# Shared Test Matrix — `R1`–`R63` → named tests
 
 > **Fact-emission rule.** Every branch that emits — or deliberately suppresses — a domain fact must be covered by a test that **fails when that emission is deleted**. Structure and comments are not coverage. This applies with double force to branches that have no live caller yet, since integration harnesses bind the happy-path adapter and cannot reach them. Any assessment implementing this matrix should arm the deletion itself before claiming the row.
 
@@ -88,7 +88,8 @@ not police whether a précis is a *fair* précis.
 | 6. `billing_invoicing` | R45 – R49 | 5 | 5 |
 | 7. `projector_read_model` | R50 – R55 | 6 | 5 |
 | 8. `observability_reliability` | R56 – R60, R62 | 6 | 1 |
-| **Total** | **R1 – R62** | **62** | **46** |
+| 8.1 gateway edge protection (per-assessment gateway feature) | R63 | 1 | 1 |
+| **Total** | **R1 – R63** | **63** | **47** |
 
 ---
 
@@ -214,13 +215,26 @@ demo, in the API tests and in the end-to-end tests.
 
 ---
 
+## 8.1 gateway edge protection — R63
+
+> **Whose feature this is.** R63 lives in `requirements.md` §8.1 for id-stability reasons explained there; the feature that closes it is each assessment's **gateway**, not its `observability_reliability` feature. The level is **API**: the requirement is entirely about what a client observes through `openapi.yaml`, so nothing below the gateway needs to be reachable to prove it.
+
+| Id | Requirement (short) | Level | Test file › case | Status |
+|---|---|---|---|---|
+| **R63** | A rate limit exists on the unauthenticated login endpoint; tripping it yields `429` + `Problem` + `Retry-After` in seconds, issues no token, does not depend on whether the credentials were valid, and does not affect any other endpoint | API | `api/login-rate-limit.spec` › *exceeding the login rate limit answers 429 with an `application/problem+json` body matching `components.schemas.Problem` and a `Retry-After` header carrying a whole number of seconds, and issues no token*<br>`api/login-rate-limit.spec` › *the same 429 is returned for valid and for invalid credentials once the limit is exceeded, so the refusal reveals nothing about the credentials*<br>`api/login-rate-limit.spec` › *a client refused by the login limit continues to be served on every other endpoint — the limit is scoped to the login route, never global* | **DONE** |
+
+**#7 evidence (flipped after the gate, on the three cited cases and nothing else).** Realised in `apps/gateway/src/auth-rate-limit.integration.spec.ts` (Testcontainers, real MongoDB + NATS, driven black-box over real HTTP through the composed Gateway), whose three `it()` titles are the three case names cited above **character for character**, so the file › case citation resolves literally rather than approximately — rule 4 of this document's traceability rules. The `Retry-After` case asserts the header is present **and** that its value parses as a whole number of seconds `>= 0`, so an implementation emitting the HTTP-date form `openapi.yaml`'s `TooManyRequests` deliberately excludes fails rather than passes; its deletion was armed and the named case failed with `AssertionError: expected undefined to be defined` before being restored md5-identical. The credentials-independence case proves a request carrying **valid** credentials also receives the `429` once the limit is exceeded and is issued no token, so the refusal discloses nothing about the credentials. The scope case proves a client refused on login is still served on every other endpoint — R63's never-global clause. The rate limit itself is `10` attempts / `60000` ms by default, validated and configurable (`apps/gateway/src/infrastructure/auth/login-throttle.config.ts`); R63 fixes neither number nor the tracking key, so those are #7's `design.md` concern and not this row's.
+
+---
+
 ## Verification
 
-- **62 rows, ids `R1`–`R62`, contiguous and unique.** Verified by count against
-  the eight feature groups above and against `requirements.md`. (`R61` and
-  `R62` are each the *next free id* at the time they were added, not a
-  renumbering — see `requirements.md`'s own "Id ordering" notes at §4 and
-  §8 — so "contiguous" means the union of ids, not each section's own run.)
+- **63 rows, ids `R1`–`R63`, contiguous and unique.** Verified by count against
+  the eight feature groups above (plus §8.1) and against `requirements.md`.
+  (`R61`, `R62` and `R63` are each the *next free id* at the time they were
+  added, not a renumbering — see `requirements.md`'s own "Id ordering" notes at
+  §4 and §8 and its §8.1 filing note — so "contiguous" means the union of ids,
+  not each section's own run.)
 - Every row names a **file** and a **case**; no row says "covered by the suite".
 - The four cross-cutting demonstrations a reviewer will look for are reachable
   from this table alone:
@@ -232,3 +246,4 @@ demo, in the API tests and in the end-to-end tests.
   | Effectively-once processing under at-least-once delivery | R16, R17, R18, R25, R29, R48, R51 |
   | One trace and honest health across both brokers | R56, R57, R58, R59, R60 |
   | Client-retry-safe order acceptance | R62 |
+  | Abuse resistance at the published edge | R63 |

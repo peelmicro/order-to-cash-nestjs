@@ -8,6 +8,7 @@
 import { ArgumentsHost, BadRequestException, Catch, ExceptionFilter, HttpException, Inject } from '@nestjs/common';
 import type { Response } from 'express';
 import { UniqueId } from '@otc/shared-kernel';
+import { ThrottlerException } from '@nestjs/throttler';
 import type { RequestWithCorrelationId } from './correlation-id.middleware';
 import { classifyRpcError } from '../domain/problem/rpc-error-mapping';
 import { activeTraceId } from '../infrastructure/observability/trace-context';
@@ -85,6 +86,22 @@ export class ProblemJsonExceptionFilter implements ExceptionFilter {
     }
     if (exception instanceof InvalidTokenError) {
       return { status: 401, code: 'UNAUTHORIZED', title: 'Missing, expired or invalid bearer token', detail: exception.message };
+    }
+    // `POST /auth/login`'s rate limit (openapi.yaml
+    // `components.responses.TooManyRequests`, progress/impl_auth_rate_limit.md)
+    // — checked explicitly, and BEFORE the generic `instanceof HttpException`
+    // fallback below, so this never accidentally renders `title` as the raw
+    // class name `"ThrottlerException"` or `detail` as the library's own
+    // internal wording ("ThrottlerException: Too Many Requests"). Same
+    // problem+json shape, same stable `code`, as every other error on this
+    // API.
+    if (exception instanceof ThrottlerException) {
+      return {
+        status: 429,
+        code: 'TOO_MANY_REQUESTS',
+        title: 'Too many requests',
+        detail: 'Too many login attempts — try again later.',
+      };
     }
     if (exception instanceof InvoiceNotFoundError) {
       return { status: 404, code: 'NOT_FOUND', title: 'No such invoice', detail: exception.message };

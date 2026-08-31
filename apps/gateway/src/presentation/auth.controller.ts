@@ -1,6 +1,7 @@
 // `POST /auth/login`, `GET /auth/me` (openapi.yaml `auth` tag).
-import { Body, Controller, Get, HttpCode, Inject, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Inject, Post, Req, UseGuards } from '@nestjs/common';
 import { CommandBus, QueryBus } from '@nestjs/cqrs';
+import { ThrottlerGuard } from '@nestjs/throttler';
 import { LoginCommand } from '../application/commands/login.command';
 import type { CurrentUser, LoginResponse } from '../application/contracts-aliases';
 import { GetCurrentUserQuery } from '../application/queries/get-current-user.query';
@@ -17,6 +18,14 @@ export class AuthController {
   ) {}
 
   @Public()
+  // openapi.yaml `components.responses.TooManyRequests` on THIS route only
+  // (progress/impl_auth_rate_limit.md — a published contract that
+  // previously had no implementing code) — `ThrottlerGuard` here is
+  // route-scoped, not the global `APP_GUARD`, so `/auth/me`, the catalog
+  // routes, `/orders/stream` etc. stay unthrottled. Policy comes from the
+  // `default` throttler `AppModule`'s `ThrottlerModule.forRootAsync` wires
+  // (`loadLoginThrottleConfig()`).
+  @UseGuards(ThrottlerGuard)
   @Post('login')
   @HttpCode(200)
   async login(@Body() dto: LoginRequestDto): Promise<LoginResponse> {

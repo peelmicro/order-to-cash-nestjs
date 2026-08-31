@@ -1012,9 +1012,23 @@ export interface components {
                 "application/problem+json": components["schemas"]["Problem"];
             };
         };
-        /** @description Rate limited. */
+        /**
+         * @description The client exceeded the rate limit of the endpoint it called. The
+         *     request was **not** applied and no fact was emitted; the client may
+         *     retry once the interval named by `Retry-After` has elapsed.
+         */
         TooManyRequests: {
             headers: {
+                /**
+                 * @description How long the client must wait before retrying, as a whole number of
+                 *     **seconds**. Delta-seconds only: the HTTP-date form RFC 9110 also
+                 *     permits is deliberately **not** used by this API, so a client may
+                 *     parse this header as an integer without branching on its form. The
+                 *     value is the remaining lifetime of the limiter's current window;
+                 *     the window length itself is per-assessment configuration and is
+                 *     deliberately not fixed by this contract.
+                 */
+                "Retry-After": number;
                 [name: string]: unknown;
             };
             content: {

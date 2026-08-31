@@ -58,7 +58,8 @@ Rules of this document:
 | `billing_invoicing` | R45 – R49 | 5 |
 | `projector_read_model` | R50 – R55 | 6 |
 | `observability_reliability` | R56 – R60, R62 | 6 |
-| **Total** | | **62** |
+| gateway edge protection (§8.1, per-assessment gateway feature) | R63 | 1 |
+| **Total** | | **63** |
 
 ---
 
@@ -531,11 +532,22 @@ order's reply, never to a second order or to an error; and WHERE `requestId`
 is omitted, THE SYSTEM SHALL place a normal order with no deduplication
 performed.
 
+
+### 8.1 Edge protection of the unauthenticated login endpoint — R63
+
+> **Filing note.** R63 is **not**, conceptually, an observability or reliability requirement, and the per-assessment feature that closes it is each assessment's **gateway**, not its `observability_reliability` feature. It is filed as a subsection of §8 for the same reason R61 and R62 carry the ids they do: ids are **never renumbered**, and section numbers are not renumbered either, because §9 and §10 are cited by id from `test-matrix.md` and from per-assessment specs. §8 is the last normative section, so a new normative subsection goes here. The subsection form itself follows §5.1's precedent.
+>
+> **Why a shared requirement at all, given §10's "auth, seeding and gateway endpoints are product-level concerns".** Because the refusal is already in the shared contract. `openapi.yaml` has declared `POST /auth/login` → `'429': TooManyRequests` since Pass B, and that file is inherited **verbatim** by #7, #8 and #9 — so every assessment already promises its clients a response that, without this requirement, nothing obliges it to be able to produce. #7 was in exactly that state until the `auth_rate_limit` pass, and the gap was invisible precisely because no `R<n>` and no `test-matrix.md` row existed to be `TODO`. §10 leaves open **which** auth endpoints exist and **how** credentials are checked; it does not license a documented response with no requirement above it. §10's own server-sent-events bullet already records the same judgement in the same words: where the shared contract publishes a surface, the shared requirements close the hole rather than leave it open.
+>
+> **What is required, and what is not.** R63 requires the **existence** of a limit on the unauthenticated login endpoint and the **observable consequences** of tripping it. It fixes no number: the attempt count and the window length are per-assessment configuration, exactly as §10's "concrete numbers deliberately left configurable" bullet already rules for the retry count, the poll interval and the RPC timeout. It also fixes no tracking key — per client address, per submitted identity, or per credential pair are all conforming, because the trilogy's own deployments differ (a browser client reaching the gateway through a server-side backend-for-frontend presents one address for every user, so mandating a per-address key here would mandate a policy that is wrong in at least one of the three).
+
+**R63.** THE SYSTEM SHALL enforce a rate limit on the unauthenticated login endpoint published in `openapi.yaml`; IF a client exceeds that limit, THEN THE SYSTEM SHALL refuse the attempt with HTTP `429` carrying a `Problem` body and a `Retry-After` header stating, as a whole number of seconds, how long the client must wait, SHALL issue no token, and SHALL make the refusal independent of whether the submitted credentials were valid; and WHILE a client is being refused by that limit, THE SYSTEM SHALL continue to serve that client's requests to every other endpoint — the limit is scoped to the login endpoint and is never applied to the API as a whole.
+
 ---
 
 ## 9. Coverage notes
 
-What these 62 requirements deliberately cover, so a reviewer can check the
+What these 63 requirements deliberately cover, so a reviewer can check the
 spec rather than the code:
 
 | Concern | Covered by |
@@ -556,6 +568,7 @@ spec rather than the code:
 | **Client-retry-safe order acceptance** | R62 (`orders.create`'s `requestId`; the concurrent-first-request race resolves to one order, never two, never an error) |
 | **Money as integer minor units, always** | R1, reinforced by R2 |
 | **The `.99` affordance, labelled as an affordance** | R42, R43, R44 and the boxed warning in §5.1 |
+| **Abuse resistance at the edge** | R63 (a rate limit exists on the unauthenticated login endpoint; its observable refusal is a `429` with a `Problem` body and a `Retry-After` in seconds, scoped to that endpoint alone) |
 
 ---
 
@@ -579,7 +592,13 @@ omission:
   observable consequences are required here (R16, R29, R59).
 - **Auth, seeding and gateway endpoints** are product-level concerns specified
   per assessment; R54 and R55 constrain only where query answers may come from
-  and how eventual consistency is surfaced.
+  and how eventual consistency is surfaced. **One exception, added with R63:**
+  where `openapi.yaml` publishes a response the outside world may observe, the
+  shared requirements own that response. R63 therefore requires the login rate
+  limit to exist and fixes what a client sees when it trips, while leaving the
+  attempt count, the window length and the tracking key to each assessment.
+  This exception is about the *published surface*, not about auth: an auth
+  behaviour with no counterpart in `openapi.yaml` stays per-assessment.
 - **The real-time transport is fixed, not left open.** Server-sent events are
   the trilogy's chosen realisation of R55's push channel and are published in
   `openapi.yaml` (`GET /orders/stream`, `text/event-stream`), which #7, #8 and #9
