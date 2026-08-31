@@ -381,7 +381,7 @@
         "concurrent duplicate requests for the same requestId never place two orders",
         "requestId remains optional: omitting it places a normal, non-deduplicated order"
       ],
-      "notes": "Folded feature 39 (orders_idempotent_replay) into this feature's spec pass, 2026-08-26, leader decision on human request \u2014 retry-and-recover-from-a-bad-fact (this feature's original scope) and retry-and-not-duplicate-an-order (39's scope) are adjacent enough to spec together rather than in two passes, and feature 25's F1 (a retry after an ambiguous gateway response placing a second real order) is the same failure shape this closes for orders.create directly. 39's own provenance, preserved: opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) did not implement it \u2014 requestId was accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass at the time because it was schema-affecting, not a local bug fix."
+      "notes": "Folded feature 39 (orders_idempotent_replay) into this feature's spec pass, 2026-08-26, leader decision on human request — retry-and-recover-from-a-bad-fact (this feature's original scope) and retry-and-not-duplicate-an-order (39's scope) are adjacent enough to spec together rather than in two passes, and feature 25's F1 (a retry after an ambiguous gateway response placing a second real order) is the same failure shape this closes for orders.create directly. 39's own provenance, preserved: opened by review_orders_acceptance.md's D3. asyncapi.yaml's OrdersCreateRequestPayload.requestId description is normative (\"A repeat with the same value returns the original order instead of placing a second one\") but orders_acceptance (feature 15) did not implement it — requestId was accepted, validated, and used only to seed causationId (place-order.handler.ts). Needs a persisted request_id column/lookup and a decision on the race between two concurrent first-time requests with the same key; deliberately not folded into feature 15's defect-fix pass at the time because it was schema-affecting, not a local bug fix."
     },
     {
       "id": 28,
@@ -506,7 +506,7 @@
       "phase": 24,
       "title": "README completion: diagrams, matrices, trade-offs, AI process section, demo GIF",
       "sdd": false,
-      "status": "pending",
+      "status": "in_review",
       "acceptance": [
         "Kafka-vs-NATS matrix with this project's own examples",
         "saga diagram happy + compensation",
@@ -536,7 +536,7 @@
       "status": "done",
       "acceptance": [
         "GET /catalog/products, /catalog/retailers, /catalog/companies return real data through the Gateway",
-        "no new bounded context \u2014 domain-model.md already assigns the reference catalogue to Orders",
+        "no new bounded context — domain-model.md already assigns the reference catalogue to Orders",
         "reuses the same reference-data lookup PlaceOrderHandler already calls, exposed as a query rather than duplicated"
       ]
     },
@@ -549,7 +549,7 @@
       "status": "done",
       "acceptance": [
         "POST /orders/{id}/cancel succeeds through the Gateway for a cancellable order",
-        "reuses the Order aggregate's existing cancelled state and cancellationReason invariant \u2014 no new domain modeling",
+        "reuses the Order aggregate's existing cancelled state and cancellationReason invariant — no new domain modeling",
         "an order in a terminal state (invoiced, completed, already cancelled) is rejected with a domain error, not a 503",
         "the operator note from CancelOrderRequest lands on the read-model timeline"
       ]
@@ -563,10 +563,10 @@
       "status": "done",
       "acceptance": [
         "a PRECONDITION_FAILED (or other terminal-business-outcome) RpcError reply from a responder is classified as terminal, not retried at capped backoff forever",
-        "a genuinely retryable transport failure (timeout, connection refused, no responder) is unaffected \u2014 still retried exactly as today",
+        "a genuinely retryable transport failure (timeout, connection refused, no responder) is unaffected — still retried exactly as today",
         "a saga_commands row that receives a terminal RpcError reaches a resolved end state (parked-with-reason, or equivalent) rather than retrying indefinitely"
       ],
-      "notes": "Found live by feature 41's follow-up pass (progress/impl_orders_cancel_responder.md, \"Follow-up pass\" section), reviewed and independently confirmed pre-existing (not introduced by that pass) in progress/review_orders_catalog_and_cancel_responders.md \u2014 flagged HIGH severity, non-blocking. NatsSagaCommandsAdapter.call() treats ANY RpcError-shaped reply as a SagaCommandTransportError, never a terminal business outcome. Reproduced live, twice: an operator-cancel racing the saga's own forward progress (despatch.create winning) leaves a stock.release command targeting a reservation Fulfillment has legitimately marked 'consumed' \u2014 Fulfillment correctly refuses with PRECONDITION_FAILED, but the adapter retries it forever at capped backoff. Net effect: the order is stuck at despatched (not cancelled), cancellation_reason stays NULL despite credit having genuinely already been refunded, and one saga_commands row retries permanently, unresolvable. The deeper race itself (operator-cancel vs. saga-forward-progress) needs a genuine saga-design decision (transactional re-check before dispatching the fast path, or CancelOrderHandler superseding an already-owed forward-progress command) and is NOT this feature's scope \u2014 this feature is the narrower, more urgent fix: make the adapter stop retrying a reply that was never going to succeed, so the SYMPTOM (permanent un-resolvable retry) is closed even before the underlying race is redesigned. Phase 8 because NatsSagaCommandsAdapter is orders_saga_orchestrator's own file."
+      "notes": "Found live by feature 41's follow-up pass (progress/impl_orders_cancel_responder.md, \"Follow-up pass\" section), reviewed and independently confirmed pre-existing (not introduced by that pass) in progress/review_orders_catalog_and_cancel_responders.md — flagged HIGH severity, non-blocking. NatsSagaCommandsAdapter.call() treats ANY RpcError-shaped reply as a SagaCommandTransportError, never a terminal business outcome. Reproduced live, twice: an operator-cancel racing the saga's own forward progress (despatch.create winning) leaves a stock.release command targeting a reservation Fulfillment has legitimately marked 'consumed' — Fulfillment correctly refuses with PRECONDITION_FAILED, but the adapter retries it forever at capped backoff. Net effect: the order is stuck at despatched (not cancelled), cancellation_reason stays NULL despite credit having genuinely already been refunded, and one saga_commands row retries permanently, unresolvable. The deeper race itself (operator-cancel vs. saga-forward-progress) needs a genuine saga-design decision (transactional re-check before dispatching the fast path, or CancelOrderHandler superseding an already-owed forward-progress command) and is NOT this feature's scope — this feature is the narrower, more urgent fix: make the adapter stop retrying a reply that was never going to succeed, so the SYMPTOM (permanent un-resolvable retry) is closed even before the underlying race is redesigned. Phase 8 because NatsSagaCommandsAdapter is orders_saga_orchestrator's own file."
     }
   ]
 }

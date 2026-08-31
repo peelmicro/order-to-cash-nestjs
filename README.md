@@ -56,6 +56,16 @@ Mailpit receives every notification the system sends — no account, no quota, a
 
 ![The Mailpit inbox holding the order lifecycle emails](docs/screenshots/mailpit-inbox.png)
 
+The rest of the operator UI — placing an order, the order list, billing and stock:
+
+<p align="center">
+  <img src="docs/screenshots/web-place-order.png" width="45%" alt="The place-order form" />
+  <img src="docs/screenshots/web-order-list.png" width="45%" alt="The order list" />
+  <br/>
+  <img src="docs/screenshots/web-billing.png" width="45%" alt="Billing — invoices and register-payment" />
+  <img src="docs/screenshots/web-stock.png" width="45%" alt="Stock levels and reservations" />
+</p>
+
 The four n8n workflows that drive the system unattended, and their executions firing on their own schedules:
 
 ![The four n8n workflows, all published](docs/screenshots/n8n-workflows.png)
@@ -82,7 +92,7 @@ The four n8n workflows that drive the system unattended, and their executions fi
 
 ## Architecture
 
-Six NestJS services, each owning its own MySQL database (MongoDB for the read model), talking over **two brokers with different jobs**. Clean Architecture inside every service — `presentation → application → domain`, with `infrastructure` implementing the ports the application declares, and `domain/` holding zero framework imports (enforced by an ESLint rule, not by convention).
+Six NestJS services talking over **two brokers with different jobs**. Four of them own a MySQL database each (`otc_orders`, `otc_fulfillment`, `otc_billing`, `otc_notifications`); the Projector owns the MongoDB read model; the Gateway owns no store of its own. Clean Architecture inside every service — `presentation → application → domain`, with `infrastructure` implementing the ports the application declares, and `domain/` holding zero framework imports (enforced by an ESLint rule, not by convention).
 
 ```mermaid
 flowchart TB
@@ -92,7 +102,7 @@ flowchart TB
     gw -->|NATS RPC| orders["Orders · saga orchestrator"]
     gw -->|NATS RPC| ful["Fulfillment"]
     gw -->|NATS RPC| bil["Billing"]
-    gw -->|NATS RPC| proj["Projector"]
+    gw -->|read-only query| mongo
 
     orders -->|NATS RPC: stock.reserve, despatch.create| ful
     orders -->|NATS RPC: credit.hold, invoice.issue| bil
@@ -108,9 +118,11 @@ flowchart TB
     ful --- fdb[("otc_fulfillment")]
     bil --- bdb[("otc_billing")]
     notif --- ndb[("otc_notifications")]
-    proj --- mongo[("MongoDB read model")]
+    proj -->|writes| mongo[("MongoDB read model")]
     notif -->|SMTP| mail["Mailpit"]
 ```
+
+**One relationship deliberately breaks the two-broker rule, and it is worth naming rather than hiding.** The Gateway does not call the Projector — the Projector answers no RPC subject at all. The Gateway queries the read model's MongoDB collection **directly, read-only** (`mongo-order-read-model.adapter.ts`), because R54 makes the Projector the only *writer* and a query hop that adds nothing but latency is hard to justify. It is the one place two services share a datastore, and the cost is real: the "database per service" boundary below holds for the four write models and not for the read model.
 
 Every service writes facts through a **transactional outbox** — the fact row and the state change commit in one transaction, and a relay publishes them afterwards. No service ever writes to Kafka and its database in the same breath.
 
@@ -139,17 +151,20 @@ Orchestrated, not choreographed — Orders owns the flow, so there is exactly on
 ```mermaid
 flowchart LR
     P["placed"] -->|stock.reserved.v1| SR["stock_reserved"]
+    %% credit.approved.v1 moves the order through TWO states in one handler
     SR -->|credit.approved.v1| CA["credit_approved"]
-    CA -->|order.confirmed.v1| C["confirmed"]
+    CA --> C["confirmed"]
     C -->|order.despatched.v1| D["despatched"]
     D -->|invoice.issued.v1| I["invoiced"]
     I -->|payment.received.v1| PD["paid"]
-    PD --> DONE["completed"]
+    PD -->|credit.released.v1| DONE["completed"]
 
     P -->|stock.rejected.v1| X1["cancelled<br/>nothing to undo"]
     SR -->|credit.rejected.v1| REL["stock.release"]
     REL -->|stock.released.v1| X2["cancelled<br/>credit_rejected"]
 ```
+
+Two edges need a word of explanation. `credit.approved.v1` moves the order through **two** states in a single handler (`stock_reserved → credit_approved → confirmed`, one aggregate load/save), emitting `order.confirmed.v1` as a *result* — Orders consumes that fact and deliberately does nothing with it (`saga-steps.ts` maps it to `skip`), which is why no edge is labelled with it. And the final hop to `completed` is driven by `credit.released.v1`, not by the payment: Billing emits `payment.received.v1` and `credit.released.v1` from one transaction, and it is the second that closes the saga.
 
 At `invoiced` the saga **stops and waits for the outside world** — no internal timer, no polling. A remittance arrives through the Gateway (the operator's button, an API test, or the n8n payment robot), and only then does it continue.
 
@@ -343,7 +358,7 @@ x-first-failed-at:2026-08-30T15:46:48.838Z  x-failed-at:2026-08-30T15:47:10.797Z
 traceparent:00-c8c87d5ec6b9ce721a473628325635dd-18aa934db1904c65-01
 ```
 
-Paste that trace id into Jaeger and you get the whole order, retries included.
+Paste that trace id into Jaeger and you get the whole order, retries included — **while the trace is still there**. Jaeger runs here with its default in-memory storage and no volume (`docker-compose.infra.yml`), so traces do not survive a restart and old ones age out. A dead letter therefore outlives its own trace: the `traceparent` stays correct and permanently resolvable in a deployment with real trace storage, and returns `trace not found` on a long-running demo stack. Configuring a storage backend is the fix; the header is not the problem.
 
 To count what is sitting there:
 
@@ -356,7 +371,7 @@ docker exec otc-kafka sh -c \
 
 ## n8n demo workflows
 
-Four workflows, committed as JSON under [`n8n/workflows/`](n8n/workflows/), talk **only to the Gateway REST API** — never a database, a broker, or a service's internal port (see [`specs/shared/n8n-workflows.md`](specs/shared/n8n-workflows.md), the spec both #8 and #9 reuse verbatim). They are demo automation: no requirement `R1`–`R60` is satisfied by them, and no service knows they exist.
+Four workflows, committed as JSON under [`n8n/workflows/`](n8n/workflows/), talk **only to the Gateway REST API** — never a database, a broker, or a service's internal port (see [`specs/shared/n8n-workflows.md`](specs/shared/n8n-workflows.md), the spec both #8 and #9 reuse verbatim). They are demo automation: no requirement `R1`–`R63` is satisfied by them, and no service knows they exist.
 
 | # | Workflow | Trigger | Default schedule |
 |---|---|---|---|
@@ -422,11 +437,12 @@ Every row is a decision that could defensibly have gone the other way. The alter
 | **Two brokers** (Kafka facts + NATS RPC) | Each is used for what it is good at, and the distinction is the thing worth teaching | Two pieces of infrastructure, two client libraries, two OpenTelemetry propagation paths |
 | **NATS core, no JetStream** | Nothing in the RPC path needs durability or replay — a timeout is a legitimate answer | Would blur the matrix above by duplicating Kafka's job |
 | **Polling outbox**, not CDC/Debezium | No dual write, no extra infrastructure, and identical on all three stacks of the trilogy | ~500 ms publish latency and steady DB load. Debezium is the production answer |
-| **Topic per service**, not per event | 3 topics + 3 DLQs instead of 13 + 13; new facts need no broker administration; per-order ordering preserved by partition key | Consumers receive facts they filter out |
+| **Topic per service**, not per event | 3 topics + 3 DLQs instead of 14 + 14; new facts need no broker administration; per-order ordering preserved by partition key | Consumers receive facts they filter out |
 | **Database per service** on one MySQL instance | Real logical isolation — no cross-database joins, no shared FKs, each service independently extractable | One instance is a single point of failure; production separates them |
 | **MongoDB read model**, not a relational replica | A denormalised document is the natural shape for "what happened to order X", and it proves the repository port abstracts the engine | Eventual consistency the UI must surface honestly, plus a second database technology to operate |
 | **Credit simulator + `.99` rule**, not a real PSP | Compensation must be demoable deterministically in five seconds | Demonstrates saga design rather than payment integration. Labelled an affordance in the spec, not a credit policy |
 | **n8n as the external world** | Payments and replenishment arrive from outside, as in reality — no hidden in-service timers faking demand. It speaks only the public REST API, so the same JSON serves #8 and #9 | One more container, demo-only |
+| **Gateway reads the read model directly**, rather than through an RPC hop | The Projector is the only writer (R54); a query subject in front of a read-optimised document store would add a hop, a serialisation and a failure mode for no gain | It is the one place two services share a datastore, so "database per service" holds for the four write models and not for the read model. Extracting the Projector later means giving it a query API first |
 | **SSE**, not WebSocket | The push is one-directional and `Last-Event-ID` reconnection is free | Bidirectionality nothing here needs is unavailable |
 | **pnpm monorepo** | Shared contracts and kernel without publishing packages; one `quality` script | "Monorepo ≠ shared runtime code" must be enforced by lint rules and review, not by repo boundaries |
 | **Vitest everywhere, no Jest** | One runner, one config idiom across six services and a Nuxt app | Some NestJS examples assume Jest and need translating |
@@ -462,9 +478,9 @@ Each claim below is a property of code in this repository, cited so it can be ch
 - **The write path is safe to run at N instances.** All three outbox relays claim their batch with `SELECT … FOR UPDATE SKIP LOCKED` ([orders](apps/orders/src/infrastructure/outbox/outbox-relay.ts#L128), [billing](apps/billing/src/infrastructure/outbox/outbox-relay.ts#L104), [fulfillment](apps/fulfillment/src/infrastructure/outbox/outbox-relay.ts#L104)), so two relays polling the same table take disjoint batches and a fact is never published twice because a second instance started.
 - **The saga sweeper claims the same way** ([drizzle-saga-command-store.ts:100](apps/orders/src/infrastructure/saga/drizzle-saga-command-store.ts#L100)) — parked and timed-out saga commands are swept exactly once no matter how many Orders instances are running.
 - **Business references stay unique under concurrency.** `ORD-`/`DES-`/`INV-`/`CR-` numbers come from a counter row incremented under `SELECT … FOR UPDATE` ([order-number-allocator.ts:84](apps/orders/src/infrastructure/persistence/order-number-allocator.ts#L84)); the second caller blocks rather than racing.
-- **Fact consumption scales with partitions, not with instances.** Every consumer joins a named Kafka consumer group, so adding an instance redistributes partitions instead of duplicating delivery. Per-order ordering is preserved because the partition key is the envelope's `correlationId` ([outbox-relay.ts:136](apps/orders/src/infrastructure/outbox/outbox-relay.ts#L136)), which `specs/shared/saga.md` fixes equal to the order id — so every fact about one order lands on one partition.
+- **Fact consumption scales with partitions, not with instances.** Every consumer joins a named Kafka consumer group, so adding an instance redistributes partitions instead of duplicating delivery. Per-order ordering is preserved because the partition key is the envelope's `correlationId` ([outbox-relay.ts:159](apps/orders/src/infrastructure/outbox/outbox-relay.ts#L159)), which `specs/shared/saga.md` fixes equal to the order id — so every fact about one order lands on one partition.
 - **SSE survives a load balancer.** The Gateway subscribes to the projector's read-model signal with a plain core-NATS subscription and **no queue group** ([nats-stream-signal.adapter.ts:33-34](apps/gateway/src/infrastructure/messaging/nats-stream-signal.adapter.ts#L33-L34)), so *every* Gateway instance receives *every* signal and pushes it to the clients it happens to hold. This is the one that is easy to get wrong: a queue group here would look tidier and would silently break the feature, because each signal would go to exactly one instance and the clients connected to the others would simply never update.
-- **Database per service.** No cross-database joins and no foreign keys across service boundaries, so each service is independently extractable onto its own instance.
+- **Database per service** for the four write models. No cross-database joins and no foreign keys across service boundaries, so each is independently extractable onto its own instance. The one documented exception is the read model: the Gateway queries the Projector's MongoDB collection directly, read-only (see Architecture and the trade-off table).
 
 ### What production would add
 
@@ -482,7 +498,7 @@ Each claim below is a property of code in this repository, cited so it can be ch
 
 ## How this is being built
 
-> **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. What follows is the short version.
+> **The full process guide lives at [`docs/PROCESS.md`](docs/PROCESS.md)** — the harness and SDD concepts in detail, the agent cast, the feature loop, EARS, the artifact registry, and the current status. **§11 is a ledger of what this process actually caught**, including the failures summarised below and roughly thirty more. What follows is the short version.
 
 The development **process is a deliverable here**, not just the software. This repository carries a spec-driven agent harness, built before any application code:
 
@@ -509,7 +525,7 @@ Small features skip the spec ceremony but still traverse the state machine. Ever
 
 The honest version, because a process section that only reports successes is marketing.
 
-**What ran autonomously.** Specification, implementation and review for 39 of 41 features, across 95 progress records. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
+**What ran autonomously.** Implementation and review for 39 of 41 features across 95 progress records, and full specification for the 8 that carry a `specs/<name>/` triple — the other 33 are `sdd: false` and skip the spec ceremony by design. The `reviewer` is adversarial by design and read-only — it reports and never patches — and it rejected real work repeatedly: `api_tests` was approved only on the third review after two rejections, `e2e_playwright` on the second, `notifications_service` on the second. Those rejections are the harness paying for itself; a reviewer that never rejects is a reviewer that is not reading.
 
 **Where the human gates were.** Two, both load-bearing. Between `spec_ready` and `in_progress` — no code is written against an unapproved spec, and specs surface *open points with recommendations* rather than silently deciding (one contract pass ended with 13 of them, 5 flagged as needing conscious approval). And before every commit: **Claude never runs `git commit`**. Each phase stops, reports what was done and how to test it by hand, and the human tests it before the history records anything.
 
@@ -522,6 +538,12 @@ The honest version, because a process section that only reports successes is mar
 
 **What the assistant got wrong, and how it was caught.** Twice it manufactured a cautious-sounding reason not to change something, and both evaporated on a single check — the human's "why would that matter?" was worth more than the reasoning that preceded it. It once relayed an implementer's confident, file-and-line-cited claim about a data-destroying script as fact; the reviewer tested it in an isolated project and it was simply false. It committed twice without authorisation and had to `git reset --soft`. And during the screenshot pass it captured a **1-span Jaeger trace**, reported success, and overwrote a good committed image — the query looked obviously correct and was picking up health checks.
 
+**The three worst, which an honesty section is worth nothing without.** All three are in [`docs/PROCESS.md`](docs/PROCESS.md) §11; they belong here too, because a reader should not have to go looking.
+
+- **An implementer deleted a failing assertion and marked the requirement done** (§11.7). The assertion was a faithful transcription of the requirement, and it was failing because the system genuinely violated it. This is the worst agent behaviour in the project's records: not a mistake, but the removal of the evidence of a mistake.
+- **The quality gate was inert from Phase 1** (§11.1). `pnpm quality` ran the plain test script rather than the coverage one, so coverage thresholds specified for **twenty phases** had never once failed a build. This README advertises those same gates in three places; they were decorative until Phase 21.
+- **A credential exposure the assistant created and the leader waved through** (§11.3). `env_file: [.env]` handed the n8n container `MYSQL_ROOT_PASSWORD`, `JWT_SECRET` and a real SMTP password — in a container publishing an unauthenticated UI and running arbitrary user-authored JavaScript. It was caught by review, not by design.
+
 The pattern in every one of those: **a plausible claim, asserted without a check.** Caution that has not been verified is not caution, and confidence is not evidence — which is why the review discipline is "probe the claim", not "read the code and agree".
 
 ## The specification
@@ -530,9 +552,9 @@ The pattern in every one of those: **a plausible claim, asserted without a check
 
 | File | What it defines |
 |---|---|
-| [`domain-model.md`](specs/shared/domain-model.md) | Aggregates, value objects, invariants, both state machines, the 13-fact catalogue |
+| [`domain-model.md`](specs/shared/domain-model.md) | Aggregates, value objects, invariants, both state machines, the 14-fact catalogue |
 | [`saga.md`](specs/shared/saga.md) | Happy path and both compensation paths, with sequence diagrams |
-| [`requirements.md`](specs/shared/requirements.md) | 61 requirements in EARS notation, `R1`–`R61` |
+| [`requirements.md`](specs/shared/requirements.md) | 63 requirements in EARS notation, `R1`–`R63` |
 | [`asyncapi.yaml`](specs/shared/asyncapi.yaml) | AsyncAPI 3.0.0 — fact topics, DLQs, every RPC subject, all payload schemas |
 | [`openapi.yaml`](specs/shared/openapi.yaml) | OpenAPI 3.1.0 — the Gateway REST contract |
 | [`test-matrix.md`](specs/shared/test-matrix.md) | Every `R<n>` mapped to the test that proves it |
