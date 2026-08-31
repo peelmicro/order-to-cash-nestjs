@@ -621,7 +621,7 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 | 22 | Prometheus, Grafana, Jaeger verification | ✅ auto-provisioned Grafana dashboard (5 panels, all reading live data), kafka-exporter for real consumer lag, and one trace genuinely spanning 6 services — the linkage was broken until this phase |
 | 23 | Full Docker Compose | ✅ 12 app images (6 services + web + seed + 4 migration jobs), all running non-root as uid 1000, verified healthy from a cold cycle against the live infra stack |
 | 24 | Documentation + demo recording | ✅ architecture and saga diagrams, the transport matrix, trade-offs, assumptions, reproducible screenshots and the compensation GIF |
-| 25 | Final checkpoint | ⬜ |
+| 25 | Final checkpoint | ✅ full `R1`–`R63` traceability walk, `specs/shared/` re-audited for stack leaks, coverage summary recomputed |
 
 ## Licence
 
