@@ -66,7 +66,7 @@ SDD inverts the usual order: write the specification first, in a notation precis
 
 ### The honesty clause
 
-SDD costs real ceremony, and for a 50-line feature the ceremony is decorative paperwork. That is why only 8 of this project's 38 features carry `"sdd": true` — the aggregates and state machines, the saga and its compensation, the outbox and idempotency, the read-model projection, and the observability wiring. Everything else skips the triple-doc but still travels the backlog state machine. The spec-becomes-infrastructure moments (Kafka topics derived from the AsyncAPI file, TypeScript types generated from both API documents) are where the spec pays for itself even on small features.
+SDD costs real ceremony, and for a 50-line feature the ceremony is decorative paperwork. That is why only 8 of this project's 41 features carry `"sdd": true` — the aggregates and state machines, the saga and its compensation, the outbox and idempotency, the read-model projection, and the observability wiring. Everything else skips the triple-doc but still travels the backlog state machine. The spec-becomes-infrastructure moments (Kafka topics derived from the AsyncAPI file, TypeScript types generated from both API documents) are where the spec pays for itself even on small features.
 
 ---
 
@@ -219,7 +219,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 | `progress/review_*.md` | The reviewer's verdict per feature | Probes with real output, defects with file/line/why, CHECKPOINTS walk. Includes two full rejection→fix→approve cycles | Phase 4 | every feature |
 | `progress/spec_*.md` | The spec author's record per spec pass | Contains the **ambiguity-resolution tables** — what the human gate actually reviews | Phase 3 | Phase 3 |
 | `specs/shared/` (7 files) | The system's definition, before the code | Stack-agnostic; reused verbatim by assessments #8 and #9. AsyncAPI drives real topic creation; both API docs drive type generation | Phase 3 | Phase 3 (amendments via the human gate) |
-| `specs/shared/test-matrix.md` | Requirement → test traceability | 61 rows; flipped from `TODO` to green as features land | Phase 3 | Phase 5 |
+| `specs/shared/test-matrix.md` | Requirement → test traceability | 63 rows; flipped from `TODO` to green as features land, and a row may also be *scoped* — proving less than its requirement says — only where the shortfall is stated and ratified at the gate | Phase 3 | Phase 5 |
 | `specs/<feature>/` | Per-feature triple-doc for the 8 large features | requirements (EARS) + design + tasks; human gate between spec and code. First one (`orders_aggregate`) went through 16 open points at the gate: 14 accepted, 2 amended | Phase 8 | Phase 8 |
 | `docs/PROCESS.md` | This document | Updated at the end of every phase — registry + status | Phase 6 | Phase 16/23 |
 | `README.md` | Honest front door at every commit | Grows incrementally each phase; never describes software that does not exist yet | Phase 1 | every phase |
@@ -236,7 +236,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 
 > Maintained at the end of every phase. History of *how* each phase went lives in `progress/history.md`; this is only the current position.
 
-**Position: Phases 1–24 complete — 40 of 41 features done.** Only Phase 25 (final checkpoint) remains. The web app is finished: auth (the JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline showing what caused each entry, billing with payment registration, and stock with delta replenish. Phase 18 adds black-box API tests driving a real spawned Gateway in front of a real fleet — the first time those two halves of the test estate have met — and they found a genuine ordering defect on their first run, whose fix (amendment A1) went through the spec gate. Phase 17 closed as a byproduct rather than a separate phase, because the tests were written inside each feature loop. Phase 19's Playwright suite then found a defect only a real browser could reach — a page showing `Live` while permanently stale — which no lower layer had caught. Phases 20–22 (n8n workflows, SonarQube gates, observability dashboards), 23 (full Docker Compose) and 24 (documentation + demo) have since closed; only Phase 25's final checkpoint remains.
+**Position: complete. All 25 phases closed, 41 of 41 features `done`.** `pnpm quality` exits 0 at 1500 tests, `./init.sh` exits 0, and every EARS requirement `R1`–`R63` is traced to a green test — 62 green, plus `R56` as a single deferral ratified at the human gate with its exclusions stated rather than hidden. The web app is finished: auth (the JWT never reaches the browser), place-order, order list, order detail with a live SSE saga timeline showing what caused each entry, billing with payment registration, and stock with delta replenish. Phase 18 adds black-box API tests driving a real spawned Gateway in front of a real fleet — the first time those two halves of the test estate have met — and they found a genuine ordering defect on their first run, whose fix (amendment A1) went through the spec gate. Phase 17 closed as a byproduct rather than a separate phase, because the tests were written inside each feature loop. Phase 19's Playwright suite then found a defect only a real browser could reach — a page showing `Live` while permanently stale — which no lower layer had caught. Phases 20–22 (n8n workflows, SonarQube gates, observability dashboards), 23 (full Docker Compose) and 24 (documentation + demo) have since closed; only Phase 25's final checkpoint remains.
 
 | Phase | What | State |
 |---|---|---|
@@ -264,7 +264,7 @@ Every process artifact in this repository: what it is for, and where it came fro
 | 22 | Prometheus, Grafana, Jaeger verification — found every trace was a single span, fixed the linkage, and the new DLQ panel surfaced 728 dead letters nobody knew about | ✅ |
 | 23 | Full Docker Compose — all 7 application services containerized on top of the existing infrastructure compose, live-verified (built, migrated, healthy, seeded from a cold cycle), every container running non-root as uid 1000, and the CLI-apps/compose-infra alternative mode re-verified | ✅ |
 | 24 | Documentation + demo — architecture and saga diagrams, the Kafka-vs-NATS matrix, DLQ inspection, trade-offs, assumptions, and reproducible screenshot/GIF capture. Rejected once on review: the documentation was green under test and false in six checkable ways | ✅ |
-| 25 | Final checkpoint — full traceability walk of `R1`–`R63`, `specs/shared/` re-audited for stack leaks, coverage summary recomputed | in review |
+| 25 | Final checkpoint — full traceability walk of `R1`–`R63`, `specs/shared/` re-audited for stack leaks, coverage summary recomputed. Rejected twice before it passed: the one genuinely missing test was written, ten untraced log sites closed, and a `MySQL` leak found surviving in the part of the matrix declared stack-neutral | ✅ |
 
 
 ---
