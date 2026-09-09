@@ -2617,6 +2617,9 @@ components:
           description: The compensating facts that ran before this cancellation, in causal order. Empty for `stock_rejected` — nothing was ever acquired (R26).
           items:
             $ref: '#/components/schemas/CompensationStep'
+        note:
+          type: string
+          description: Free-text operator note, carried through from the cancellation request so the timeline entry built from this fact can record it. Named identically in `openapi.yaml` (`CancelOrderRequest.note`). Optional, and absent unless an operator supplied one — `stock_rejected` and `credit_rejected` are decided by the saga, never asked for, so they never carry it.
       required:
         - orderReference
         - retailerCode
