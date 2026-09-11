@@ -609,6 +609,11 @@ export interface CreditReleaseRequestPayload {
  * unmodified original envelope so a redrive is a byte-for-byte republish;
  * everything about the failure lives here.
  *
+ * `x-first-failed-at` is the instant the FIRST processing attempt failed —
+ * never the instant processing began; it equals `x-failed-at` only when a
+ * single attempt was made. `x-failed-at` is the instant the final attempt
+ * failed, immediately before the record was dead-lettered.
+ *
  *
  * This interface was referenced by `AsyncApiComponents`'s JSON-Schema
  * via the `definition` "DeadLetterHeaders".
@@ -787,6 +792,10 @@ export interface OrderCancelledPayload {
    * The compensating facts that ran before this cancellation, in causal order. Empty for `stock_rejected` — nothing was ever acquired (R26).
    */
   compensationSteps: CompensationStep[];
+  /**
+   * Free-text operator note, carried through from the cancellation request so the timeline entry built from this fact can record it. Named identically in `openapi.yaml` (`CancelOrderRequest.note`). Optional, and absent unless an operator supplied one — `stock_rejected` and `credit_rejected` are decided by the saga, never asked for, so they never carry it.
+   */
+  note?: string;
 }
 /**
  * This interface was referenced by `AsyncApiComponents`'s JSON-Schema

@@ -1474,3 +1474,23 @@ Three lines added in each. This repository's code, tests, generated contracts an
 **A third finding, relevant to this repository too.** Applying `SA-2` went looking for the automated check that is supposed to keep the three copies of `specs/shared/` identical, and **there is none** — not in #8's `init.sh` (one `specs` hit, the per-feature triple-doc existence check; no reference to a sibling checkout at all) and none here. The trilogy's most load-bearing invariant, the one the entire parity claim rests on, is currently enforced only by whoever remembers to run `diff` by hand. `SA-1` and `SA-2` were both applied correctly; nothing would have told anyone if they had not been. A per-file `sha256sum` comparison across `specs/shared/`, skipped when the sibling checkout is absent, is cheap and would fail loudly the first time one copy was edited alone — recommended as a backlog entry in #8, and worth having here too if this repository is ever reopened.
 
 Recorded in both repositories' `progress/history.md` and in #8's README amendment registry.
+
+## Shared amendment SA-3 (raised in #8, applied here in the same session) — 2026-09-11
+
+**What was wrong.** `specs/shared/asyncapi.yaml` declared the dead-letter headers `x-first-failed-at` and `x-failed-at` as a bare `$ref: '#/components/schemas/Instant'`, with no definition, while every neighbouring header (`x-attempts`, `x-error`, `x-original-topic`) says what it means. The two assessments filled that silence differently, and both were green:
+- This repository renders the dispatch **entry** instant: `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts:136` has `const firstFailedAt = enteredAt;`, rendered by `kafka-dlq-publisher.ts:49` and asserted as the entry instant at `fact-retry-dispatcher.spec.ts:89`.
+- #8 renders the instant of the first **caught failure**.
+
+A redrive operator reading the header would get different instants from the two implementations for the same failure. #8's leader found this while reading this file for a ledger row.
+
+**The ruling, at #8's human gate.** `x-first-failed-at` is the instant the FIRST processing attempt failed, never the instant processing began, and equals `x-failed-at` only when a single attempt was made. `x-failed-at` is the instant the final attempt failed, immediately before the record was dead-lettered. That matches the header's own name. **This amendment changes the specification only.** The one-line code change here (`:136`) and a test whose clock advances between entry and first failure are backlog work (#8's id 75 carries it for both repositories).
+
+**Where the definition lives, and why not beside the `$ref`.** The first placement put a `description` next to each header's `$ref`, and this repository's contract generator then emitted `'x-first-failed-at'?: string` instead of `Instant`: a keyword beside `$ref` made it drop the reference. So the definitions live in `DeadLetterHeaders`' own block `description`, which the generator emits as the interface's JSDoc, and both headers stay `Instant`.
+
+**A defect from SA-2, repaired in this commit.** Applying SA-3 here ran `pnpm --filter @otc/contracts run check` for the first time since SA-2, and it failed: *"committed generated files are stale"*. The stale hunk was SA-2's own `note?: string` on `OrderCancelledPayload`. SA-2's commit (`bf45af0`) changed `asyncapi.yaml` and this file, and never ran `contracts:generate`, so four contracts tests had been red since then. The same four failed with the spec at HEAD, which proves they predated SA-3. Regenerating in this commit repairs both amendments at once. **The lesson for the SA convention:** applying an amendment to a repository includes regenerating that repository's spec-derived artefacts and running its own spec checks, not only matching bytes.
+
+**Verification, read from the runs:**
+- `pnpm --filter @otc/contracts run check`: *"contracts:check OK — committed generated files match a fresh `pnpm contracts:generate` run"*.
+- `pnpm --filter @otc/contracts run test`: 5 files, 22 tests passed.
+- The contracts typecheck and the workspace `pnpm run typecheck` both pass.
+- `specs/shared/asyncapi.yaml` is `cmp`-identical to #8's copy.

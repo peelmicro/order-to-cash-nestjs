@@ -2221,6 +2221,11 @@ components:
         Diagnostic headers of a dead-letter record. The payload stays the
         unmodified original envelope so a redrive is a byte-for-byte republish;
         everything about the failure lives here.
+
+        `x-first-failed-at` is the instant the FIRST processing attempt failed —
+        never the instant processing began; it equals `x-failed-at` only when a
+        single attempt was made. `x-failed-at` is the instant the final attempt
+        failed, immediately before the record was dead-lettered.
       properties:
         x-failed-consumer:
           type: string
