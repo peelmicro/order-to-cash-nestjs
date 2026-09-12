@@ -365,12 +365,18 @@ export interface paths {
          *     `despatched` onwards the answer is `409` — goods have left, and
          *     unwinding is a commercial matter that is out of scope.
          *
-         *     **202, not 200.** Cancellation may require compensation — releasing the
-         *     credit hold, then the stock reservation, in reverse order of acquisition
-         *     (`saga.md` §4.3) — and those steps complete when their **facts** arrive,
-         *     not when this call returns. The response names the compensation that was
-         *     planned so a client can show it; the timeline is the record of it
-         *     actually happening.
+         *     **202, not 200.** Cancellation may require compensation — releasing what
+         *     the order had acquired (`saga.md` §4.3) — and those steps complete when
+         *     their **facts** arrive, not when this call returns. The response names the
+         *     compensation that was planned so a client can show it; the timeline is
+         *     the record of it actually happening.
+         *
+         *     **A `credit_approved` or `confirmed` order may still despatch.** Its
+         *     despatch was requested when it was confirmed, so the cancellation
+         *     releases the stock reservation first and Fulfillment decides between the
+         *     two. If the despatch consumed the stock first, the cancellation is
+         *     overtaken: nothing is released, no `order.cancelled.v1` follows, and the
+         *     timeline shows the despatch (`saga.md` §4.3).
          */
         post: operations["cancelOrder"];
         delete?: never;
@@ -530,7 +536,7 @@ export interface components {
         CancelOrderResponse: {
             /** @constant */
             cancellationReason?: "operator_cancelled";
-            /** @description The acquisitions that will be unwound, in reverse order of acquisition. Empty when nothing had been acquired. */
+            /** @description The acquisitions that will be unwound, in the order they are released (`saga.md` §4.3) — `stock_release` then `credit_release` from `credit_approved` or `confirmed`. Empty when nothing had been acquired. */
             compensationPlanned: ("credit_release" | "stock_release")[];
             orderId: components["schemas"]["UniqueId"];
             orderReference: components["schemas"]["OrderReference"];
@@ -1545,7 +1551,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Cancellation accepted; compensation, if any, is under way. */
+            /** @description Cancellation accepted; compensation, if any, is under way. From `credit_approved` or `confirmed` it can still be overtaken by the despatch already requested. */
             202: {
                 headers: {
                     [name: string]: unknown;

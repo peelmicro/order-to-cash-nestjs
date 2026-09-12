@@ -208,7 +208,9 @@ detail:
    is the only acquired resource at that point in the flow.
 
 **Generalisation.** Compensation unwinds acquisitions in **reverse order of
-acquisition**, and only those that actually succeeded:
+acquisition**, and only those that actually succeeded — with one exception,
+the stock reservation a requested despatch can still consume, which is
+released **first** (see *The despatch already requested*, below):
 
 | Failure point | Acquired so far | Released, in this order | Then |
 |---|---|---|---|
@@ -216,10 +218,45 @@ acquisition**, and only those that actually succeeded:
 | `credit.hold` fails | stock reservation | stock reservation | cancel `credit_rejected` |
 | Operator cancels while `placed` | *(nothing)* | *(nothing)* | cancel `operator_cancelled` |
 | Operator cancels while `stock_reserved` | stock reservation | stock reservation | cancel `operator_cancelled` |
-| Operator cancels while `credit_approved` or `confirmed` | stock reservation, credit hold | credit hold (`credit.released.v1`, reason `order_cancelled`), then stock reservation (`stock.released.v1`) | cancel `operator_cancelled` |
+| Operator cancels while `credit_approved` or `confirmed` | stock reservation, credit hold — and `despatch.create` already issued | stock reservation first (`stock.released.v1`, reason `order_cancelled`), then credit hold (`credit.released.v1`, reason `order_cancelled`) | cancel `operator_cancelled` — **unless the despatch consumed the stock first**, in which case nothing is released and the order despatches |
 
 Cancellation is impossible from `despatched` onwards (Table T-1): goods have
 left, and unwinding is a commercial matter (credit note) that is out of scope.
+
+**The despatch already requested.** Step 3 issues `despatch.create` in the same
+handler that confirms the order, so an operator cancellation of a
+`credit_approved` or `confirmed` order always races a despatch that has already
+been requested. Both want the same stock reservation. Fulfillment **shall**
+decide `stock.release` and `despatch.create` for one order under one lock, so
+exactly one of them takes it — and the cancellation therefore releases the
+stock **first** and lets Fulfillment decide:
+
+- **The release wins.** `stock.released.v1` arrives and the orchestrator issues
+  `credit.release`; `credit.released.v1` then cancels the order with reason
+  `operator_cancelled`. A `despatch.create` that reaches Fulfillment after the
+  release is refused (`PRECONDITION_FAILED` — no reservation left to consume)
+  and emits no fact. That refusal is the expected end of a lost race, not a
+  saga failure: no retry, no dead-letter, no `order.saga_failed.v1`.
+- **The despatch wins.** The reservation is already consumed, so `stock.release`
+  releases nothing and emits no fact. No `credit.release` is issued — the hold
+  still backs an order that is shipping — and `order.despatched.v1` moves the
+  order on as usual. The cancellation is **overtaken**: it was accepted, but no
+  `order.cancelled.v1` follows, and the timeline shows the despatch. No fact
+  records the overtaken cancellation.
+
+Releasing the credit hold first, as reverse order of acquisition alone would
+suggest, is exactly wrong here: if the despatch then won, the order would ship
+with its credit hold already returned.
+
+**A credit approval that arrives after the cancellation.** A `credit.hold`
+issued before an operator cancelled a `stock_reserved` order can still be
+approved. A `credit.approved.v1` for an order whose operator cancellation has
+already been accepted — still `stock_reserved` with its stock release under way,
+or already `cancelled` with reason `operator_cancelled` — issues `credit.release`
+(reason `order_cancelled`) and **nothing else**: no transition, no
+`order.confirmed.v1`, no `despatch.create`. The hold was acquired, so it is
+unwound. That release is not one of the cancellation's recorded compensation
+steps; it reaches the timeline as its own `credit.released.v1`.
 
 ### 4.4 Sequence diagram — `CreditRejected` compensation
 
@@ -263,10 +300,10 @@ sequenceDiagram
 | `order.placed.v1` | ✅ issue `stock.reserve` | ✅ | ✅ |
 | `stock.reserved.v1` | ✅ → `stock_reserved`, issue `credit.hold` | ✅ | — |
 | `stock.rejected.v1` | ✅ → `cancelled` (`stock_rejected`) | ✅ | — |
-| `stock.released.v1` | ✅ → `cancelled` (`credit_rejected` / `operator_cancelled`) | ✅ | — |
-| `credit.approved.v1` | ✅ → `credit_approved` → `confirmed`, issue `despatch.create` | ✅ | — |
+| `stock.released.v1` | ✅ from `stock_reserved` → `cancelled` (`credit_rejected` / `operator_cancelled`); from `credit_approved` / `confirmed` during an operator cancellation, issue `credit.release` | ✅ | — |
+| `credit.approved.v1` | ✅ → `credit_approved` → `confirmed`, issue `despatch.create`; for an order whose operator cancellation was already accepted, issue `credit.release` only (§4.3) | ✅ | — |
 | `credit.rejected.v1` | ✅ issue `stock.release` | ✅ | — |
-| `credit.released.v1` | ✅ → `completed` when the order is `paid` | ✅ | — |
+| `credit.released.v1` | ✅ → `completed` when the order is `paid`; → `cancelled` (`operator_cancelled`) when it completes an operator cancellation from `credit_approved` / `confirmed` | ✅ | — |
 | `order.confirmed.v1` | — *(it emitted it)* | ✅ | ✅ |
 | `order.despatched.v1` | ✅ → `despatched`, issue `invoice.issue` | ✅ | ✅ |
 | `invoice.issued.v1` | ✅ → `invoiced` | ✅ | ✅ |

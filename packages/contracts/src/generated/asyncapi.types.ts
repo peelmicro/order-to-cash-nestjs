@@ -904,7 +904,7 @@ export interface OrdersCancelReplyPayload {
   status: OrderStatus;
   cancellationReason?: CancellationReason;
   /**
-   * The acquisitions that will be unwound, in reverse order of acquisition. The cancellation itself completes only when their facts arrive.
+   * The acquisitions that will be unwound, in the order they are released (`saga.md` §4.3) — `stock_release` then `credit_release` from `credit_approved` or `confirmed`. The cancellation itself completes only when their facts arrive, and from those two statuses it can be overtaken by the despatch already requested.
    */
   compensationPlanned: ('credit_release' | 'stock_release')[];
 }

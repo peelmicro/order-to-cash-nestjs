@@ -861,9 +861,11 @@ operations:
       $ref: '#/channels/ordersCancel'
     description: |
       Operator cancellation, legal only from `placed`, `stock_reserved`,
-      `credit_approved` or `confirmed` (R8). The responder unwinds acquisitions
-      in **reverse order of acquisition** — credit hold first, then stock
-      reservation — and only those that actually succeeded (`saga.md` §4.3).
+      `credit_approved` or `confirmed` (R8). The responder unwinds only the
+      acquisitions that actually succeeded (`saga.md` §4.3) — from
+      `credit_approved` or `confirmed` the stock reservation first, then the
+      credit hold, because the despatch requested on confirmation may still
+      consume that stock; if it does, the cancellation is overtaken.
       From `despatched` onwards the reply is `ORDER_NOT_CANCELLABLE`.
     reply:
       address:
@@ -3214,7 +3216,7 @@ components:
           $ref: '#/components/schemas/CancellationReason'
         compensationPlanned:
           type: array
-          description: The acquisitions that will be unwound, in reverse order of acquisition. The cancellation itself completes only when their facts arrive.
+          description: The acquisitions that will be unwound, in the order they are released (`saga.md` §4.3) — `stock_release` then `credit_release` from `credit_approved` or `confirmed`. The cancellation itself completes only when their facts arrive, and from those two statuses it can be overtaken by the despatch already requested.
           items:
             type: string
             enum:
