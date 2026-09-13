@@ -27,6 +27,28 @@ function fixedClock(instants: readonly Date[]): Clock {
   };
 }
 
+/**
+ * A SETTABLE clock — `now()` returns whatever was last `set(...)`, exactly
+ * like a real wall clock would to two calls straddling some work, and
+ * UNLIKE `fixedClock` above: `fixedClock` advances on every CALL, so it
+ * cannot tell apart "read before the retry loop starts" from "read inside
+ * the first catch", because both are simply "the Nth call" when nothing
+ * between them also reads the clock — the two shapes consume the same
+ * array index and produce the same value. Mirrors the dotnet reference's
+ * `FakeClock` (`tests/Orders.UnitTests/FactRetryDispatcherTests.cs`,
+ * `DeadLetterPublication_FirstFailedAt_IsTheFirstAttemptsClockReading_NeverALaterOne`),
+ * which is exactly this shape for exactly this reason.
+ */
+function mutableClock(initial: Date): Clock & { set(value: Date): void } {
+  let current = initial;
+  return {
+    now: () => current,
+    set(value: Date): void {
+      current = value;
+    },
+  };
+}
+
 function instantDelay(): { delay: DelayPort; calls: number[] } {
   const calls: number[] = [];
   return {
@@ -66,7 +88,23 @@ function envelope(overrides: Partial<Envelope> = {}): Envelope {
 
 describe('FactRetryDispatcher — OR1 (retry-then-DLQ)', () => {
   it('retries up to the configured maximum with exponential backoff, then publishes to the dlq topic and swallows', async () => {
-    const clock = fixedClock([new Date('2026-08-26T09:00:00.000Z'), new Date('2026-08-26T09:00:05.000Z')]);
+    // A SETTABLE clock, advanced by the process callback itself the
+    // instant each attempt fails — so `firstFailedAt`
+    // (asyncapi.yaml:2227-2229, SA-3) is proven to be the FIRST attempt's
+    // own failure instant (t1), told apart from BOTH `enteredAt` (t0, the
+    // dispatch-entry instant the contract explicitly forbids) and
+    // `failedAt` (t3, the last attempt's instant). A dispatcher that reads
+    // `firstFailedAt` before the loop starts (the old, wrong meaning)
+    // observes t0 here, not t1 — genuinely distinguishable because the
+    // clock has not yet been advanced at that point in real execution,
+    // not merely because of how many times `clock.now()` happens to be
+    // called (see `mutableClock`'s own comment).
+    const t0 = new Date('2026-08-26T09:00:00.000Z'); // enteredAt
+    const t1 = new Date('2026-08-26T09:00:01.000Z'); // attempt 1's own failure
+    const t2 = new Date('2026-08-26T09:00:02.000Z'); // attempt 2's own failure
+    const t3 = new Date('2026-08-26T09:00:03.000Z'); // attempt 3's own failure — also failedAt
+    const clock = mutableClock(t0);
+    const advances = [t1, t2, t3];
     const { delay, calls: delayCalls } = instantDelay();
     const { publisher, calls: dlqCalls } = fakeDlq();
     const dispatcher = new FactRetryDispatcher(clock, delay, publisher, { maxAttempts: 3, backoffBaseMs: 500 });
@@ -74,6 +112,7 @@ describe('FactRetryDispatcher — OR1 (retry-then-DLQ)', () => {
     let processCalls = 0;
 
     await dispatcher.dispatch('otc.orders.facts.v1', env, 'orders.saga', async () => {
+      clock.set(advances[processCalls]!);
       processCalls += 1;
       throw new Error('boom');
     });
@@ -86,10 +125,28 @@ describe('FactRetryDispatcher — OR1 (retry-then-DLQ)', () => {
     expect(dlqCalls[0]!.meta).toMatchObject({
       failedConsumer: 'orders.saga',
       attempts: 3,
-      firstFailedAt: new Date('2026-08-26T09:00:00.000Z'),
-      failedAt: new Date('2026-08-26T09:00:05.000Z'),
+      firstFailedAt: t1, // the FIRST attempt's own failure, never enteredAt (t0) nor the last attempt's (t3)
+      failedAt: t3,
     });
     expect((dlqCalls[0]!.meta.error as Error).message).toBe('boom');
+  });
+
+  it('x-first-failed-at equals x-failed-at when a single attempt was made (asyncapi.yaml:2227-2229, SA-3)', async () => {
+    const t0 = new Date('2026-08-26T09:00:00.000Z'); // enteredAt
+    const tFail = new Date('2026-08-26T09:00:05.000Z'); // the single attempt's own failure
+    const clock = mutableClock(t0);
+    const { delay } = instantDelay();
+    const { publisher, calls: dlqCalls } = fakeDlq();
+    const dispatcher = new FactRetryDispatcher(clock, delay, publisher, { maxAttempts: 1, backoffBaseMs: 500 });
+
+    await dispatcher.dispatch('otc.orders.facts.v1', envelope(), 'orders.saga', async () => {
+      clock.set(tFail);
+      throw new Error('boom');
+    });
+
+    expect(dlqCalls).toHaveLength(1);
+    expect(dlqCalls[0]!.meta.firstFailedAt).toEqual(dlqCalls[0]!.meta.failedAt);
+    expect(dlqCalls[0]!.meta.firstFailedAt).toEqual(tFail); // never t0, the entry instant
   });
 
   it('retries then succeeds without ever calling dlq.publish', async () => {

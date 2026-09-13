@@ -133,7 +133,13 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
     // controls the recorded value exactly — the same discipline every
     // other timestamp in this method already follows.
     const enteredAt = this.clock.now();
-    const firstFailedAt = enteredAt;
+    // x-first-failed-at (asyncapi.yaml:2227-2229, SA-3) is the instant the
+    // FIRST processing attempt failed — never `enteredAt`, the instant
+    // dispatch began. Captured once, inside the catch, the first time
+    // through; a later attempt's failure must never re-stamp it (the
+    // dotnet reference's `firstFailedAt ??= clock.UtcNow` — same
+    // discipline here via the `undefined` guard).
+    let firstFailedAt: Date | undefined;
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= this.policy.maxAttempts; attempt += 1) {
@@ -143,6 +149,7 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
         return;
       } catch (error) {
         lastError = error;
+        firstFailedAt ??= this.clock.now();
         if (attempt < this.policy.maxAttempts) {
           await this.delay.for(this.policy.backoffBaseMs * 2 ** (attempt - 1));
         }
@@ -154,7 +161,11 @@ export class FactRetryDispatcher implements DispatchesFactRetries {
       failedConsumer: consumer,
       attempts: this.policy.maxAttempts,
       error: lastError,
-      firstFailedAt,
+      // The loop always runs at least once (`loadFactRetryPolicy` floors
+      // `maxAttempts` at 1), so `firstFailedAt` is always set by here;
+      // `?? failedAt` is the same defensive fallback the dotnet reference
+      // uses (`firstFailedAt ?? failedAt`), never an expected path.
+      firstFailedAt: firstFailedAt ?? failedAt,
       failedAt,
     });
     const traceId = activeTraceId();

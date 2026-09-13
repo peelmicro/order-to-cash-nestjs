@@ -1494,3 +1494,25 @@ A redrive operator reading the header would get different instants from the two 
 - `pnpm --filter @otc/contracts run test`: 5 files, 22 tests passed.
 - The contracts typecheck and the workspace `pnpm run typecheck` both pass.
 - `specs/shared/asyncapi.yaml` is `cmp`-identical to #8's copy.
+
+## SA-3 code alignment — `x-first-failed-at` becomes the first FAILURE instant (raised and tracked in #8 as backlog id 75) — 2026-09-13
+
+**Why this was owed.** `SA-3` (2026-09-11) gave the dead-letter header a meaning in the shared spec both assessments read: *"`x-first-failed-at` is the instant the FIRST processing attempt failed — never the instant processing began; it equals `x-failed-at` only when a single attempt was made"* (`specs/shared/asyncapi.yaml:2227-2229`). The amendment was prose only, so nothing here failed — and **this repository's code implemented the superseded meaning at three sites**, which meant a redrive operator reading the header got a different instant from #7 than from #8 for the same failure. #8 already conformed; this closes the parity break on the code side.
+
+**What changed.** All three dispatchers now take the reading inside the `catch`:
+
+| File | Was | Now |
+|---|---|---|
+| `apps/orders/src/infrastructure/messaging/fact-retry-dispatcher.ts` | `const firstFailedAt = enteredAt;` (`:136`) | `firstFailedAt ??= this.clock.now()` inside the catch |
+| `apps/projector/src/infrastructure/messaging/fact-retry-dispatcher.ts` | `this.clock.now()` **before** the retry loop (`:126`) | same shape as orders |
+| `apps/notifications/src/infrastructure/messaging/fact-retry-dispatcher.ts` | `this.clock.now()` before the loop (`:123`) | same shape as orders |
+
+`enteredAt` is untouched in orders — it feeds the latency histogram and has nothing to do with this header.
+
+**The guards, and two of them did not exist.** Orders' spec asserted the **wrong** meaning at `:89` (the entry instant, pinned as correct) and is corrected. Projector and notifications had **no spec asserting this header at all**; both now have one, and all three assert the contract's second clause — a single attempt makes `firstFailedAt` equal `failedAt`.
+
+**Armed.** Reverting each dispatcher to its old shape fails its named spec: `AssertionError: expected … 2026-08-26T09:00:01.000Z … 2026-08-26T09:00:00.000Z`, and `expected 2026-08-26T09:00:00.000Z to deeply equal 2026-08-26T09:00:05.000Z` for the single-attempt clause. Restored by `cp`, verified by `cmp`, green again.
+
+**The finding worth carrying, and it cost a false green to learn.** The first draft of the two new specs reused orders' existing **call-ordinal** fake clock — and the armed run came back **174/174 green**. Projector and notifications read the clock the *same number of times* before and after the change (orders differs only because it has a separate `enteredAt` read), so a call-ordinal clock cannot distinguish *"before the loop"* from *"inside the first catch."* Replaced with a settable clock advanced by the failing process at the moment of failure. **A fixture that makes two candidate meanings numerically identical disarms every assertion built on it, however the assertion is written** — the same defect then turned up in #8's own guard for this header, which is fixed there in the same session.
+
+**Counts:** orders **519/519**, projector **174/174**, notifications **119/119**, `pnpm lint` exit 0. No change under `specs/shared/`.
