@@ -13,12 +13,14 @@
 //                                          `stock.released.v1` fact over REAL
 //                                          Kafka — the exact R27/R28
 //                                          mechanism, re-triggered
-//   - `credit_approved`/`confirmed`     -> `credit.release` over REAL NATS
-//                                          FIRST (reverse order of
-//                                          acquisition, saga.md §4.3), then
-//                                          `stock.release`, proven strictly
-//                                          ordered — the follow-up pass's own
-//                                          proof
+//   - `credit_approved`/`confirmed`     -> `stock.release` over REAL NATS
+//                                          FIRST (SA-4: the contested
+//                                          resource goes first so
+//                                          Fulfillment's one lock can
+//                                          arbitrate it against the despatch
+//                                          already requested, saga.md §4.3),
+//                                          then `credit.release`, proven
+//                                          strictly ordered
 //   - `despatched`                      -> `ORDER_NOT_CANCELLABLE` (terminal, R8)
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
@@ -148,9 +150,9 @@ async function startFulfillmentOnlyResponder(
  * order cannot race past `confirmed` before the cancel RPC is issued, the
  * same isolation `startFulfillmentOnlyResponder` above already established
  * for the `stock_reserved` branch. `issuedOrder` records EACH request's
- * kind in the exact sequence it was received — the reverse-order-of-
- * acquisition proof this test needs: `credit.release` strictly BEFORE
- * `stock.release`, not merely "both eventually happen".
+ * kind in the exact sequence it was received — the SA-4 ordering proof this
+ * test needs: `stock.release` strictly BEFORE `credit.release`, not merely
+ * "both eventually happen".
  */
 async function startBillingApprovedOnlyResponder(harness: SagaIntegrationHarness): Promise<{
   issuedOrder: string[];
@@ -357,7 +359,7 @@ describe('orders.cancel — operator-initiated cancellation (Testcontainers: rea
     await fulfillmentOnly.stop();
   }, 60_000);
 
-  it('OCR-credit-release — issues credit.release strictly BEFORE stock.release (reverse order of acquisition, saga.md §4.3); real credit.released.v1 + stock.released.v1 facts over real Kafka complete the cancellation', async () => {
+  it('OCR-stock-first (SA-4) — issues stock.release strictly BEFORE credit.release (the contested resource first, saga.md §4.3); real stock.released.v1 + credit.released.v1 facts over real Kafka complete the cancellation', async () => {
     // `despatch.create` deliberately has NO responder — see
     // `startBillingApprovedOnlyResponder`'s own header for why: it isolates
     // this branch from the saga's own forward progress past `confirmed`.
@@ -376,7 +378,7 @@ describe('orders.cancel — operator-initiated cancellation (Testcontainers: rea
     expect(isRpcError(reply)).toBe(false);
     const success = reply as OrdersCancelReplyPayload;
     expect(success.status).toBe('confirmed');
-    expect(success.compensationPlanned).toEqual(['credit_release', 'stock_release']);
+    expect(success.compensationPlanned).toEqual(['stock_release', 'credit_release']);
     expect(success).not.toHaveProperty('cancellationReason');
 
     // Still confirmed immediately after the reply — cancellation is NOT
@@ -385,12 +387,11 @@ describe('orders.cancel — operator-initiated cancellation (Testcontainers: rea
     // uses).
     expect(await orderStatus(order.id.value)).toBe('confirmed');
 
-    // The reverse-order-of-acquisition proof: wait for the full chain to
-    // complete, then assert credit.release was issued STRICTLY BEFORE
-    // stock.release — the exact sequence, not merely that both eventually
-    // happened.
+    // SA-4's ordering proof: wait for the full chain to complete, then
+    // assert stock.release was issued STRICTLY BEFORE credit.release — the
+    // exact sequence, not merely that both eventually happened.
     await waitFor(async () => (await orderStatus(order.id.value)) === 'cancelled');
-    expect(billingApproved.issuedOrder).toEqual(['credit.release', 'stock.release']);
+    expect(billingApproved.issuedOrder).toEqual(['stock.release', 'credit.release']);
 
     expect(billingApproved.creditReleaseRequests).toHaveLength(1);
     expect(billingApproved.creditReleaseRequests[0]!.request).toMatchObject({

@@ -7,12 +7,13 @@ import { Inject } from '@nestjs/common';
 import { CommandHandler, EventBus, type ICommandHandler } from '@nestjs/cqrs';
 import { SagaFactHandler, type SagaFactResult } from '../saga-fact-handler';
 import {
-  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
+  LateCreditApprovalRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
   OrderMarkedStockReserved,
   OrderPlacedFactRecorded,
+  StockReleasedForCancellationRecorded,
 } from '../events/saga-dispatch.events';
 import {
   HandleCreditApprovedFactCommand,
@@ -84,11 +85,25 @@ export class HandleCreditApprovedFactHandler
     @Inject(EventBus) private readonly eventBus: EventBus,
   ) {}
 
+  /**
+   * SA-4 — this is the ONE wrapper whose published event depends on WHICH
+   * command was enqueued, not merely on whether one was. The ordinary path
+   * confirms the order and owes `despatch.create` (`OrderConfirmed`); a
+   * late `credit.approved.v1` for an order whose operator cancellation was
+   * already accepted owes `credit.release` and performs no transition
+   * (`LateCreditApprovalRecorded`). Keying off the fact type alone would
+   * publish `OrderConfirmed` for the late case and issue a
+   * `despatch.create` for an order that is being cancelled.
+   */
   async execute(command: HandleCreditApprovedFactCommand): Promise<SagaFactResult> {
     const result = await this.handler.handle(command.envelope, command.topic);
     if (result.outcome === 'processed' && result.enqueued) {
       const orderId = command.envelope.correlationId;
-      this.eventBus.publish(new OrderConfirmed(orderId, command.envelope.correlationId));
+      this.eventBus.publish(
+        result.enqueued === 'credit.release'
+          ? new LateCreditApprovalRecorded(orderId, command.envelope.correlationId)
+          : new OrderConfirmed(orderId, command.envelope.correlationId),
+      );
     }
     return result;
   }
@@ -117,11 +132,29 @@ export class HandleCreditRejectedFactHandler
 export class HandleStockReleasedFactHandler
   implements ICommandHandler<HandleStockReleasedFactCommand, SagaFactResult>
 {
-  constructor(@Inject(SagaFactHandler) private readonly handler: SagaFactHandler) {}
+  constructor(
+    @Inject(SagaFactHandler) private readonly handler: SagaFactHandler,
+    @Inject(EventBus) private readonly eventBus: EventBus,
+  ) {}
 
-  // Cancel path B's terminal fact (R27/R28) — no command is ever owed.
+  /**
+   * `stock.released.v1` has THREE step-table variants (saga-steps.ts).
+   * R28/SO7's `stock_reserved` variant is cancel path B's terminal fact and
+   * owes NO command — `result.enqueued` stays `undefined` for it, exactly
+   * as before SA-4. The `credit_approved`/`confirmed` variants owe
+   * `credit.release` (the operator cancellation's stock release won
+   * Fulfillment's lock), published as
+   * `StockReleasedForCancellationRecorded` so `order.sagas.ts`'s fast path
+   * can issue it — the same "publish only when `result.enqueued`" guard
+   * every other dispatch-owed event uses.
+   */
   async execute(command: HandleStockReleasedFactCommand): Promise<SagaFactResult> {
-    return this.handler.handle(command.envelope, command.topic);
+    const result = await this.handler.handle(command.envelope, command.topic);
+    if (result.outcome === 'processed' && result.enqueued) {
+      const orderId = command.envelope.correlationId;
+      this.eventBus.publish(new StockReleasedForCancellationRecorded(orderId, command.envelope.correlationId));
+    }
+    return result;
   }
 }
 
@@ -171,28 +204,20 @@ export class HandlePaymentReceivedFactHandler
 export class HandleCreditReleasedFactHandler
   implements ICommandHandler<HandleCreditReleasedFactCommand, SagaFactResult>
 {
-  constructor(
-    @Inject(SagaFactHandler) private readonly handler: SagaFactHandler,
-    @Inject(EventBus) private readonly eventBus: EventBus,
-  ) {}
+  constructor(@Inject(SagaFactHandler) private readonly handler: SagaFactHandler) {}
 
   /**
-   * `credit.released.v1` now has THREE step-table variants (feature 41's
-   * follow-up pass, saga-steps.ts): R24's `paid` variant closes the saga
-   * (`order.completed.v1`) and owes NO command — `result.enqueued` stays
-   * `undefined` for it, exactly as before this pass touched anything. The
-   * `credit_approved`/`confirmed` variants owe `stock.release` — THIS is
-   * the new case, published as `CreditReleasedForCancellationRecorded` so
-   * `order.sagas.ts`'s fast path can issue it, mirroring every other
-   * dispatch-owed event's "publish only when `result.enqueued`" guard.
+   * SA-4 — `credit.released.v1`'s three variants now owe NOTHING between
+   * them, so this wrapper takes no `EventBus` at all (the same shape
+   * `HandleStockRejectedFactHandler` above already has): R24's `paid`
+   * variant closes the saga (`order.completed.v1`), and the
+   * `credit_approved`/`confirmed` variants are the TERMINAL cancel of an
+   * operator cancellation. Before SA-4 those two owed `stock.release` under
+   * the superseded credit-first ordering; the command they owed moved to
+   * `stock.released.v1`'s own variants.
    */
   async execute(command: HandleCreditReleasedFactCommand): Promise<SagaFactResult> {
-    const result = await this.handler.handle(command.envelope, command.topic);
-    if (result.outcome === 'processed' && result.enqueued) {
-      const orderId = command.envelope.correlationId;
-      this.eventBus.publish(new CreditReleasedForCancellationRecorded(orderId, command.envelope.correlationId));
-    }
-    return result;
+    return this.handler.handle(command.envelope, command.topic);
   }
 }
 

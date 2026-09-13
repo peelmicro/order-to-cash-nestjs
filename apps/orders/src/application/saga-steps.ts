@@ -2,7 +2,7 @@
 // of saga.md §3.1/§4 plus the consumption map §5. Pure data + pure
 // functions, framework-free: no port, no clock, no DB. Every fact ×
 // every status is unit-tested exhaustively in saga-steps.spec.ts.
-import type { CompensationStep, Envelope, StockReleasedPayload } from '@otc/contracts';
+import type { CompensationStep, CreditReleasedPayload, Envelope, StockReleasedPayload } from '@otc/contracts';
 import { UniqueId } from '@otc/shared-kernel';
 import type { CancellationReason } from '../domain/order-cancellation-reason.js';
 import type { Order, TransitionContext } from '../domain/order.js';
@@ -10,12 +10,13 @@ import type { OrderStatus } from '../domain/order-status.js';
 
 /**
  * The six outbound saga commands (design.md §6.1, extended by feature 41's
- * follow-up pass) — the closed set `commandAfter` may name, PLUS
- * `credit.release`, which `commandAfter` never names (no step-table row
- * owes it — see `credit.release`'s own comment below) but which
- * `CancelOrderHandler` enqueues directly, the same "outside the fact-driven
- * table, same durable mechanism" shape `stock.release`'s operator-cancel
- * variant already established for the `stock_reserved` branch.
+ * follow-up pass and re-pointed by SA-4) — the closed set `commandAfter`
+ * may name. SA-4 swapped which of the two releases each side owns:
+ * `credit.release` is now named by a step-table row (`stock.released.v1`'s
+ * `credit_approved`/`confirmed` variants), and `stock.release` is what
+ * `CancelOrderHandler` enqueues DIRECTLY for every operator cancellation —
+ * the "outside the fact-driven table, same durable mechanism" shape, now
+ * used by all three compensating statuses.
  */
 export const SAGA_COMMAND_KINDS = [
   'stock.reserve',
@@ -70,31 +71,62 @@ export function mapReason(reason: StockReleasedPayload['reason']): CancellationR
 }
 
 /**
- * Feature 41's follow-up pass, the `credit_approved`/`confirmed` variant of
- * `stock.released.v1` below: TWO acquisitions are unwound in this branch
- * (credit hold, then stock reservation — reverse order of acquisition,
- * saga.md §4.3), so `compensationSteps` should name both, not only the
- * CURRENT triggering fact (`stepsFrom` below reports only the ONE fact it
- * is handed). This step-table function has no saga-instance record of the
- * EARLIER `credit.released.v1` fact's own `eventId`/`occurredAt` — this
- * codebase keeps no such cross-fact state anywhere (`saga-steps.ts`'s own
- * module header: "the aggregate never sees the fact itself, only what this
- * function hands it") — so the synthesised `credit_released` entry below
- * deliberately carries NO `eventId` (the schema's own field is optional,
- * `CompensationStep.eventId?`) rather than fabricate one; a reader tracing
- * `order.cancelled.v1`'s `compensationSteps` back to the credit release's
+ * `CreditReleasedPayload.reason` -> `CancellationReason` for
+ * `credit.released.v1`'s `credit_approved`/`confirmed` variants (SA-4) —
+ * `mapReason`'s mirror for the OTHER completing fact. `order_cancelled` is
+ * the only reason ever legal at those statuses (Billing's
+ * `billing.credit.release` responder always releases with it; the RPC has
+ * no caller-chosen reason at all), and `invoice_paid` reaches this fact
+ * type only on the SEPARATE `paid` advance variant, which never calls this.
+ * Read from the fact rather than returned as a constant deliberately: a
+ * constant would make the terminal cancellation's reason unfalsifiable by
+ * anything on the wire.
+ */
+export function mapCreditReleaseReason(reason: CreditReleasedPayload['reason']): CancellationReason {
+  if (reason !== 'order_cancelled') {
+    throw new Error(`saga-steps: mapCreditReleaseReason: credit.released.v1 carried reason "${String(reason)}" at credit_approved/confirmed — expected order_cancelled`);
+  }
+  return 'operator_cancelled';
+}
+
+/**
+ * `credit.released.v1`'s `credit_approved`/`confirmed` variants below (the
+ * TERMINAL step of an operator cancellation since SA-4): TWO acquisitions
+ * are unwound in this branch — stock reservation FIRST (the contested
+ * resource, saga.md §4.3's "The despatch already requested"), then the
+ * credit hold — so `compensationSteps` names both, in that order, not only
+ * the CURRENT triggering fact (`stepsFrom` below reports only the ONE fact
+ * it is handed).
+ *
+ * SA-4 inverted WHICH of the two has to be synthesised; the trade-off
+ * itself is unchanged. This step-table function has no saga-instance record
+ * of the EARLIER `stock.released.v1` fact's own `eventId`/`occurredAt` —
+ * this codebase keeps no such cross-fact state anywhere (`saga-steps.ts`'s
+ * own module header: "the aggregate never sees the fact itself, only what
+ * this function hands it") — so the synthesised `stock_released` entry
+ * below deliberately carries NO `eventId` (the schema's own field is
+ * optional, `CompensationStep.eventId?`) and reuses the CURRENT fact's
+ * `occurredAt` rather than fabricate an earlier one; a reader tracing
+ * `order.cancelled.v1`'s `compensationSteps` back to the stock release's
  * OWN outbox row must join on `(orderReference, eventType)` instead of a
  * direct `eventId`, a known, disclosed limitation, not a silent gap.
  */
-function stepsFromCreditCompensation(fact: Envelope): readonly CompensationStep[] {
+function stepsFromStockThenCreditRelease(fact: Envelope): readonly CompensationStep[] {
   return [
     {
-      step: 'credit_released',
-      eventType: 'credit.released.v1',
+      step: 'stock_released',
+      eventType: 'stock.released.v1',
       occurredAt: fact.occurredAt,
-      summary: 'credit released — reason: order_cancelled (reverse order of acquisition, released before stock)',
+      summary:
+        'stock released — reason: order_cancelled (the contested resource, released FIRST so Fulfillment\'s own lock can arbitrate it against a despatch already requested — saga.md §4.3)',
     },
-    ...stepsFrom(fact),
+    {
+      step: 'credit_released',
+      eventId: fact.eventId,
+      eventType: fact.eventType,
+      occurredAt: fact.occurredAt,
+      summary: 'credit released — reason: order_cancelled',
+    },
   ];
 }
 
@@ -115,8 +147,8 @@ export function stepsFrom(fact: Envelope): readonly CompensationStep[] {
 /**
  * `SAGA_STEPS`'s value type: MOST fact types have exactly one legal
  * precondition (one `SagaStep`); `credit.released.v1` and
- * `stock.released.v1` (feature 41's follow-up pass, closing the
- * `credit_approved`/`confirmed` cancel gap) are the two fact types with
+ * `stock.released.v1` (the `credit_approved`/`confirmed` operator-cancel
+ * branch) are the two fact types with
  * more than one — an array of variants, each with its OWN precondition.
  * `stepForStatus` selects the one variant (if any) whose precondition
  * matches the order's CURRENT status; `stepFor` (kept for every existing
@@ -170,21 +202,23 @@ export const SAGA_STEPS: Readonly<Record<string, SagaStepEntry>> = {
     },
     commandAfter: 'stock.release',
   },
-  // Three variants (feature 41's follow-up pass extends this from one to
-  // three, symmetric with `credit.released.v1`'s own extension above):
-  //   - `stock_reserved` (R28, SO7, unchanged): compensation path B's
+  // Three variants. SA-4 re-pointed the second and third:
+  //   - `stock_reserved` (R28, SO7, UNCHANGED): compensation path B's
   //     terminal fact — reached either from `credit.rejected.v1`'s
   //     automatic compensation or the operator-cancel-while-`stock_reserved`
   //     branch (`cancel-order.handler.ts`).
-  //   - `credit_approved`/`confirmed` (new): the operator-cancel-while-
-  //     `credit_approved`/`confirmed` branch's SECOND and final release —
-  //     credit was already released (status unchanged by that step, see
-  //     `credit.released.v1`'s own comment above), so THIS fact is what
-  //     finally cancels the order. `reason` is always `order_cancelled`
-  //     here (the only trigger for `stock.release` while `confirmed`/
-  //     `credit_approved`), and `compensationSteps` names BOTH releases
-  //     (`stepsFromCreditCompensation`, this file's own function above) —
-  //     not only this one fact, unlike every other `cancel`-kind step.
+  //   - `credit_approved`/`confirmed`: the operator cancellation's FIRST
+  //     release, and the one that had to be raced. `CancelOrderHandler`
+  //     enqueues `stock.release` directly; this fact arriving means the
+  //     release WON Fulfillment's one lock against the `despatch.create`
+  //     already in flight, so the credit hold may now safely be returned —
+  //     an ADVANCE owing `credit.release`, deliberately with NO transition
+  //     (mirroring `credit.rejected.v1`'s own R27 no-op): the order stays
+  //     `credit_approved`/`confirmed` until `credit.released.v1` completes
+  //     the cancellation below. Had the DESPATCH won instead, no
+  //     `stock.released.v1` is emitted at all, this variant is never
+  //     reached, and no `credit.release` is ever issued — which is the
+  //     whole point of releasing stock first (saga.md §4.3).
   'stock.released.v1': [
     {
       kind: 'cancel',
@@ -193,16 +227,20 @@ export const SAGA_STEPS: Readonly<Record<string, SagaStepEntry>> = {
       compensationSteps: (fact) => stepsFrom(fact),
     },
     {
-      kind: 'cancel',
+      kind: 'advance',
       precondition: 'credit_approved',
-      reason: () => 'operator_cancelled',
-      compensationSteps: (fact) => stepsFromCreditCompensation(fact),
+      apply: () => {
+        /* no-op — status unchanged until credit.released.v1 arrives */
+      },
+      commandAfter: 'credit.release',
     },
     {
-      kind: 'cancel',
+      kind: 'advance',
       precondition: 'confirmed',
-      reason: () => 'operator_cancelled',
-      compensationSteps: (fact) => stepsFromCreditCompensation(fact),
+      apply: () => {
+        /* no-op — status unchanged until credit.released.v1 arrives */
+      },
+      commandAfter: 'credit.release',
     },
   ],
   'order.despatched.v1': {
@@ -222,25 +260,23 @@ export const SAGA_STEPS: Readonly<Record<string, SagaStepEntry>> = {
     precondition: 'invoiced',
     apply: (order, ctx) => order.markPaid(ctx),
   },
-  // Three variants (feature 41's follow-up pass, closing the
-  // `credit_approved`/`confirmed` operator-cancel gap — see this file's
-  // module header):
-  //   - `paid` (R24, unchanged): the happy-path release after payment —
+  // Three variants. SA-4 re-pointed the second and third:
+  //   - `paid` (R24, UNCHANGED): the happy-path release after payment —
   //     completes the saga.
-  //   - `credit_approved`/`confirmed`: the compensation release —
-  //     `CancelOrderHandler` issues `billing.credit.release` BEFORE
-  //     `stock.release` (reverse order of acquisition, saga.md §4.3); this
-  //     variant's `apply` is a deliberate no-op (mirrors `credit.rejected.v1`'s
-  //     own R27 no-op immediately above) — status stays `credit_approved`/
-  //     `confirmed` until `stock.released.v1` completes the cancellation via
-  //     ITS OWN existing, already reason-parametric step. `reason` on the
-  //     incoming fact is always `order_cancelled` here (Billing's
-  //     `CreditReleaseHandler` releases with no other reason via this RPC;
-  //     the ONLY way `credit.released.v1` carries `invoice_paid` is
-  //     PaymentRegisterHandler's own internal call, which the R47 outbox
+  //   - `credit_approved`/`confirmed`: the operator cancellation's SECOND
+  //     and FINAL release, and therefore the step that actually cancels.
+  //     The stock was released first and `stock.released.v1`'s own variant
+  //     above owed this `credit.release`; this fact arriving completes the
+  //     chain, so `compensationSteps` names BOTH releases in release order
+  //     (`stepsFromStockThenCreditRelease`, this file's own function above)
+  //     — not only this one fact, unlike every other `cancel`-kind step.
+  //     `reason` on the incoming fact is always `order_cancelled` here
+  //     (Billing's `CreditReleaseHandler` releases with no other reason via
+  //     this RPC; the ONLY way `credit.released.v1` carries `invoice_paid`
+  //     is PaymentRegisterHandler's own internal call, which the R47 outbox
   //     ordering guarantees is never observed before the order has already
-  //     advanced to `paid`) — asserted, not merely assumed, in
-  //     `saga-command-payloads.ts`'s `stockReleaseReasonFor`.
+  //     advanced to `paid`) — asserted, not merely assumed, by
+  //     `mapCreditReleaseReason` above.
   'credit.released.v1': [
     {
       kind: 'advance',
@@ -249,20 +285,16 @@ export const SAGA_STEPS: Readonly<Record<string, SagaStepEntry>> = {
       apply: (order, ctx) => order.complete(ctx),
     },
     {
-      kind: 'advance',
+      kind: 'cancel',
       precondition: 'credit_approved',
-      apply: () => {
-        /* no-op — status unchanged until stock.released.v1 arrives */
-      },
-      commandAfter: 'stock.release',
+      reason: (fact) => mapCreditReleaseReason((fact.payload as CreditReleasedPayload).reason),
+      compensationSteps: (fact) => stepsFromStockThenCreditRelease(fact),
     },
     {
-      kind: 'advance',
+      kind: 'cancel',
       precondition: 'confirmed',
-      apply: () => {
-        /* no-op — status unchanged until stock.released.v1 arrives */
-      },
-      commandAfter: 'stock.release',
+      reason: (fact) => mapCreditReleaseReason((fact.payload as CreditReleasedPayload).reason),
+      compensationSteps: (fact) => stepsFromStockThenCreditRelease(fact),
     },
   ],
   // The three facts Orders produces itself (SO2) — consuming them would be

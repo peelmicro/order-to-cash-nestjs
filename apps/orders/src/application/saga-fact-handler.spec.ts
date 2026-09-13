@@ -21,10 +21,6 @@ import { Order, type PlaceOrderInput, type PlaceOrderLineInput } from '../domain
 import type { RecordIgnoredFactInput } from '../infrastructure/saga/saga-ignored-facts.repository.js';
 import { SagaFactHandler, type RecordsIgnoredSagaFacts, type RunsIdempotently } from './saga-fact-handler.js';
 
-function fakeTx(): TransactionContext {
-  return {} as TransactionContext;
-}
-
 function placeInput(overrides: Partial<PlaceOrderInput> = {}): PlaceOrderInput {
   const line: PlaceOrderLineInput = {
     productCode: 'PRD-0001',
@@ -65,6 +61,8 @@ function fact(overrides: Partial<Envelope> = {}): Envelope {
 /** A trivial `RunsIdempotently` fake that runs `work` unless `eventId` is in the pre-seeded duplicate set — insert-first behaviour is `IdempotentConsumer`'s own job, already proven elsewhere; this fake only needs to reproduce ITS observable contract. */
 class FakeIdempotentConsumer implements RunsIdempotently {
   readonly seen: string[] = [];
+  /** Every transaction handed to `work` — a DISTINCT object per call, so a collaborator's recorded `tx` can be checked to be THIS unit of work's own (SA-4: the store query must read the same snapshot as the order it was asked about). */
+  readonly handedOutTx: TransactionContext[] = [];
   duplicateEventIds = new Set<string>();
 
   async runOnce(
@@ -76,7 +74,9 @@ class FakeIdempotentConsumer implements RunsIdempotently {
     if (this.duplicateEventIds.has(eventId)) {
       return 'duplicate';
     }
-    await work(fakeTx());
+    const tx = { id: this.handedOutTx.length } as unknown as TransactionContext;
+    this.handedOutTx.push(tx);
+    await work(tx);
     return 'processed';
   }
 }
@@ -110,6 +110,17 @@ class FakeOrderRepository implements OrderRepository {
 class FakeSagaCommandStore implements SagaCommandStore {
   enqueued: EnqueueSagaCommandInput[] = [];
   nextEnqueueOutcome: EnqueueOutcome = 'enqueued';
+  /** SA-4 — the order ids for which an operator cancellation has already been accepted (a `stock.release`/`credit.release` row carrying the synthetic `orders.cancel.requested` envelope). Seeded per test. */
+  acceptedOperatorCancelOrderIds = new Set<string>();
+  hasAcceptedOperatorCancelCalls: string[] = [];
+  /** The transaction each read/write was actually performed in — SA-4's consistency claim is about WHICH snapshot, so the tx is recorded, not ignored. */
+  txOfCall: TransactionContext[] = [];
+
+  async hasAcceptedOperatorCancel(tx: TransactionContext, orderId: UniqueId): Promise<boolean> {
+    this.hasAcceptedOperatorCancelCalls.push(orderId.value);
+    this.txOfCall.push(tx);
+    return this.acceptedOperatorCancelOrderIds.has(orderId.value);
+  }
 
   async enqueue(_tx: TransactionContext, input: EnqueueSagaCommandInput): Promise<EnqueueOutcome> {
     this.enqueued.push(input);
@@ -302,5 +313,138 @@ describe('SagaFactHandler', () => {
 
     expect(result).toEqual({ outcome: 'processed' });
     expect(idempotency.seen).toHaveLength(0);
+  });
+});
+
+// SA-4 (saga.md §4.3, "A credit approval that arrives after the
+// cancellation") — a `credit.hold` issued before an operator cancelled a
+// `stock_reserved` order can still be approved. That late
+// `credit.approved.v1` must issue `credit.release` (reason
+// `order_cancelled`) and NOTHING else: no transition, no
+// `order.confirmed.v1`, no `despatch.create`.
+describe('SagaFactHandler — SA-4: a credit.approved.v1 that arrives after an operator cancellation was accepted', () => {
+  let idempotency: FakeIdempotentConsumer;
+  let orders: FakeOrderRepository;
+  let commandStore: FakeSagaCommandStore;
+  let ignoredFacts: FakeIgnoredFactsRepository;
+  let handler: SagaFactHandler;
+
+  beforeEach(() => {
+    idempotency = new FakeIdempotentConsumer();
+    orders = new FakeOrderRepository();
+    commandStore = new FakeSagaCommandStore();
+    ignoredFacts = new FakeIgnoredFactsRepository();
+    handler = new SagaFactHandler(idempotency, orders, commandStore, ignoredFacts);
+  });
+
+  /** An order at `stock_reserved` — the state an operator cancellation leaves it in while its stock release is under way (the aggregate carries NO marker for the accepted cancellation, by design). */
+  function stockReservedOrder(): Order {
+    const order = Order.place(placeInput(), ctx());
+    order.markStockReserved(ctx());
+    order.pullDomainEvents();
+    orders.seed(order);
+    return order;
+  }
+
+  it('still stock_reserved with the cancellation accepted: enqueues credit.release ONLY — no transition, no save, no despatch.create', async () => {
+    const order = stockReservedOrder();
+    commandStore.acceptedOperatorCancelOrderIds.add(order.id.value);
+    const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
+
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
+
+    expect(result).toEqual({ outcome: 'processed', enqueued: 'credit.release' });
+    expect(commandStore.enqueued).toHaveLength(1);
+    expect(commandStore.enqueued[0]).toMatchObject({
+      orderId: order.id,
+      orderReference: order.orderReference,
+      command: 'credit.release',
+      triggeringEventId: UniqueId.from(envelope.eventId),
+      triggeringEventTopic: 'otc.orders.facts.v1',
+    });
+    // "and nothing else": the order is neither advanced nor saved, so no
+    // order.confirmed.v1 can reach the outbox, and despatch.create — the
+    // command the ORDINARY credit.approved.v1 path owes — is never enqueued.
+    expect(commandStore.enqueued.map((input) => input.command)).toEqual(['credit.release']);
+    expect(orders.savedOrders).toHaveLength(0);
+    expect(order.status).toBe('stock_reserved');
+    expect(order.pullDomainEvents()).toHaveLength(0);
+    expect(ignoredFacts.recorded).toHaveLength(0);
+    // The question was asked about THIS order, not some other one.
+    expect(commandStore.hasAcceptedOperatorCancelCalls).toEqual([order.id.value]);
+    // …and it was asked INSIDE the same transactional unit that loaded the
+    // order, not on an ambient connection: the answer and the status it is
+    // paired with must come from one snapshot.
+    expect(idempotency.handedOutTx).toHaveLength(1);
+    expect(commandStore.txOfCall[0]).toBe(idempotency.handedOutTx[0]);
+  });
+
+  it('already cancelled with reason operator_cancelled: enqueues credit.release ONLY, and never asks the store (the aggregate already answers)', async () => {
+    const order = Order.place(placeInput(), ctx());
+    order.markStockReserved(ctx());
+    order.cancel('operator_cancelled', ctx(), []);
+    order.pullDomainEvents();
+    orders.seed(order);
+    const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
+
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
+
+    expect(result).toEqual({ outcome: 'processed', enqueued: 'credit.release' });
+    expect(commandStore.enqueued.map((input) => input.command)).toEqual(['credit.release']);
+    expect(orders.savedOrders).toHaveLength(0);
+    expect(order.status).toBe('cancelled');
+    expect(commandStore.hasAcceptedOperatorCancelCalls).toHaveLength(0);
+  });
+
+  it('stock_reserved with NO accepted operator cancellation: the ORDINARY R21 path is untouched — confirms the order and owes despatch.create, never credit.release', async () => {
+    const order = stockReservedOrder();
+    const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
+
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
+
+    expect(result).toEqual({ outcome: 'processed', enqueued: 'despatch.create' });
+    expect(commandStore.enqueued.map((input) => input.command)).toEqual(['despatch.create']);
+    expect(orders.savedOrders).toHaveLength(1);
+    expect(orders.savedOrders[0]?.status).toBe('confirmed');
+    expect(commandStore.hasAcceptedOperatorCancelCalls).toEqual([order.id.value]);
+  });
+
+  it.each(['stock_rejected', 'credit_rejected'] as const)(
+    'already cancelled for reason %s (NOT an operator cancellation): falls through to R25 — ignored, precondition_unmet, and no credit.release',
+    async (reason) => {
+      const order = Order.place(placeInput(), ctx());
+      if (reason === 'credit_rejected') {
+        order.markStockReserved(ctx());
+      }
+      order.cancel(reason, ctx(), []);
+      order.pullDomainEvents();
+      orders.seed(order);
+      const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
+
+      const result = await handler.handle(envelope, 'otc.orders.facts.v1');
+
+      expect(result).toEqual({ outcome: 'ignored' });
+      expect(commandStore.enqueued).toHaveLength(0);
+      expect(orders.savedOrders).toHaveLength(0);
+      expect(ignoredFacts.recorded[0]).toMatchObject({ eventType: 'credit.approved.v1', marker: 'precondition_unmet', observedStatus: 'cancelled' });
+    },
+  );
+
+  it('a LATE credit.approved.v1 for an order already past confirmation (e.g. despatched) is still R25-ignored — this branch widens nothing', async () => {
+    const order = Order.place(placeInput(), ctx());
+    order.markStockReserved(ctx());
+    order.approveCredit(ctx());
+    order.confirm(ctx());
+    order.markDespatched(ctx());
+    order.pullDomainEvents();
+    orders.seed(order);
+    commandStore.acceptedOperatorCancelOrderIds.add(order.id.value);
+    const envelope = fact({ eventType: 'credit.approved.v1', correlationId: order.id.value });
+
+    const result = await handler.handle(envelope, 'otc.orders.facts.v1');
+
+    expect(result).toEqual({ outcome: 'ignored' });
+    expect(commandStore.enqueued).toHaveLength(0);
+    expect(commandStore.hasAcceptedOperatorCancelCalls).toHaveLength(0);
   });
 });

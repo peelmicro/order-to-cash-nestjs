@@ -60,7 +60,7 @@ export class IssueInvoiceIssueHandler implements ICommandHandler<IssueInvoiceIss
   }
 }
 
-/** Feature 41's follow-up pass — `CancelOrderHandler`'s fast-path hop for the `credit_approved`/`confirmed` branch. */
+/** The fast-path hop for `credit.release`. SA-4 moved its source from `CancelOrderHandler` to the fact-driven fast path (`StockReleasedForCancellationRecorded`, `LateCreditApprovalRecorded`); the dispatch itself is unchanged. */
 @CommandHandler(IssueCreditReleaseCommand)
 export class IssueCreditReleaseHandler implements ICommandHandler<IssueCreditReleaseCommand, void> {
   constructor(@Inject(SAGA_COMMAND_DISPATCHER) private readonly dispatcher: DispatchesSagaCommands) {}

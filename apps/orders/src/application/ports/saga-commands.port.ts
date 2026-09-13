@@ -34,7 +34,7 @@ export interface SagaCommandsPort {
   createDespatch(request: DespatchCreateRequestPayload, meta: SagaCommandMeta): Promise<DespatchCreateReplyPayload>;
   holdCredit(request: CreditHoldRequestPayload, meta: SagaCommandMeta): Promise<CreditHoldReplyPayload>;
   issueInvoice(request: InvoiceIssueRequestPayload, meta: SagaCommandMeta): Promise<InvoiceIssueReplyPayload>;
-  /** `billing.credit.release` — feature 41's follow-up pass, closing the `credit_approved`/`confirmed` cancel gap. */
+  /** `billing.credit.release` — the `credit_approved`/`confirmed` operator-cancel branch. Since SA-4 it is the SECOND release of that branch (issued once `stock.released.v1` shows the stock release won the race), and it is also what a LATE `credit.approved.v1` for an already-accepted cancellation owes. */
   releaseCredit(request: CreditReleaseRequestPayload, meta: SagaCommandMeta): Promise<CreditReleaseReplyPayload>;
 }
 

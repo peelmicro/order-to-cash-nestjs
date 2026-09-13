@@ -1,43 +1,49 @@
 // The `orders.cancel` responder's application logic (feature 41,
-// `orders_cancel_responder`, extended by its own follow-up pass) —
-// operator-initiated cancellation, a NEW saga trigger distinct from the
-// fact-driven R19-R29 flow: an RPC request, not a consumed fact.
-// `specs/shared/saga.md` §4.3's generalisation table is the exact spec
-// this class transcribes:
+// `orders_cancel_responder`, extended by its own follow-up pass and then
+// REDESIGNED by SA-4) — operator-initiated cancellation, a NEW saga trigger
+// distinct from the fact-driven R19-R29 flow: an RPC request, not a
+// consumed fact. `specs/shared/saga.md` §4.3's generalisation table is the
+// exact spec this class transcribes:
 //
 //   | Operator cancels while `placed`                       | nothing acquired            | (none)                                    | cancel `operator_cancelled` |
 //   | Operator cancels while `stock_reserved`                | stock reservation            | stock reservation (`stock.release`)       | cancel `operator_cancelled` |
-//   | Operator cancels while `credit_approved`/`confirmed`   | stock reservation, credit hold | credit hold, THEN stock reservation      | cancel `operator_cancelled` |
+//   | Operator cancels while `credit_approved`/`confirmed`   | stock reservation, credit hold | stock reservation FIRST, THEN credit hold | cancel `operator_cancelled` — unless the despatch consumed the stock first |
 //   | `despatched` onward, or already `cancelled`            | —                             | —                                          | `ORDER_NOT_CANCELLABLE`     |
 //
-// All four branches are built here. The `credit_approved`/`confirmed`
-// branch (this file's own follow-up pass, closing the gap the first pass
-// correctly refused to fake — see `progress/impl_orders_cancel_responder.md`'s
-// original section) issues `billing.credit.release` FIRST — the newly
-// added asyncapi.yaml channel, `@otc/contracts` types, and Billing
-// responder — through the SAME durable `SagaCommandStore.enqueue` +
-// fast-path (`IssueCreditReleaseCommand` -> `SagaCommandDispatcher.dispatch`)
-// mechanism the `stock_reserved` branch already uses below. The order
-// stays `credit_approved`/`confirmed` (unchanged) until `credit.released.v1`
-// arrives; `saga-steps.ts`'s `credit.released.v1` step now has a SECOND and
-// THIRD variant (precondition `credit_approved`/`confirmed`) that owes
-// `stock.release` next — the exact reverse-order-of-acquisition chain
-// saga.md §4.3 requires, composed entirely from the EXISTING generic
-// fact-driven step-table machinery (no new orchestration written in THIS
-// class for the second step): `credit.released.v1` (credit_approved/
-// confirmed variant) -> owes `stock.release` -> `stock.released.v1`
-// (EXISTING, already reason-parametric step) -> cancels
-// `operator_cancelled`. This class only ever issues the FIRST command of
-// that chain; the rest happens the same way `credit.rejected.v1` ->
-// `stock.release` -> `stock.released.v1` already completes R27/R28's
-// compensation today.
+// All four branches are built here, and since SA-4 the three compensating
+// statuses share ONE enqueue site: `stock.release` goes first, always.
+//
+// WHY STOCK FIRST, against reverse-order-of-acquisition (saga.md §4.3,
+// "The despatch already requested"). Step 3 issues `despatch.create` in the
+// same handler that confirms the order, so an operator cancellation of a
+// `credit_approved`/`confirmed` order ALWAYS races a despatch that has
+// already been requested, and both want the same stock reservation.
+// Fulfillment decides the two under one lock, so exactly one wins. Release
+// the stock first and let it arbitrate: if the release wins,
+// `stock.released.v1` arrives and the orchestrator issues `credit.release`,
+// whose `credit.released.v1` then cancels the order; if the despatch wins,
+// `stock.release` releases nothing, emits no fact, NO `credit.release` is
+// ever issued, and the order despatches with its hold intact. Releasing the
+// credit hold first — which reverse order of acquisition alone would
+// suggest, and which this file did before SA-4 — is exactly wrong here: a
+// despatch that then won would ship an order whose credit hold had already
+// been returned.
+//
+// This class only ever issues the FIRST command of that chain; the second
+// hop is composed entirely from the EXISTING generic fact-driven step-table
+// machinery (`saga-steps.ts`: `stock.released.v1`'s `credit_approved`/
+// `confirmed` variants owe `credit.release`; `credit.released.v1`'s own
+// variants for those statuses are the terminal cancel), exactly the way
+// `credit.rejected.v1` -> `stock.release` -> `stock.released.v1` already
+// completes R27/R28's compensation.
 import type { CommandBus } from '@nestjs/cqrs';
 import { UniqueId, type OrderNumber } from '@otc/shared-kernel';
-import type { CreditReleaseRequestPayload, Envelope, StockReleaseRequestPayload } from '@otc/contracts';
+import type { Envelope, StockReleaseRequestPayload } from '@otc/contracts';
 import { OrderTransitionNotAllowedError } from '../domain/order-errors.js';
 import type { OrderStatus } from '../domain/order-status.js';
 import type { CancellationReason } from '../domain/order-cancellation-reason.js';
-import { IssueCreditReleaseCommand, IssueStockReleaseCommand } from './commands/saga-dispatch.commands.js';
+import { IssueStockReleaseCommand } from './commands/saga-dispatch.commands.js';
+import { OPERATOR_CANCEL_EVENT_TYPE } from './operator-cancel-envelope.js';
 import type { Clock } from './ports/clock.port.js';
 import type { OrderRepository } from './ports/order-repository.port.js';
 import type { EnqueueSagaCommandInput, SagaCommandStore } from './ports/saga-command-store.port.js';
@@ -61,6 +67,7 @@ export type CancelOrderResult =
       readonly orderId: string;
       readonly orderReference: string;
       readonly status: OrderStatus;
+      /** SA-4: ORDERED, and the order is the whole claim — `['stock_release']` from `stock_reserved`; `['stock_release', 'credit_release']` from `credit_approved`/`confirmed`, stock first. A caller comparing this by membership rather than by sequence cannot see a transposition. */
       readonly compensationPlanned: readonly ('credit_release' | 'stock_release')[];
     }
   | {
@@ -71,7 +78,7 @@ export type CancelOrderResult =
       readonly cancellationReason: CancellationReason;
     };
 
-/** `Order.status` values for which credit was already held and stock is still reserved — reverse-order compensation releases credit FIRST, then stock (saga.md §4.3). */
+/** `Order.status` values for which credit was already held AND stock is still reserved — SA-4 releases the CONTESTED resource (stock) first and lets `stock.released.v1` owe the credit release (saga.md §4.3). */
 const CREDIT_HELD_STATUSES = new Set<OrderStatus>(['credit_approved', 'confirmed']);
 
 /**
@@ -96,12 +103,16 @@ export class CancelOrderHandler {
       return { outcome: 'not_found' };
     }
 
+    // SA-4 — the SAME first command for all three compensating statuses:
+    // `stock.release`. What differs is only what the reply PLANS: one hop
+    // from `stock_reserved` (stock is the only acquisition), two — stock
+    // then credit, in release order — from `credit_approved`/`confirmed`.
     if (CREDIT_HELD_STATUSES.has(order.status)) {
-      return this.beginCreditReleaseCompensation(order.id, order.orderReference, order.status, order.retailerCode, order.companyCode, command.note);
+      return this.beginStockReleaseCompensation(order.id, order.orderReference, order.status, ['stock_release', 'credit_release'], command.note);
     }
 
     if (order.status === 'stock_reserved') {
-      return this.beginStockReleaseCompensation(order.id, order.orderReference, command.note);
+      return this.beginStockReleaseCompensation(order.id, order.orderReference, 'stock_reserved', ['stock_release'], command.note);
     }
 
     // `placed`, OR a terminal status the aggregate itself refuses to leave
@@ -141,22 +152,34 @@ export class CancelOrderHandler {
   }
 
   /**
-   * R8's `stock_reserved` branch (saga.md §4.3) — issues `stock.release`
-   * (reason `order_cancelled`, distinct from the fact-driven flow's
+   * SA-4 — the ONE direct enqueue site, shared by all three compensating
+   * statuses (saga.md §4.3). Issues `stock.release` (reason
+   * `order_cancelled`, distinct from the fact-driven flow's
    * `credit_rejected`) through the EXACT SAME durable mechanism R27/R28
    * use: `SagaCommandStore.enqueue` inside a transaction, then the same
    * in-process fast-path hop (`IssueStockReleaseCommand` ->
    * `SagaCommandDispatcher.dispatch`) `OrderSagas`' `@Saga()` stream uses
-   * for the fact-driven case — no second compensation mechanism. The
-   * order stays `stock_reserved` (unchanged) until `stock.released.v1`
-   * arrives; `saga-steps.ts`'s EXISTING `stock.released.v1` step (precondition
-   * `stock_reserved`, `mapReason('order_cancelled') -> 'operator_cancelled'`)
-   * completes the cancellation without any change to that file — it was
-   * already reason-parametric.
+   * for the fact-driven case — no second compensation mechanism. The order
+   * is left exactly where it is (`stock_reserved`, `credit_approved` or
+   * `confirmed`) until the release fact arrives:
+   *
+   *   - from `stock_reserved`, `stock.released.v1`'s EXISTING, already
+   *     reason-parametric step cancels the order directly (R28/SO7);
+   *   - from `credit_approved`/`confirmed`, `stock.released.v1` owes
+   *     `credit.release` and `credit.released.v1` is what finally cancels —
+   *     or, if the racing despatch won the reservation instead, no fact
+   *     arrives at all, nothing is released, and the cancellation is
+   *     overtaken (saga.md §4.3's "The despatch wins").
+   *
+   * `compensationPlanned` is what the two cases differ by, and it is passed
+   * in rather than derived here so the ORDER of its elements is decided at
+   * the one call site that knows the status.
    */
   private async beginStockReleaseCompensation(
     orderId: UniqueId,
     orderReference: OrderNumber,
+    status: OrderStatus,
+    compensationPlanned: readonly ('credit_release' | 'stock_release')[],
     note: string | undefined,
   ): Promise<CancelOrderResult> {
     const requestId = UniqueId.generate();
@@ -186,71 +209,8 @@ export class CancelOrderHandler {
       outcome: 'compensation_pending',
       orderId: orderId.value,
       orderReference: orderReference.value,
-      status: 'stock_reserved',
-      compensationPlanned: ['stock_release'],
-    };
-  }
-
-  /**
-   * R8's `credit_approved`/`confirmed` branch (saga.md §4.3, this file's
-   * own follow-up pass) — issues `billing.credit.release` FIRST (reverse
-   * order of acquisition: credit was acquired SECOND, after stock, so it
-   * is released FIRST), through the IDENTICAL durable mechanism
-   * `beginStockReleaseCompensation` above uses: `SagaCommandStore.enqueue`
-   * inside a transaction, then the fast-path hop
-   * (`IssueCreditReleaseCommand` -> `SagaCommandDispatcher.dispatch`).
-   * `reason` is not a caller-supplied field on `CreditReleaseRequestPayload`
-   * — Billing's `billing.credit.release` responder always releases with
-   * reason `order_cancelled` (the only external trigger for that RPC).
-   * The order stays `credit_approved`/`confirmed` (unchanged) until
-   * `credit.released.v1` arrives; `saga-steps.ts`'s SECOND/THIRD variant
-   * of that step (precondition `credit_approved`/`confirmed`) then owes
-   * `stock.release` — completing the reverse-order chain entirely through
-   * the EXISTING generic fact-driven step-table machinery, no second
-   * orchestration call from THIS class.
-   */
-  private async beginCreditReleaseCompensation(
-    orderId: UniqueId,
-    orderReference: OrderNumber,
-    status: OrderStatus,
-    retailerCode: string,
-    companyCode: string,
-    note: string | undefined,
-  ): Promise<CancelOrderResult> {
-    const requestId = UniqueId.generate();
-    const payload: CreditReleaseRequestPayload = {
-      orderReference: orderReference.value,
-      retailerCode,
-      companyCode,
-    };
-
-    await this.enqueueOperatorCancelCommand({
-      id: UniqueId.generate(),
-      orderId,
-      orderReference,
-      command: 'credit.release',
-      payload,
-      triggeringEventId: requestId,
-      triggeringEventEnvelope: this.buildTriggeringEnvelope(orderId, requestId, note),
-      triggeringEventTopic: this.ordersFactsTopic,
-    });
-
-    // The fast path (design.md §5.5) — same best-effort/crash-window
-    // composition as every other saga command's fast-path hop; the
-    // durable `pending` row above is what actually guarantees delivery
-    // (SO3), via the sweeper if this in-process hop is lost.
-    await this.commandBus.execute(new IssueCreditReleaseCommand(orderId.value));
-
-    return {
-      outcome: 'compensation_pending',
-      orderId: orderId.value,
-      orderReference: orderReference.value,
       status,
-      // Reverse order of acquisition (saga.md §4.3) — credit_release is
-      // issued NOW; stock_release follows once credit.released.v1 arrives
-      // (saga-steps.ts's credit_approved/confirmed variant), not issued
-      // by this class.
-      compensationPlanned: ['credit_release', 'stock_release'],
+      compensationPlanned,
     };
   }
 
@@ -265,14 +225,19 @@ export class CancelOrderHandler {
    * command ever exhausts its retries and reaches
    * `SagaFirstParkDeadLetterHandler` (OR3), which republishes it to
    * `${ordersFactsTopic}.dlq` verbatim, tagged truthfully as an operator
-   * cancel request, never as a fact that did not happen. Shared by both
-   * compensation branches (`stock_reserved` and `credit_approved`/
-   * `confirmed`) — the SAME diagnostic shape either way.
+   * cancel request, never as a fact that did not happen.
+   *
+   * SA-4 gave this envelope a SECOND reader: `hasAcceptedOperatorCancel`
+   * (saga-command-store.port.ts) answers "was an operator cancellation
+   * already accepted for this order?" by testing exactly this `eventType`
+   * on the order's `credit.release`/`stock.release` rows, which is why the
+   * literal lives in `operator-cancel-envelope.ts` and is imported by both
+   * sides rather than spelled twice.
    */
   private buildTriggeringEnvelope(orderId: UniqueId, requestId: UniqueId, note: string | undefined): Envelope {
     return {
       eventId: requestId.value,
-      eventType: 'orders.cancel.requested',
+      eventType: OPERATOR_CANCEL_EVENT_TYPE,
       aggregateId: orderId.value,
       correlationId: orderId.value,
       causationId: requestId.value,

@@ -66,6 +66,30 @@ export interface SagaCommandStore {
   /** The `(order_id, command)` lookup the fast-path `Issue…Command` handlers claim by (design.md §5.5) — `null` when the row is absent or no longer `pending` (a stale hop; the caller treats this as a silent no-op). */
   findByOrderAndCommand(orderId: UniqueId, command: SagaCommandKind): Promise<SagaCommandRecord | null>;
 
+  /**
+   * SA-4 (saga.md §4.3, "A credit approval that arrives after the
+   * cancellation") — "has an operator cancellation already been accepted
+   * for this order?", read inside the caller's transaction (`tx`) so the
+   * answer is consistent with the order row it was asked about.
+   *
+   * An `EXISTS`-shaped check over the order's `credit.release` and
+   * `stock.release` rows, narrowed by envelope CONTENT
+   * (`isOperatorCancelEnvelope`, `application/operator-cancel-envelope.ts`)
+   * rather than by the command name: rows for BOTH commands are also
+   * written by the fact-driven flow — R27's automatic `credit_rejected`
+   * compensation enqueues `stock.release`, and `stock.released.v1`'s own
+   * `credit_approved`/`confirmed` variant enqueues `credit.release` — and
+   * those carry a REAL fact's envelope, which must NOT count as an operator
+   * cancellation. There is no marker for this on the `Order` aggregate (the
+   * `stock_reserved` branch of `CancelOrderHandler` deliberately leaves the
+   * order untouched), so the enqueued row is the only durable evidence that
+   * the cancellation was accepted.
+   *
+   * No status filter: a `sent`, `parked` or even `rejected` row still means
+   * "an operator cancellation was requested for this order".
+   */
+  hasAcceptedOperatorCancel(tx: TransactionContext, orderId: UniqueId): Promise<boolean>;
+
   /** The sweeper's batch claim (design.md §6.4): every `pending` row older than the crash-window grace period, or `parked` row whose capped-backoff `next_attempt_at` has arrived — `FOR UPDATE SKIP LOCKED`, inside `tx`. */
   claimDue(
     tx: TransactionContext,

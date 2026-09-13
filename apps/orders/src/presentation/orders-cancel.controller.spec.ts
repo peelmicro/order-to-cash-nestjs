@@ -5,9 +5,8 @@
 // particular that `not_cancellable` maps to `ORDER_NOT_CANCELLABLE` (never a
 // transport-level failure), and that `compensation_pending` from the
 // `credit_approved`/`confirmed` branch carries `compensationPlanned:
-// ['credit_release', 'stock_release']` — the follow-up pass that closed the
-// `credit_release_unavailable`/`UNAVAILABLE` gap this file used to
-// document.
+// ['stock_release', 'credit_release']` — SA-4's release order (stock, the
+// contested resource, first), preserved verbatim onto the wire.
 import { describe, expect, it } from 'vitest';
 import type { NatsContext } from '@nestjs/microservices';
 import type { CancelOrderCommand, CancelOrderHandler, CancelOrderResult } from '../application/cancel-order.handler';
@@ -74,14 +73,14 @@ describe('OrdersCancelController — orders.cancel', () => {
     expect(reply).toMatchObject({ code: 'ORDER_NOT_CANCELLABLE', details: { status: 'despatched' } });
   });
 
-  it('maps compensation_pending from the credit_approved/confirmed branch to a success reply carrying compensationPlanned: [credit_release, stock_release]', async () => {
+  it('maps compensation_pending from the credit_approved/confirmed branch to a success reply carrying compensationPlanned: [stock_release, credit_release] — SA-4\'s order, preserved verbatim onto the wire', async () => {
     const controller = new OrdersCancelController(
       fakeHandler(async () => ({
         outcome: 'compensation_pending',
         orderId: FIXTURE_ORDER_ID,
         orderReference: 'ORD-000007',
         status: 'confirmed',
-        compensationPlanned: ['credit_release', 'stock_release'],
+        compensationPlanned: ['stock_release', 'credit_release'],
       })),
     );
 
@@ -91,8 +90,11 @@ describe('OrdersCancelController — orders.cancel', () => {
       orderId: FIXTURE_ORDER_ID,
       orderReference: 'ORD-000007',
       status: 'confirmed',
-      compensationPlanned: ['credit_release', 'stock_release'],
+      compensationPlanned: ['stock_release', 'credit_release'],
     });
+    // The sequence, not the set: a controller that sorted, reversed or
+    // rebuilt this array would still satisfy a membership check.
+    expect((reply as { compensationPlanned: readonly string[] }).compensationPlanned[0]).toBe('stock_release');
     expect(reply).not.toHaveProperty('cancellationReason');
   });
 

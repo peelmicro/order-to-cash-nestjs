@@ -91,6 +91,9 @@ function fakeStore(
       claimDeadLetterCalls.push(id);
       return options.claimDeadLetterReturns ?? true;
     },
+    async hasAcceptedOperatorCancel(): Promise<boolean> {
+      throw new Error('not used by this test');
+    },
   };
 }
 
@@ -305,6 +308,49 @@ describe('SagaCommandDispatcher — feature 42 (terminal business rejection shor
     expect(outcome).toBe('rejected');
     expect(releaseStock).toHaveBeenCalledTimes(1);
     expect(store.markRejectedCalls[0]?.attempts).toBe(5); // row.attempts (4) + this cycle's 1 attempt
+  });
+
+  // SA-4 (saga.md §4.3, "The release wins") — the lost despatch race. An
+  // operator cancellation releases the stock FIRST; a `despatch.create`
+  // that reaches Fulfillment after the release is refused
+  // (`PRECONDITION_FAILED` — no reservation left to consume) and emits no
+  // fact. That refusal is "the expected end of a lost race, not a saga
+  // failure: no retry, no dead-letter, no order.saga_failed.v1" — which in
+  // this codebase means: `markRejected`, and NEVER `park` /
+  // `claimDeadLetter` / `onFirstPark` (the ONE hook that publishes
+  // `order.saga_failed.v1` and the DLQ record, OR3).
+  it('SA-4 — a despatch.create refused with PRECONDITION_FAILED after a winning release is TERMINAL: rejected, no retry, no park, no dead-letter claim, and onFirstPark (order.saga_failed.v1) is never reached', async () => {
+    const row = pendingRow({ command: 'despatch.create', payload: { orderReference: 'ORD-000001' } });
+    const store = fakeStore(row);
+    const firstPark = fakeFirstParkHandler();
+    const delays: number[] = [];
+    const delay = async (ms: number): Promise<void> => {
+      delays.push(ms);
+    };
+    const createDespatch = vi
+      .fn()
+      .mockRejectedValue(
+        new SagaCommandBusinessRejectionError('fulfillment.despatch.create', 'PRECONDITION_FAILED', 'no reserved stock for order ORD-000001'),
+      );
+    const dispatcher = new SagaCommandDispatcher(
+      fakePort({ createDespatch }),
+      store,
+      DEFAULT_SAGA_COMMAND_DISPATCHER_CONFIG,
+      delay,
+      undefined,
+      firstPark,
+    );
+
+    const outcome = await dispatcher.dispatch(row.orderId, 'despatch.create');
+
+    expect(outcome).toBe('rejected');
+    expect(createDespatch).toHaveBeenCalledTimes(1); // no retry
+    expect(delays).toHaveLength(0); // no backoff
+    expect(store.markRejectedCalls).toHaveLength(1);
+    expect(store.markRejectedCalls[0]?.lastError).toContain('PRECONDITION_FAILED');
+    expect(store.parkCalls).toHaveLength(0); // not the retry-eligible path
+    expect(store.claimDeadLetterCalls).toHaveLength(0); // no DLQ claim
+    expect(firstPark.calls).toHaveLength(0); // and therefore no order.saga_failed.v1
   });
 
   it('a genuinely TRANSIENT rejection (e.g. wrapped in SagaCommandTransportError) is UNCHANGED — still retried to exhaustion and still parks the old way, never calling markRejected', async () => {

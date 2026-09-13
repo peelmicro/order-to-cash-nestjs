@@ -80,6 +80,9 @@ function fakeStore(row: SagaCommandRecord | null, options: { parkReturns?: boole
     async claimDeadLetter() {
       return true;
     },
+    async hasAcceptedOperatorCancel(): Promise<boolean> {
+      throw new Error('not used by this test');
+    },
   };
 }
 

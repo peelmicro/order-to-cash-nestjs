@@ -114,6 +114,9 @@ describe('SagaCommandSweeperService — per-row log carries traceId + correlatio
         async claimDeadLetter() {
           return true;
         },
+        async hasAcceptedOperatorCancel(): Promise<boolean> {
+          throw new Error('not used by this test');
+        },
       };
       const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn().mockRejectedValue(new Error('boom')) };
       const service = new SagaCommandSweeperService(fakeUnitOfWork(), store, dispatcher, fixedClock, config());
@@ -171,6 +174,9 @@ describe('SagaCommandSweeperService — per-row log carries traceId + correlatio
         },
         async claimDeadLetter() {
           return true;
+        },
+        async hasAcceptedOperatorCancel(): Promise<boolean> {
+          throw new Error('not used by this test');
         },
       };
       const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn().mockRejectedValue(new Error('boom')) };

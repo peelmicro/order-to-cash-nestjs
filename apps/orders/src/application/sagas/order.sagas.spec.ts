@@ -1,10 +1,10 @@
 // Pure unit — a plain RxJS `Subject`, NO Nest runtime (design.md §5.5, §11,
 // SO3's fast-path row). Proves the `@Saga` stream mapping (each of the
-// six dispatch-owed events in -> its `Issue…Command` out, all six
-// streams — feature 41's follow-up pass added the sixth,
-// `CreditReleasedForCancellationRecorded`, mapping to the SAME
-// `IssueStockReleaseCommand` a pre-existing fifth stream already maps
-// `CreditRejectionRecorded` to) and that an error thrown inside one
+// seven dispatch-owed events in -> its `Issue…Command` out, all seven
+// streams — SA-4 re-pointed one and added another, so
+// `IssueCreditReleaseCommand` now has TWO sources:
+// `StockReleasedForCancellationRecorded` and `LateCreditApprovalRecorded`)
+// and that an error thrown inside one
 // branch's `map` does not terminate the merged subscription — a later
 // event on ANY branch is still observed.
 import { UniqueId } from '@otc/shared-kernel';
@@ -13,18 +13,20 @@ import { describe, expect, it } from 'vitest';
 import type { ICommand, IEvent } from '@nestjs/cqrs';
 import {
   IssueCreditHoldCommand,
+  IssueCreditReleaseCommand,
   IssueDespatchCreateCommand,
   IssueInvoiceIssueCommand,
   IssueStockReleaseCommand,
   IssueStockReserveCommand,
 } from '../commands/saga-dispatch.commands.js';
 import {
-  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
+  LateCreditApprovalRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
   OrderMarkedStockReserved,
   OrderPlacedFactRecorded,
+  StockReleasedForCancellationRecorded,
 } from '../events/saga-dispatch.events.js';
 import { OrderSagas } from './order.sagas.js';
 
@@ -69,15 +71,28 @@ describe('OrderSagas — the @Saga stream mapping (design.md §5.5)', () => {
     expect((seen[0] as IssueStockReleaseCommand).orderId).toBe(orderId);
   });
 
-  it('maps CreditReleasedForCancellationRecorded -> IssueStockReleaseCommand (feature 41 follow-up — the credit_approved/confirmed compensation variant, a SEPARATE branch from CreditRejectionRecorded above but the SAME output command)', () => {
+  it('SA-4 — maps StockReleasedForCancellationRecorded -> IssueCreditReleaseCommand (the winning stock release owes the credit release, NOT another stock release)', () => {
     const { events$, seen } = harness();
     const orderId = UniqueId.generate().value;
 
-    events$.next(new CreditReleasedForCancellationRecorded(orderId, orderId));
+    events$.next(new StockReleasedForCancellationRecorded(orderId, orderId));
 
     expect(seen).toHaveLength(1);
-    expect(seen[0]).toBeInstanceOf(IssueStockReleaseCommand);
-    expect((seen[0] as IssueStockReleaseCommand).orderId).toBe(orderId);
+    expect(seen[0]).toBeInstanceOf(IssueCreditReleaseCommand);
+    expect(seen[0]).not.toBeInstanceOf(IssueStockReleaseCommand);
+    expect((seen[0] as IssueCreditReleaseCommand).orderId).toBe(orderId);
+  });
+
+  it('SA-4 — maps LateCreditApprovalRecorded -> IssueCreditReleaseCommand (a SEPARATE branch from StockReleasedForCancellationRecorded above, same output command)', () => {
+    const { events$, seen } = harness();
+    const orderId = UniqueId.generate().value;
+
+    events$.next(new LateCreditApprovalRecorded(orderId, orderId));
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toBeInstanceOf(IssueCreditReleaseCommand);
+    expect(seen[0]).not.toBeInstanceOf(IssueDespatchCreateCommand);
+    expect((seen[0] as IssueCreditReleaseCommand).orderId).toBe(orderId);
   });
 
   it('maps OrderConfirmed -> IssueDespatchCreateCommand', () => {

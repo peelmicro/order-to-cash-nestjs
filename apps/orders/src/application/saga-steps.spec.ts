@@ -7,7 +7,17 @@ import { describe, expect, it } from 'vitest';
 import { Order, type PlaceOrderInput, type PlaceOrderLineInput } from '../domain/order.js';
 import { OrderTransitionNotAllowedError } from '../domain/order-errors.js';
 import { ORDER_STATUSES, type OrderStatus } from '../domain/order-status.js';
-import { mapReason, SAGA_STEPS, stepFor, stepForStatus, stepsFrom, stepVariantsFor, transitionContextFrom, type SagaStep } from './saga-steps.js';
+import {
+  mapCreditReleaseReason,
+  mapReason,
+  SAGA_STEPS,
+  stepFor,
+  stepForStatus,
+  stepsFrom,
+  stepVariantsFor,
+  transitionContextFrom,
+  type SagaStep,
+} from './saga-steps.js';
 
 const BUYER_GLN = GLN.of('5412345000013');
 const SUPPLIER_GLN = GLN.of('5412345000037');
@@ -86,12 +96,14 @@ function apply(step: SagaStep, order: Order, envelope: Envelope): void {
   }
 }
 
-// `credit.released.v1` and `stock.released.v1` (feature 41's follow-up
-// pass) are the two fact types with more than one legal precondition —
-// R24's `paid` happy path vs the operator-cancel-compensation
-// `credit_approved`/`confirmed` variants for the former, and R28/SO7's
-// `stock_reserved` compensation vs the SAME `credit_approved`/`confirmed`
-// operator-cancel variants (now releasing stock SECOND) for the latter.
+// `credit.released.v1` and `stock.released.v1` are the two fact types with
+// more than one legal precondition — R24's `paid` happy path vs the
+// operator-cancel-compensation `credit_approved`/`confirmed` variants for
+// the former, and R28/SO7's `stock_reserved` compensation vs the SAME
+// `credit_approved`/`confirmed` operator-cancel variants for the latter.
+// SA-4 swapped which of the two is the no-op hop and which is the terminal
+// cancel: stock is released FIRST now, so `stock.released.v1`'s variants
+// advance and owe `credit.release`, and `credit.released.v1`'s cancel.
 // Several of these variants are deliberate no-ops (mirroring
 // `credit.rejected.v1`'s own R27 no-op) rather than real domain
 // transitions. The generic "exactly one precondition per fact type" matrix
@@ -223,7 +235,7 @@ describe('credit.rejected.v1 — R27: status unchanged, owes stock.release', () 
 });
 
 describe('stock.released.v1 — R28, SO7: compensation path B, one stock_released step from the observed fact', () => {
-  it('stepFor("stock.released.v1") is ambiguous — three variants exist (feature 41\'s follow-up pass), so the status-less lookup refuses', () => {
+  it('stepFor("stock.released.v1") is ambiguous — three variants exist, so the status-less lookup refuses', () => {
     expect(() => stepFor('stock.released.v1')).toThrow(/ambiguous/);
   });
 
@@ -278,24 +290,27 @@ describe('stock.released.v1 — R28, SO7: compensation path B, one stock_release
   });
 
   it.each(['credit_approved', 'confirmed'] as const)(
-    'the follow-up pass — %s: cancels with reason operator_cancelled (always — this is the ONLY trigger for stock.release from this status) and compensationSteps names BOTH credit_released and stock_released',
+    'SA-4 — %s: the winning stock release is an ADVANCE that owes credit.release and cancels NOTHING; the order stays exactly where it was until credit.released.v1 arrives',
     (status) => {
       const step = stepForStatus('stock.released.v1', status);
-      if (!step || step.kind !== 'cancel') throw new Error('unreachable');
+      if (!step || step.kind !== 'advance') throw new Error('unreachable');
+      // The command this variant owes is the whole claim of SA-4's first
+      // hop: `credit.release`, NOT `stock.release` (which is what this
+      // variant owed under the superseded credit-first ordering, via
+      // credit.released.v1), and NOT nothing.
+      expect(step.commandAfter).toBe('credit.release');
+      expect(step.precondition).toBe(status);
 
       const envelope = fact({ eventType: 'stock.released.v1', payload: { reason: 'order_cancelled' } });
-      expect(step.reason(envelope)).toBe('operator_cancelled');
-
-      const steps = step.compensationSteps(envelope);
-      expect(steps).toHaveLength(2);
-      expect(steps[0]).toMatchObject({ step: 'credit_released', eventType: 'credit.released.v1' });
-      expect(steps[0]).not.toHaveProperty('eventId'); // honestly disclosed — no cross-fact state to source it from
-      expect(steps[1]).toMatchObject({ step: 'stock_released', eventId: envelope.eventId, eventType: 'stock.released.v1' });
-
       const order = driveTo(status);
       apply(step, order, { ...envelope, correlationId: order.id.value });
-      expect(order.status).toBe('cancelled');
-      expect(order.cancellationReason).toBe('operator_cancelled');
+
+      // No transition at all — in particular NOT `cancelled`: cancelling
+      // here would put the terminal fact in the middle of the
+      // compensation, and would strand the credit hold if the despatch had
+      // won instead (saga.md §4.3).
+      expect(order.status).toBe(status);
+      expect(order.cancellationReason).toBeUndefined();
     },
   );
 
@@ -344,7 +359,7 @@ describe('payment.received.v1 — advances to paid, owes nothing', () => {
   });
 });
 
-describe('credit.released.v1 — three variants (feature 41\'s follow-up pass): R24\'s paid happy path, and the credit_approved/confirmed compensation variants', () => {
+describe('credit.released.v1 — three variants: R24\'s paid happy path, and (SA-4) the credit_approved/confirmed TERMINAL cancel of an operator cancellation', () => {
   it('stepFor("credit.released.v1") is ambiguous — three variants exist, so the status-less lookup refuses rather than silently picking one', () => {
     expect(() => stepFor('credit.released.v1')).toThrow(/ambiguous/);
   });
@@ -362,17 +377,50 @@ describe('credit.released.v1 — three variants (feature 41\'s follow-up pass): 
   });
 
   it.each(['credit_approved', 'confirmed'] as const)(
-    'the follow-up pass — %s: status unchanged (no-op apply, mirrors credit.rejected.v1\'s own R27 no-op), owes stock.release',
+    'SA-4 — %s: this is now the TERMINAL step of an operator cancellation — cancels with reason operator_cancelled, owes NO command, and names BOTH releases in release order (stock_released first, credit_released second)',
     (status) => {
       const step = stepForStatus('credit.released.v1', status);
-      if (!step || step.kind !== 'advance') throw new Error('unreachable');
-      expect(step.commandAfter).toBe('stock.release');
+      if (!step || step.kind !== 'cancel') throw new Error('unreachable');
+      expect('commandAfter' in step).toBe(false);
+
+      const envelope = fact({
+        eventType: 'credit.released.v1',
+        eventId: 'c0ffee00-0000-4000-8000-00000000000a',
+        payload: { reason: 'order_cancelled' },
+      });
+      expect(step.reason(envelope)).toBe('operator_cancelled');
+
+      const steps = step.compensationSteps(envelope);
+      expect(steps).toHaveLength(2);
+      // ORDER is the claim: stock was released FIRST (the contested
+      // resource), credit SECOND. Indexing, not membership.
+      expect(steps[0]).toMatchObject({ step: 'stock_released', eventType: 'stock.released.v1' });
+      expect(steps[0]).not.toHaveProperty('eventId'); // honestly disclosed — no cross-fact state to source it from
+      expect(steps[1]).toMatchObject({ step: 'credit_released', eventId: envelope.eventId, eventType: 'credit.released.v1' });
 
       const order = driveTo(status);
-      apply(step, order, fact({ eventType: 'credit.released.v1', correlationId: order.id.value, payload: { reason: 'order_cancelled' } }));
-      expect(order.status).toBe(status);
+      apply(step, order, { ...envelope, correlationId: order.id.value });
+      expect(order.status).toBe('cancelled');
+      expect(order.cancellationReason).toBe('operator_cancelled');
     },
   );
+
+  it.each(['credit_approved', 'confirmed'] as const)(
+    'SA-4 — %s: the terminal cancel reads the reason from the FACT, so a credit.released.v1 carrying invoice_paid at this status is refused rather than silently cancelling as operator_cancelled',
+    (status) => {
+      const step = stepForStatus('credit.released.v1', status);
+      if (!step || step.kind !== 'cancel') throw new Error('unreachable');
+
+      const envelope = fact({ eventType: 'credit.released.v1', payload: { reason: 'invoice_paid' } });
+
+      expect(() => step.reason(envelope)).toThrow(/expected order_cancelled/);
+    },
+  );
+
+  it('mapCreditReleaseReason maps order_cancelled to operator_cancelled and refuses every other member of the closed set', () => {
+    expect(mapCreditReleaseReason('order_cancelled')).toBe('operator_cancelled');
+    expect(() => mapCreditReleaseReason('invoice_paid')).toThrow(/expected order_cancelled/);
+  });
 
   it('R25 — every OTHER status has no matching variant at all (stepForStatus returns undefined)', () => {
     const otherStatuses = ORDER_STATUSES.filter((status) => status !== 'paid' && status !== 'credit_approved' && status !== 'confirmed');

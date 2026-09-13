@@ -93,6 +93,9 @@ describe('SagaCommandSweeperService', () => {
       async claimDeadLetter() {
         return true;
       },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
+      },
     };
     const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn().mockResolvedValue('sent') };
     const service = new SagaCommandSweeperService(fakeUnitOfWork(), store, dispatcher, fixedClock, config());
@@ -133,6 +136,9 @@ describe('SagaCommandSweeperService', () => {
       async claimDeadLetter() {
         return true;
       },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
+      },
     };
     const dispatch = vi.fn().mockResolvedValue('sent');
     const dispatcher: DispatchesSagaCommands = { dispatch };
@@ -170,6 +176,9 @@ describe('SagaCommandSweeperService', () => {
       },
       async claimDeadLetter() {
         return true;
+      },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
       },
     };
     const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn() };
@@ -210,6 +219,9 @@ describe('SagaCommandSweeperService', () => {
       async claimDeadLetter() {
         return true;
       },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
+      },
     };
     const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn() };
     const service = new SagaCommandSweeperService(fakeUnitOfWork(), store, dispatcher, fixedClock, config({ enabled: false }));
@@ -242,6 +254,9 @@ describe('SagaCommandSweeperService', () => {
       },
       async claimDeadLetter() {
         return true;
+      },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
       },
     };
     const dispatch = vi.fn().mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce('sent');
@@ -278,6 +293,9 @@ describe('SagaCommandSweeperService', () => {
       },
       async claimDeadLetter() {
         return true;
+      },
+      async hasAcceptedOperatorCancel(): Promise<boolean> {
+        throw new Error('not used by this test');
       },
     };
     const dispatcher: DispatchesSagaCommands = { dispatch: vi.fn().mockResolvedValue('sent') };

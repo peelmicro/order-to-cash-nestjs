@@ -9,14 +9,16 @@
 //                          `cancelled` -> `not_cancellable`, reusing
 //                          `Order.cancel`'s OWN `OrderTransitionNotAllowedError`
 //                          guard (R8/R9/O5/O7) — no new domain modeling
-//   OCR-credit-release   — `credit_approved`/`confirmed` -> `credit.release`
-//                          enqueued + dispatched FIRST (reverse order of
-//                          acquisition), order left unchanged (this file's
-//                          own follow-up pass, closing the gap the first
-//                          pass correctly refused to fake)
+//   OCR-stock-first      — `credit_approved`/`confirmed` -> `stock.release`
+//                          enqueued + dispatched FIRST (SA-4: the contested
+//                          resource goes first so Fulfillment's one lock can
+//                          arbitrate it against the despatch already
+//                          requested), order left unchanged, and the reply
+//                          plans ['stock_release', 'credit_release'] in that
+//                          order
 import { GLN, Money, OrderNumber, Quantity, UniqueId } from '@otc/shared-kernel';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CreditReleaseRequestPayload, StockReleaseRequestPayload } from '@otc/contracts';
+import type { StockReleaseRequestPayload } from '@otc/contracts';
 import { CancelOrderHandler } from './cancel-order.handler';
 import { IssueCreditReleaseCommand, IssueStockReleaseCommand } from './commands/saga-dispatch.commands';
 import type { Clock } from './ports/clock.port';
@@ -104,6 +106,7 @@ describe('CancelOrderHandler', () => {
       park: vi.fn(),
       markRejected: vi.fn(),
       claimDeadLetter: vi.fn(),
+      hasAcceptedOperatorCancel: vi.fn(),
     };
     unitOfWork = { execute: vi.fn(async (work: (tx: TransactionContext) => Promise<unknown>) => work(fakeTx())) as UnitOfWork['execute'] };
     orders = {
@@ -187,7 +190,7 @@ describe('CancelOrderHandler', () => {
   });
 
   it.each<OrderStatus>(['credit_approved', 'confirmed'])(
-    'OCR-credit-release — enqueues credit.release and dispatches the fast-path command for status %s, leaving the order unchanged (reverse order of acquisition, saga.md §4.3)',
+    'OCR-stock-first (SA-4) — for status %s enqueues stock.release (NOT credit.release) and dispatches IssueStockReleaseCommand, leaving the order unchanged: the contested resource is released FIRST so Fulfillment can arbitrate it against the despatch already requested (saga.md §4.3)',
     async (status) => {
       const order = orderAt(status);
       orders.findById = vi.fn(async () => order);
@@ -197,31 +200,34 @@ describe('CancelOrderHandler', () => {
       expect(result.outcome).toBe('compensation_pending');
       if (result.outcome !== 'compensation_pending') throw new Error('unreachable');
       expect(result.status).toBe(status);
-      // credit_release FIRST, stock_release SECOND — reverse order of
-      // acquisition; only credit_release is actually issued by this call,
-      // stock_release follows once credit.released.v1 arrives.
-      expect(result.compensationPlanned).toEqual(['credit_release', 'stock_release']);
+      // SA-4's ORDER, not merely its membership: stock_release FIRST,
+      // credit_release SECOND. `toEqual` on an array is sequence-sensitive,
+      // which is the whole assertion here — a `toContain`-shaped check
+      // could not see the transposition this feature exists to make.
+      expect(result.compensationPlanned).toEqual(['stock_release', 'credit_release']);
+      expect(result.compensationPlanned[0]).toBe('stock_release');
+      expect(result.compensationPlanned[1]).toBe('credit_release');
 
       // The order itself is untouched — released FIRST, cancelled only
-      // once the fact chain (credit.released.v1 -> stock.release ->
-      // stock.released.v1) completes, mirroring the stock_reserved
+      // once the fact chain (stock.released.v1 -> credit.release ->
+      // credit.released.v1) completes, mirroring the stock_reserved
       // branch's own "release first, cancel later" ordering.
       expect(saveSpy).not.toHaveBeenCalled();
 
       expect(enqueueSpy).toHaveBeenCalledTimes(1);
       const [, input] = enqueueSpy.mock.calls[0] as [TransactionContext, EnqueueSagaCommandInput];
-      expect(input.command).toBe('credit.release');
+      expect(input.command).toBe('stock.release');
       expect(input.orderId.equals(order.id)).toBe(true);
-      const payload = input.payload as CreditReleaseRequestPayload;
+      const payload = input.payload as StockReleaseRequestPayload;
       expect(payload.orderReference).toBe(order.orderReference.value);
-      expect(payload.retailerCode).toBe(FIXTURE_RETAILER_CODE);
-      expect(payload.companyCode).toBe(FIXTURE_COMPANY_CODE);
+      expect(payload.reason).toBe('order_cancelled');
       expect(input.triggeringEventTopic).toBe(ORDERS_FACTS_TOPIC);
       expect(input.triggeringEventEnvelope.eventType).toBe('orders.cancel.requested');
 
       expect(commandBus.execute).toHaveBeenCalledTimes(1);
-      const [dispatched] = commandBus.execute.mock.calls[0] as [IssueCreditReleaseCommand];
-      expect(dispatched).toBeInstanceOf(IssueCreditReleaseCommand);
+      const [dispatched] = commandBus.execute.mock.calls[0] as [IssueStockReleaseCommand];
+      expect(dispatched).toBeInstanceOf(IssueStockReleaseCommand);
+      expect(dispatched).not.toBeInstanceOf(IssueCreditReleaseCommand);
       expect(dispatched.orderId).toBe(order.id.value);
     },
   );

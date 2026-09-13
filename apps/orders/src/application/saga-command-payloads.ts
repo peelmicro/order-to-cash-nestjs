@@ -6,7 +6,6 @@
 // the result to `SagaCommandStore.enqueue` (design.md §5.1 step 3).
 import type {
   CreditHoldRequestPayload,
-  CreditReleasedPayload,
   CreditReleaseRequestPayload,
   DespatchCreateRequestPayload,
   Envelope,
@@ -48,31 +47,24 @@ function nonEmptyInvoiceLines(order: Order): [InvoiceLine, ...InvoiceLine[]] {
 }
 
 /**
- * `stock.release` is now owed by TWO different step-table rows (design.md
- * §4.3 Path B, and feature 41's follow-up pass): `credit.rejected.v1`
- * (reason always `credit_rejected`) and `credit.released.v1`'s
- * `credit_approved`/`confirmed` variant (reason always `order_cancelled` —
- * asserted here, not assumed: see `saga-steps.ts`'s `credit.released.v1`
- * module comment for why no other reason can reach that variant). Any
- * OTHER triggering fact type would be a step-table/payload-builder mismatch
- * — a programming error, not a runtime condition to swallow.
+ * Since SA-4, `stock.release` is owed by exactly ONE step-table row:
+ * `credit.rejected.v1` (design.md §4.3 Path B, reason always
+ * `credit_rejected`). The OTHER producer of a `stock.release` row — every
+ * operator cancellation, from all three compensating statuses — does not
+ * come through the step table at all: `CancelOrderHandler` enqueues it
+ * directly with reason `order_cancelled`, so this function never sees it.
+ * Any OTHER triggering fact type reaching here would be a step-table/
+ * payload-builder mismatch — a programming error, not a runtime condition
+ * to swallow. (Before SA-4 this function also had to serve
+ * `credit.released.v1`, which owed `stock.release` under the superseded
+ * credit-first ordering; that variant is now a terminal `cancel` step and
+ * owes no command at all.)
  */
 function stockReleaseReasonFor(fact: Envelope): StockReleaseRequestPayload['reason'] {
-  switch (fact.eventType) {
-    case 'credit.rejected.v1':
-      return 'credit_rejected';
-    case 'credit.released.v1': {
-      const reason = (fact.payload as CreditReleasedPayload).reason;
-      if (reason !== 'order_cancelled') {
-        throw new Error(
-          `saga-command-payloads: stock.release owed by credit.released.v1 with unexpected reason "${reason}" — expected order_cancelled (the paid variant owes no commandAfter and should never reach here)`,
-        );
-      }
-      return 'order_cancelled';
-    }
-    default:
-      throw new Error(`saga-command-payloads: stock.release owed by unexpected fact type "${fact.eventType}"`);
+  if (fact.eventType !== 'credit.rejected.v1') {
+    throw new Error(`saga-command-payloads: stock.release owed by unexpected fact type "${fact.eventType}"`);
   }
+  return 'credit_rejected';
 }
 
 /**
@@ -130,14 +122,16 @@ export function buildSagaCommandPayload(kind: SagaCommandKind, order: Order, fac
         discount: order.initialDiscount.amount,
       } satisfies InvoiceIssueRequestPayload;
     case 'credit.release':
-      // No step-table row ever names `credit.release` as its
-      // `commandAfter` — `CancelOrderHandler` enqueues it directly (same
-      // "outside the fact-driven table" shape `stock.release`'s
-      // operator-cancel variant uses in `beginStockReleaseCompensation`),
-      // so this case is never reached via `SagaFactHandler`'s call site
-      // today. Implemented anyway for the switch's own exhaustiveness
-      // (`never` below) and so any FUTURE fact-driven caller gets the
-      // correct shape for free, matching `credit.hold`'s own two fields.
+      // SA-4 made this a LIVE fact-driven case, reached two ways through
+      // `SagaFactHandler`: `stock.released.v1`'s `credit_approved`/
+      // `confirmed` variants name it as their `commandAfter` (the winning
+      // stock release owes the credit release), and a late
+      // `credit.approved.v1` for an order whose operator cancellation was
+      // already accepted enqueues it directly from the handler. `reason` is
+      // not a field here at all — Billing's `billing.credit.release`
+      // responder always releases with `order_cancelled`, the only external
+      // trigger for that RPC — so the shape matches `credit.hold`'s own
+      // party fields.
       return {
         orderReference: order.orderReference.value,
         retailerCode: order.retailerCode,

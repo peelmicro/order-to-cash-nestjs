@@ -15,6 +15,7 @@ import type {
   SagaCommandRecord,
   SagaCommandStore,
 } from '../../application/ports/saga-command-store.port.js';
+import { isOperatorCancelEnvelope } from '../../application/operator-cancel-envelope.js';
 import type { SagaCommandPayload } from '../../application/saga-command-payloads.js';
 import type { SagaCommandKind } from '../../application/saga-steps.js';
 import type { TransactionContext } from '../../application/ports/unit-of-work.port.js';
@@ -76,6 +77,34 @@ export class DrizzleSagaCommandStore implements SagaCommandStore {
 
   async findByOrderAndCommand(orderId: UniqueId, command: SagaCommandKind): Promise<SagaCommandRecord | null> {
     return this.findOne(this.db, and(eq(sagaCommands.orderId, orderId.value), eq(sagaCommands.command, command))!);
+  }
+
+  /**
+   * SA-4 — see the port's own doc-comment for WHY this tests envelope
+   * content rather than the command name. Read through `tx`, the caller's
+   * own transaction: `SagaFactHandler` asks this immediately after loading
+   * the order inside the same transactional unit, so both reads see one
+   * consistent snapshot.
+   *
+   * `isOperatorCancelEnvelope` is applied in TypeScript rather than as a
+   * SQL `->>'$.eventType'` predicate on purpose: the two rows this scans
+   * are bounded (the unique key is `(order_id, command)`, so at most one
+   * `credit.release` and one `stock.release` row can ever exist per order),
+   * and the SAME predicate the writer uses then decides both sides.
+   */
+  async hasAcceptedOperatorCancel(tx: TransactionContext, orderId: UniqueId): Promise<boolean> {
+    const db = asDrizzleTx(tx);
+    const rows = await db
+      .select({ triggeringEventEnvelope: sagaCommands.triggeringEventEnvelope })
+      .from(sagaCommands)
+      .where(
+        and(
+          eq(sagaCommands.orderId, orderId.value),
+          or(eq(sagaCommands.command, 'credit.release'), eq(sagaCommands.command, 'stock.release')),
+        ),
+      );
+
+    return rows.some((row) => isOperatorCancelEnvelope(row.triggeringEventEnvelope as Envelope | null));
   }
 
   async claimDue(

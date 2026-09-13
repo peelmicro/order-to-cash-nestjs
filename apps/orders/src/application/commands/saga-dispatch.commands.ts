@@ -33,7 +33,7 @@ export class IssueInvoiceIssueCommand extends Command<void> {
   }
 }
 
-/** Feature 41's follow-up pass — `CancelOrderHandler`'s fast-path hop for the `credit_approved`/`confirmed` branch, mirrors `IssueStockReleaseCommand` exactly. */
+/** The fast-path hop for `credit.release`, mirroring `IssueStockReleaseCommand` exactly. SA-4 moved its SOURCE: it is no longer issued by `CancelOrderHandler` (which now enqueues `stock.release` for every operator cancellation) but by the fact-driven fast path — `StockReleasedForCancellationRecorded` and `LateCreditApprovalRecorded` (`order.sagas.ts`). */
 export class IssueCreditReleaseCommand extends Command<void> {
   constructor(readonly orderId: string) {
     super();

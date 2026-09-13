@@ -135,6 +135,10 @@ class FakeSagaCommandStore implements SagaCommandStore {
   async claimDeadLetter(): Promise<boolean> {
     throw new Error('not used by this test');
   }
+
+  async hasAcceptedOperatorCancel(): Promise<boolean> {
+    throw new Error('not used by this test');
+  }
 }
 
 class FakeIgnoredFactsRepository implements RecordsIgnoredSagaFacts {

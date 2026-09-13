@@ -1,9 +1,9 @@
 // The `@nestjs/cqrs` `@Saga` construct (design.md §5.5, §9) — the
 // IN-MEMORY FAST PATH over the durable `saga_commands` guarantee (§6.3,
-// §6.4). One `@Saga()` method merges six `ofType` streams (feature 41's
-// follow-up pass added the sixth — `credit.released.v1`'s mid-cancellation
-// variant, mapping to the SAME `IssueStockReleaseCommand` a fifth,
-// pre-existing stream already maps `credit.rejected.v1` to), each a pure
+// §6.4). One `@Saga()` method merges seven `ofType` streams (SA-4 re-pointed
+// the sixth and added the seventh: `credit.release` now has TWO sources,
+// `stock.released.v1`'s mid-cancellation variant and a late
+// `credit.approved.v1`), each a pure
 // `map` from a dispatch-owed event to its `Issue…Command`. Each branch is
 // wrapped with the standard RxJS "resubscribe on error" recipe
 // (`catchError((_, caught) => caught)`) — a cqrs saga stream that errors
@@ -18,18 +18,20 @@ import { merge, type Observable } from 'rxjs';
 import { catchError, map } from 'rxjs/operators';
 import {
   IssueCreditHoldCommand,
+  IssueCreditReleaseCommand,
   IssueDespatchCreateCommand,
   IssueInvoiceIssueCommand,
   IssueStockReleaseCommand,
   IssueStockReserveCommand,
 } from '../commands/saga-dispatch.commands';
 import {
-  CreditReleasedForCancellationRecorded,
   CreditRejectionRecorded,
+  LateCreditApprovalRecorded,
   OrderConfirmed,
   OrderMarkedDespatched,
   OrderMarkedStockReserved,
   OrderPlacedFactRecorded,
+  StockReleasedForCancellationRecorded,
 } from '../events/saga-dispatch.events';
 
 export interface OrderSagasLogger {
@@ -110,17 +112,30 @@ export class OrderSagas {
       this.logger,
     );
 
-    // Feature 41's follow-up pass — the SAME `IssueStockReleaseCommand`,
-    // owed by a DIFFERENT fact (`credit.released.v1`'s `credit_approved`/
-    // `confirmed` variant, mid operator-cancel compensation) — a separate
-    // branch, not a shared `ofType`, so either source's failure is isolated
-    // by its OWN `resilient` wrapper (this function's own header).
-    const stockReleaseFromCancelCompensation = resilient(
+    // SA-4 — `credit.release` has TWO sources, each its own branch (not a
+    // shared `ofType`) so either source's failure is isolated by its OWN
+    // `resilient` wrapper (this function's own header):
+    //   1. `stock.released.v1` at `credit_approved`/`confirmed` — the
+    //      operator cancellation's stock release won Fulfillment's lock, so
+    //      the credit hold may now be returned;
+    //   2. a LATE `credit.approved.v1` for an order whose operator
+    //      cancellation was already accepted — the hold was acquired after
+    //      the cancellation was accepted, so it is unwound on its own.
+    const creditReleaseFromCancelCompensation = resilient(
       events$.pipe(
-        ofType(CreditReleasedForCancellationRecorded),
-        map((event) => new IssueStockReleaseCommand(event.orderId)),
+        ofType(StockReleasedForCancellationRecorded),
+        map((event) => new IssueCreditReleaseCommand(event.orderId)),
       ),
-      'stock.release (credit.released.v1 cancel compensation)',
+      'credit.release (stock.released.v1 cancel compensation)',
+      this.logger,
+    );
+
+    const creditReleaseFromLateApproval = resilient(
+      events$.pipe(
+        ofType(LateCreditApprovalRecorded),
+        map((event) => new IssueCreditReleaseCommand(event.orderId)),
+      ),
+      'credit.release (late credit.approved.v1)',
       this.logger,
     );
 
@@ -142,6 +157,14 @@ export class OrderSagas {
       this.logger,
     );
 
-    return merge(stockReserve, creditHold, stockReleaseFromCreditRejection, stockReleaseFromCancelCompensation, despatchCreate, invoiceIssue);
+    return merge(
+      stockReserve,
+      creditHold,
+      stockReleaseFromCreditRejection,
+      creditReleaseFromCancelCompensation,
+      creditReleaseFromLateApproval,
+      despatchCreate,
+      invoiceIssue,
+    );
   };
 }

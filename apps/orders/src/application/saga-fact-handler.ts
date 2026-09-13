@@ -17,6 +17,9 @@ import type { OrderStatus } from '../domain/order-status.js';
 import type { ConsumptionOutcome } from '../infrastructure/messaging/idempotent-consumer.js';
 import type { RecordIgnoredFactInput } from '../infrastructure/saga/saga-ignored-facts.repository.js';
 
+/** SA-4 — the one `eventType` whose handling cannot be expressed by a status-keyed step-table variant alone (it depends on whether an operator cancellation was already ACCEPTED, which is not a status). See `handle`'s own comment at the check. */
+const LATE_CREDIT_APPROVAL_EVENT_TYPE = 'credit.approved.v1';
+
 export type SagaFactOutcome = 'processed' | 'duplicate' | 'ignored';
 
 export interface SagaFactResult {
@@ -106,6 +109,55 @@ export class SagaFactHandler {
         });
         ignored = true;
         return;
+      }
+
+      // SA-4 (saga.md §4.3, "A credit approval that arrives after the
+      // cancellation") — the ONE fact type that needs a check BEFORE the
+      // generic status-precondition dispatch below. A `credit.hold` issued
+      // before an operator cancelled a `stock_reserved` order can still be
+      // approved; left to the generic dispatch, that late
+      // `credit.approved.v1` would take the ORDINARY advance (approve,
+      // confirm, owe `despatch.create`) and resurrect an order that is
+      // being cancelled. The hold WAS acquired, so it is unwound:
+      // `credit.release` and nothing else — no transition, no
+      // `order.confirmed.v1`, no `despatch.create`. That release is not one
+      // of the cancellation's recorded compensation steps; it reaches the
+      // timeline as its own `credit.released.v1`.
+      //
+      // Two shapes qualify, exactly as the spec enumerates them: still
+      // `stock_reserved` with the stock release under way (the accepted
+      // cancellation left the order untouched, so the enqueued row is the
+      // only evidence — `hasAcceptedOperatorCancel`), or already
+      // `cancelled` with reason `operator_cancelled`. Every OTHER stale
+      // combination — `cancelled`/`stock_rejected`,
+      // `cancelled`/`credit_rejected`, or any status with no accepted
+      // operator cancel — falls through to the generic dispatch, which R25
+      // ignores exactly as before.
+      if (envelope.eventType === LATE_CREDIT_APPROVAL_EVENT_TYPE) {
+        const lateForAnAcceptedOperatorCancel =
+          order.status === 'cancelled'
+            ? order.cancellationReason === 'operator_cancelled'
+            : order.status === 'stock_reserved' && (await this.commandStore.hasAcceptedOperatorCancel(tx, order.id));
+
+        if (lateForAnAcceptedOperatorCancel) {
+          await this.commandStore.enqueue(tx, {
+            id: UniqueId.generate(),
+            orderId: order.id,
+            orderReference: order.orderReference,
+            command: 'credit.release',
+            payload: buildSagaCommandPayload('credit.release', order, envelope),
+            triggeringEventId: UniqueId.from(envelope.eventId),
+            triggeringEventEnvelope: envelope,
+            triggeringEventTopic: sourceTopic,
+          });
+          // Reported as owed on EITHER enqueue outcome — D1's own reasoning
+          // at the generic call site below: `already_owed` means the row
+          // exists, and the fast path re-dispatches the row that actually
+          // exists rather than inserting a second one.
+          enqueued = 'credit.release';
+          // No `orders.save`: the order is deliberately NOT transitioned.
+          return;
+        }
       }
 
       const step = stepForStatus(envelope.eventType, order.status);
