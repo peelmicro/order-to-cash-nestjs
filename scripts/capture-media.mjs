@@ -40,7 +40,7 @@ try {
   }
 } catch { /* .env is optional if everything is already exported */ }
 
-const WEB = `http://localhost:${env.WEB_PORT ?? 3000}`;
+const WEB = `http://localhost:${env.WEB_PORT ?? 3010}`;
 const MAILPIT = `http://localhost:${env.MAILPIT_UI_HOST_PORT ?? 8025}`;
 const GRAFANA = `http://localhost:${env.GRAFANA_HOST_PORT ?? 3030}`;
 const JAEGER = `http://localhost:${env.JAEGER_UI_HOST_PORT ?? 16686}`;

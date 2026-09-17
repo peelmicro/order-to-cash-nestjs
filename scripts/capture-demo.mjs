@@ -28,7 +28,7 @@ try {
   }
 } catch { /* optional */ }
 
-const WEB = `http://localhost:${env.WEB_PORT ?? 3000}`;
+const WEB = `http://localhost:${env.WEB_PORT ?? 3010}`;
 const OUT = join(ROOT, 'docs', 'screenshots');
 const VIDEO_DIR = join(ROOT, '.demo-video');
 mkdirSync(OUT, { recursive: true });

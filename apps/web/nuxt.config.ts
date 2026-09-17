@@ -5,7 +5,10 @@ export default defineNuxtConfig({
   compatibilityDate: '2025-07-15',
   devtools: { enabled: true },
   devServer: {
-    port: Number(process.env.WEB_PORT ?? 3000),
+    // Default is 3010, not the Nuxt/Next default of 3000 — the maintainer's
+    // machine has 3000 taken by another project; #7 and #8 share every other
+    // host port, so both moved to 3010.
+    port: Number(process.env.WEB_PORT ?? 3010),
   },
   css: ['~/assets/css/main.css'],
   vite: {

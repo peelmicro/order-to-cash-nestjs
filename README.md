@@ -20,7 +20,7 @@ cp .env.example .env          # dev defaults; no account or API key needed anywh
 pnpm dc:up:apps               # build and start the full stack (19 containers)
 pnpm dc:seed                  # retailers, companies, products, opening stock and credit
 
-open http://localhost:3000    # login: operator / the password in .env
+open http://localhost:3010    # login: operator / the password in .env
 ```
 
 A cold start reaches a demoable, seeded state in **35–42 seconds**.
@@ -29,7 +29,7 @@ Then place an order and watch it run: **placed → stock reserved → credit app
 
 | | |
 |---|---|
-| Web UI | http://localhost:3000 |
+| Web UI | http://localhost:3010 |
 | Gateway API + Swagger | http://localhost:3001/docs |
 | Mailpit (notification emails) | http://localhost:8025 |
 | Redpanda Console (Kafka + DLQs) | http://localhost:8080 |
@@ -233,7 +233,7 @@ pnpm install       # all 10 workspaces
 pnpm quality       # lint + typecheck + test:coverage, everywhere — the gate every feature keeps green
 pnpm -r build      # build all workspaces
 pnpm dev:orders    # any service: dev:gateway|orders|fulfillment|billing|notifications|projector (ports 3001–3006)
-pnpm dev:web       # Nuxt 4 on http://localhost:3000
+pnpm dev:web       # Nuxt 4 on http://localhost:3010
 pnpm contracts:generate   # regenerate types from specs/shared/*.yaml
 pnpm contracts:check      # fail if committed types drift from the specs
 ```
@@ -358,7 +358,7 @@ Always pass **both** compose files together (`dc:up:apps` already does) — `doc
 | Billing | http://localhost:3004/health/ready | its own `billing-migrate` job, Kafka topics, NATS |
 | Notifications | http://localhost:3005/health/ready | its own `notifications-migrate` job, Kafka topics, Mailpit (SMTP) |
 | Projector | http://localhost:3006/health/ready | MongoDB, Kafka topics, NATS |
-| Web (Nuxt 4) | http://localhost:3000 | Gateway |
+| Web (Nuxt 4) | http://localhost:3010 | Gateway |
 
 Each of the four MySQL-backed services (orders/fulfillment/billing/notifications) gets its own one-shot `<service>-migrate` job — `restart: "no"`, `depends_on: mysql: condition: service_healthy`, and the app container itself only starts once its migration job has exited `0` (`depends_on: <service>-migrate: condition: service_completed_successfully`). Projector needs no such job — it bootstraps its own MongoDB indexes/backfill on every boot, in `main.ts` (same as the CLI path).
 

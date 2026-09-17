@@ -336,8 +336,8 @@ services:
   #    `provisioning/` tree itself; the dashboard JSON the provider `path:`
   #    points at lives outside it, one level up in `infra/grafana/`, and
   #    needs its own mount into the SAME `/var/lib/grafana/dashboards` path
-  #    referenced there). Host port pinned to 3030 to avoid clashing with
-  #    dev servers that default to 3000. ────────────────────────────────────
+  #    referenced there). Host port pinned to 3030, off Grafana's own 3000,
+  #    which Nuxt and Next.js dev servers also default to. ────────────────────────────────────
   grafana:
     image: grafana/grafana:13.2.0
     container_name: otc-grafana

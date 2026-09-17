@@ -337,7 +337,7 @@ services:
     restart: unless-stopped
     env_file: [.env]
     environment:
-      PORT: "${WEB_PORT:-3000}"
+      PORT: "${WEB_PORT:-3010}"
       HOST: 0.0.0.0
       # Nitro's runtime-config env override convention: NUXT_<KEY> for
       # runtimeConfig.<key> (apps/web/nuxt.config.ts — gatewayBaseUrl /
@@ -352,7 +352,7 @@ services:
       # string here (that would defeat the app's own safe default).
       NUXT_SESSION_PASSWORD: "${NUXT_SESSION_PASSWORD:-otc_web_dev_session_password_change_me_32ch}"
     ports:
-      - "${WEB_PORT:-3000}:${WEB_PORT:-3000}"
+      - "${WEB_PORT:-3010}:${WEB_PORT:-3010}"
     networks:
       - otc-net
     depends_on:
