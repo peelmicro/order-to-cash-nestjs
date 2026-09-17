@@ -1516,3 +1516,18 @@ A redrive operator reading the header would get different instants from the two 
 **The finding worth carrying, and it cost a false green to learn.** The first draft of the two new specs reused orders' existing **call-ordinal** fake clock — and the armed run came back **174/174 green**. Projector and notifications read the clock the *same number of times* before and after the change (orders differs only because it has a separate `enteredAt` read), so a call-ordinal clock cannot distinguish *"before the loop"* from *"inside the first catch."* Replaced with a settable clock advanced by the failing process at the moment of failure. **A fixture that makes two candidate meanings numerically identical disarms every assertion built on it, however the assertion is written** — the same defect then turned up in #8's own guard for this header, which is fixed there in the same session.
 
 **Counts:** orders **519/519**, projector **174/174**, notifications **119/119**, `pnpm lint` exit 0. No change under `specs/shared/`.
+
+
+## Shared amendment SA-5 (raised in #8, applied here in the same session) — 2026-09-17
+
+**What changed.** `specs/shared/openapi.yaml`, the Money section of `info.description`, one sentence. It read *"Formatting for humans happens in the client, from `currency.decimalPoints`."* It now reads *"Formatting for humans happens in the client, from the currency's ISO 4217 minor-unit exponent (EUR, GBP and USD are 2; JPY is 0; BHD is 3). No response carries that exponent: it is a property of the currency code itself (SA-5)."* Prose only — no schema, path or wire shape.
+
+**Why.** The specification named a source no client can reach: every currency on the REST wire is a bare `CurrencyCode`, and `decimalPoints` exists only on the internal `catalog.reference.list` NATS reply. #7 met it first and worked around it in `apps/web/app/lib/money.ts` by dividing by 100, recording the gap only in a code comment (*"noted as a simplification"*) and never as an entry or an amendment — so the contradiction would have reached #9. #8 met it in phase 16 (backlog id 97) and read the exponent from ISO 4217 instead. No wrong output existed in either repository, because both seed only EUR, GBP and USD.
+
+**Decided at the human gate** on the leader's recommendation, after the maintainer asked how #7 had handled it. The alternative — carrying `decimalPoints` on the REST wire — was rejected because it would change the contract in both repositories to carry a value the currency code already determines.
+
+**Applied identically** to #7 and #8 in the same session: both files hash `fa261d4cf12aa3b373cb777aaa79b2e1`, both parse, and #8's `init.sh` shared-spec parity check passes.
+
+**Consumers re-checked:** #7 `pnpm contracts:check` OK (generated types unchanged); #8 `apps/web` `types:check` OK (generated types unchanged); #8 `Gateway.UnitTests` 245/245, including `OpenApiContractTests` against the rebuilt embedded spec served at `/docs`.
+
+**Code alignment:** #8 already conformed (`apps/web/src/lib/money.ts` reads the exponent through `Intl`). #7's three formatting functions assumed an exponent of 2 and are aligned under backlog id 97 of the order-to-cash-dotnet assessment.

@@ -53,7 +53,9 @@ info:
     - `MinorUnits` — a bare integer, wherever the **enclosing object already
       declares** its `currency`.
 
-    Formatting for humans happens in the client, from `currency.decimalPoints`.
+    Formatting for humans happens in the client, from the currency's ISO 4217
+    minor-unit exponent (EUR, GBP and USD are 2; JPY is 0; BHD is 3). No response
+    carries that exponent: it is a property of the currency code itself (SA-5).
 
     ## Errors
 
