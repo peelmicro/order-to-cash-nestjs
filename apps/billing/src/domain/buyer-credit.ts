@@ -6,7 +6,7 @@
 // it is reconstituted with the whole line's committed exposure plus only
 // the entries of the ONE order the command names (design.md §3.1's "What
 // the aggregate holds, honestly").
-import { AggregateRoot, Money, type CreditLineReference, type DomainEventEnvelope, type OrderNumber, type UniqueId } from '@otc/shared-kernel';
+import { AggregateRoot, Money, formatMoney, type CreditLineReference, type DomainEventEnvelope, type OrderNumber, type UniqueId } from '@otc/shared-kernel';
 import type { CurrencyCode } from '@otc/contracts';
 import { CreditLedgerEntry, type CreditEntryType } from './credit-ledger-entry.js';
 import type { BuyerCreditSnapshot } from './buyer-credit-snapshot.js';
@@ -77,12 +77,15 @@ export class BuyerCredit extends AggregateRoot<BuyerCredit> {
    * be checked against without the whole ledger.
    */
   static reconstitute(snapshot: BuyerCreditSnapshot): BuyerCredit {
+    // Backlog id 102: these messages reach a human via
+    // `rpc-error-mapper.ts` -> Gateway problem+json `detail`. Rendered
+    // with the shared money-text formatter (id 100).
     if (snapshot.creditLimit < 0) {
-      throw new InvalidBuyerCreditSnapshotError(`creditLimit (${snapshot.creditLimit}) must be non-negative`, snapshot.id);
+      throw new InvalidBuyerCreditSnapshotError(`creditLimit (${formatMoney(snapshot.creditLimit, snapshot.currency)}) must be non-negative`, snapshot.id);
     }
     if (snapshot.committedExposure > snapshot.creditLimit) {
       throw new InvalidBuyerCreditSnapshotError(
-        `committedExposure (${snapshot.committedExposure}) exceeds creditLimit (${snapshot.creditLimit}) — violates B1`,
+        `committedExposure (${formatMoney(snapshot.committedExposure, snapshot.currency)}) exceeds creditLimit (${formatMoney(snapshot.creditLimit, snapshot.currency)}) — violates B1`,
         snapshot.id,
       );
     }
@@ -170,7 +173,7 @@ export class BuyerCredit extends AggregateRoot<BuyerCredit> {
     const evaluation = this.evaluateHold(request);
     if (evaluation.kind !== 'fits') {
       const available = this.props.creditLimit - this.props.committedExposure;
-      throw new CreditLimitExceededError(request.amount.amount, available);
+      throw new CreditLimitExceededError(request.amount.amount, available, this.props.currency);
     }
 
     const entry = CreditLedgerEntry.create({
@@ -251,7 +254,7 @@ export class BuyerCredit extends AggregateRoot<BuyerCredit> {
     const outstanding = summary.byOrder.find((order) => order.orderReference === input.orderReference.value)?.exposure ?? 0;
 
     if (outstanding < 0) {
-      throw new CreditReleaseUnderflowError(input.orderReference.value, outstanding);
+      throw new CreditReleaseUnderflowError(input.orderReference.value, outstanding, this.props.currency);
     }
     if (outstanding === 0) {
       return null;

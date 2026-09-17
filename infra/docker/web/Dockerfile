@@ -9,9 +9,13 @@
 # needs neither pnpm nor the monorepo's own node_modules/symlink tree the
 # NestJS services' runtime stage requires — just `.output/` and plain Node.
 #
-# apps/web depends on `@otc/contracts` (workspace:*, pre-built dist/ output,
-# same mechanism as every NestJS service) but NOT `@otc/shared-kernel` — see
-# apps/web/package.json.
+# apps/web depends on BOTH `@otc/contracts` and `@otc/shared-kernel`
+# (workspace:*, pre-built dist/ output, same mechanism as every NestJS
+# service) — see apps/web/package.json. It gained the `@otc/shared-kernel`
+# dependency in backlog id 103 (web's ISO 4217 currency-exponent table now
+# comes from the single shared definition instead of a second local copy),
+# so both packages are built here, same as infra/docker/seed/Dockerfile
+# already does for the same pair.
 #
 # `context: .` (repo root) — same reason as infra/docker/service/Dockerfile:
 # pnpm workspaces need the full lockfile/manifest set to install.
@@ -38,12 +42,14 @@ COPY apps/seed/package.json apps/seed/package.json
 # part of this install for the web workspace member.
 RUN pnpm install --frozen-lockfile --filter "@otc/web..."
 
-# ── build — @otc/contracts (its one workspace dep) then `nuxt build` ──────
+# ── build — @otc/shared-kernel and @otc/contracts (its two workspace deps)
+#    then `nuxt build` ──────────────────────────────────────────────────────
 FROM deps AS build
 COPY tsconfig.base.json ./
+COPY packages/shared-kernel packages/shared-kernel
 COPY packages/contracts packages/contracts
 COPY apps/web apps/web
-RUN pnpm --filter "@otc/contracts" run build
+RUN pnpm --filter "@otc/shared-kernel" run build && pnpm --filter "@otc/contracts" run build
 # GATEWAY_BASE_URL/NUXT_SESSION_PASSWORD read by nuxt.config.ts at build time
 # only set the BAKED-IN default — both are overridden at container start via
 # Nitro's runtime-config env convention (NUXT_<KEY> — see
@@ -71,8 +77,8 @@ COPY --chown=node:node --from=build /app/apps/web/.output ./.output
 #     hits, so the app itself never writes to disk either;
 #   * sessions are nuxt-auth-utils sealed COOKIES (NUXT_SESSION_PASSWORD),
 #     i.e. client-side state, not a server-side session store on disk;
-#   * the port is ${WEB_PORT:-3000}, and 3010 on this machine — both far
-#     above 1024, so no privileged bind.
+#   * the port is ${WEB_PORT:-3010} — well above 1024, so no privileged
+#     bind.
 # Nitro also honours TMPDIR (/tmp, world-writable) for anything transient.
 USER node
 
@@ -82,6 +88,6 @@ USER node
 # used here; a 401/302 (auth redirect) still proves the Nitro process is
 # alive and serving, which is the only thing this check is for.
 HEALTHCHECK --interval=5s --timeout=5s --retries=20 --start-period=20s \
-  CMD node -e "const p=process.env.PORT||3000;require('http').get('http://localhost:'+p+'/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
+  CMD node -e "const p=process.env.PORT||3010;require('http').get('http://localhost:'+p+'/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"
 
 CMD ["node", ".output/server/index.mjs"]

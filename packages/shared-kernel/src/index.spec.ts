@@ -27,6 +27,8 @@ describe('shared-kernel public barrel', () => {
         'UniqueId',
         'assertValidDomainEventEnvelope',
         'createDomainEvent',
+        'currencyExponent',
+        'formatMoney',
       ].sort(),
     );
   });

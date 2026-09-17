@@ -3,7 +3,7 @@
 // the fields a caller (and a test) needs. Codes are the vocabulary the RPC
 // error mapping (feature 15) and the HTTP problem mapping (feature 25) will
 // translate; they are stable from here on.
-import { DomainError, type Money, type UniqueId } from '@otc/shared-kernel';
+import { DomainError, formatMoney, type Money, type UniqueId } from '@otc/shared-kernel';
 import type { CancellationReason } from './order-cancellation-reason.js';
 import type { OrderStatus } from './order-status.js';
 
@@ -45,7 +45,15 @@ export class OrderLinesFrozenError extends DomainError {
   }
 }
 
-/** R6 (**O3**) — totals would derive to a negative `totalAmount`. */
+/**
+ * R6 (**O3**) — totals would derive to a negative `totalAmount`.
+ *
+ * Backlog id 102 (`problem_detail_money_reads_as_minor_units`): this
+ * message reaches a human via `rpc-error-mapper.ts` -> the Gateway's
+ * problem+json `detail`. `Money.toString()` renders raw minor units
+ * (`money.ts:146`) — the exact defect id 100/102 exist to remove — so this
+ * uses the shared money-text formatter (id 100) directly instead.
+ */
 export class NegativeOrderTotalError extends DomainError {
   readonly code = 'ORDER_TOTAL_NEGATIVE';
 
@@ -54,7 +62,7 @@ export class NegativeOrderTotalError extends DomainError {
     readonly orderId?: UniqueId,
   ) {
     super(
-      `${orderId ? `order ${orderId.value}: ` : ''}total amount would be negative: ${totalAmount.toString()}`,
+      `${orderId ? `order ${orderId.value}: ` : ''}total amount would be negative: ${formatMoney(totalAmount.amount, totalAmount.currency)}`,
     );
   }
 }

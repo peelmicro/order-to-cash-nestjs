@@ -33,7 +33,7 @@
 // one link shorter than a live saga's causal chain (where a responder's
 // fact would cite the triggering command's `x-request-id`), but complete
 // and reconstructible.
-import { DespatchReference, InvoiceReference, OrderNumber } from '@otc/shared-kernel';
+import { DespatchReference, InvoiceReference, OrderNumber, formatMoney } from '@otc/shared-kernel';
 import type {
   CreditApprovedPayload,
   CreditRejectedPayload,
@@ -521,7 +521,7 @@ function buildCompletedSaga(input: BuildInput): OrderSagaFixture {
   const timeline: TimelineEntryFixture[] = [
     { eventId: orderPlacedEventId, eventType: 'order.placed.v1', occurredAt: t0, summary: `Order ${orderReference} placed for ${retailerCode}`, causationId: orderPlacedCausationId },
     { eventId: stockReservedEventId, eventType: 'stock.reserved.v1', occurredAt: tStockReserved, summary: `Stock reserved for ${reservations.length} line(s)`, causationId: stockReservedCausationId },
-    { eventId: creditApprovedEventId, eventType: 'credit.approved.v1', occurredAt: tCreditApproved, summary: `Credit hold of ${totalAmount} ${currency.code} approved`, causationId: creditApprovedCausationId },
+    { eventId: creditApprovedEventId, eventType: 'credit.approved.v1', occurredAt: tCreditApproved, summary: `Credit hold of ${formatMoney(totalAmount, currency.code)} approved`, causationId: creditApprovedCausationId },
     { eventId: orderConfirmedEventId, eventType: 'order.confirmed.v1', occurredAt: tOrderConfirmed, summary: 'Order confirmed (ORDRSP)', causationId: orderConfirmedCausationId },
     { eventId: orderDespatchedEventId, eventType: 'order.despatched.v1', occurredAt: tDespatched, summary: `Despatch ${despatchReference} created`, causationId: orderDespatchedCausationId },
     { eventId: invoiceIssuedEventId, eventType: 'invoice.issued.v1', occurredAt: tInvoiceIssued, summary: `Invoice ${invoiceReference} issued`, causationId: invoiceIssuedCausationId },
@@ -771,7 +771,7 @@ function buildCancelledSaga(input: BuildInput): OrderSagaFixture {
       eventId: creditRejectedEventId,
       eventType: 'credit.rejected.v1',
       occurredAt: tCreditRejected,
-      summary: `Credit hold of ${totalAmount} ${currency.code} rejected (simulated_cents_rule)`,
+      summary: `Credit hold of ${formatMoney(totalAmount, currency.code)} rejected (simulated_cents_rule)`,
       detail: { reason: creditRejectedPayload.reason, requestedAmount: totalAmount },
       causationId: creditRejectedCausationId,
     },

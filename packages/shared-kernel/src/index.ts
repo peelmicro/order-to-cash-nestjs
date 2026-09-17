@@ -20,6 +20,10 @@ export {
   CurrencyMismatchError,
 } from './domain/money.js';
 
+export { currencyExponent } from './domain/currency-exponent.js';
+
+export { formatMoney } from './domain/money-text.js';
+
 export { GLN, InvalidGlnError } from './domain/gln.js';
 
 export {

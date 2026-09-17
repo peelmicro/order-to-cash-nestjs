@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { escapeHtml, formatMoney, recipientFor, subjectWithCorrelationId } from './notification-format';
 
 describe('notification-format', () => {
-  it('formats a positive minor-units amount as major.minor with the currency suffix', () => {
-    expect(formatMoney(124250, 'USD')).toBe('1242.50 USD');
+  it('formats a positive minor-units amount, grouped, scaled by the currency exponent', () => {
+    expect(formatMoney(124250, 'USD')).toBe('1 242.50 USD');
   });
 
   it('formats zero and pads a single-digit minor-units remainder', () => {
@@ -13,6 +13,14 @@ describe('notification-format', () => {
 
   it('formats a negative amount with a leading sign, never a negative remainder', () => {
     expect(formatMoney(-150, 'USD')).toBe('-1.50 USD');
+  });
+
+  it('formats a 0-exponent currency with no decimal point', () => {
+    expect(formatMoney(5000, 'JPY')).toBe('5 000 JPY');
+  });
+
+  it('formats a 3-exponent currency', () => {
+    expect(formatMoney(12345, 'BHD')).toBe('12.345 BHD');
   });
 
   it('synthesizes a deterministic, lower-cased recipient address from an identifier', () => {

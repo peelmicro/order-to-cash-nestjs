@@ -4,7 +4,7 @@
 // (and a test) needs, the same shape `apps/billing/src/domain/credit-errors.ts`
 // established. Codes are the vocabulary `rpc-error-mapper.ts` (§4.3)
 // translates into the AsyncAPI `RpcError.code` vocabulary.
-import { DomainError, type UniqueId } from '@otc/shared-kernel';
+import { DomainError, formatMoney, type UniqueId } from '@otc/shared-kernel';
 
 /** B6 — `Invoice.issue` called with an empty line list. */
 export class EmptyInvoiceLinesError extends DomainError {
@@ -27,15 +27,25 @@ export class InvoiceLineCurrencyMismatchError extends DomainError {
   }
 }
 
-/** B6 — `amount − discount` would be negative. */
+/**
+ * B6 — `amount − discount` would be negative.
+ *
+ * Backlog id 102 (`problem_detail_money_reads_as_minor_units`): this
+ * message reaches a human, via `rpc-error-mapper.ts` -> the Gateway's
+ * problem+json `detail`. Rendered with the shared money-text formatter
+ * (id 100), never as a raw minor-units integer. `currency` is the
+ * invoice's own currency — both amounts share it by construction
+ * (`Invoice.issue`).
+ */
 export class NegativeInvoiceTotalError extends DomainError {
   readonly code = 'NEGATIVE_INVOICE_TOTAL';
 
   constructor(
     readonly amount: number,
     readonly discount: number,
+    currency: string,
   ) {
-    super(`totalAmount would be negative: amount (${amount}) − discount (${discount}) < 0 (invariant B6)`);
+    super(`totalAmount would be negative: amount (${formatMoney(amount, currency)}) − discount (${formatMoney(discount, currency)}) < 0 (invariant B6)`);
   }
 }
 
@@ -60,15 +70,26 @@ export class InvoiceAlreadyPaidError extends DomainError {
   }
 }
 
-/** B10 — `markPaid` called with an amount other than the invoice's `totalAmount`. */
+/**
+ * B10 — `markPaid` called with an amount other than the invoice's
+ * `totalAmount`.
+ *
+ * Backlog id 102: this is the message the review traced end to end —
+ * `invoice-errors.ts:71` (its own original line) -> `rpc-error-mapper.ts`
+ * -> the Gateway's problem+json `detail`. Rendered with the shared
+ * money-text formatter (id 100). `currency` is the invoice's own currency
+ * (`markPaid` checks the payment's currency matches BEFORE this error can
+ * be raised).
+ */
 export class InvoicePaymentAmountMismatchError extends DomainError {
   readonly code = 'INVOICE_PAYMENT_AMOUNT_MISMATCH';
 
   constructor(
     readonly expected: number,
     readonly received: number,
+    currency: string,
   ) {
-    super(`payment amount (${received}) does not match the invoice's totalAmount (${expected}) (invariant B10)`);
+    super(`payment amount (${formatMoney(received, currency)}) does not match the invoice's totalAmount (${formatMoney(expected, currency)}) (invariant B10)`);
   }
 }
 

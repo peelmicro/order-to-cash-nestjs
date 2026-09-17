@@ -191,6 +191,20 @@ describe('PlaceOrderHandler', () => {
     expect(saveSpy).not.toHaveBeenCalled();
   });
 
+  it('backlog id 102: the orderDiscount refusal message renders the amount scaled by the request\'s own currency, never raw minor units', async () => {
+    let caught: unknown;
+    try {
+      await handler.execute(baseCommand({ orderDiscount: 150 }));
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(OrderDiscountNotSupportedError);
+    expect((caught as Error).message).toBe(
+      'orderDiscount 1.50 EUR was supplied, but the Order aggregate carries no order-level discount (orders_aggregate/design.md §4.3) — use per-line lineDiscount instead',
+    );
+  });
+
   // D1 regression (review_orders_acceptance.md): proves initialAmount,
   // initialDiscount and totalAmount are three genuinely distinct numbers
   // on the returned result when a line carries a non-zero lineDiscount —

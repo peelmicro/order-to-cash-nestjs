@@ -43,16 +43,34 @@ describe('summaries — PR16 › renders a human-readable summary for each of th
     expect(Object.keys(BUILDERS)).toHaveLength(14);
   });
 
-  it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: renders a summary carrying the identifying reference, no float artefact', (eventType, build) => {
+  // Backlog id 100 (timeline_money_reads_as_minor_units): money now DOES
+  // carry a decimal point, deliberately — the exponent-scaled rendering
+  // this feature adds (SA-5). These two are the only fact types whose
+  // summary renders a money amount (design.md §4's table); a literal set,
+  // not derived from the property under test, so a violation cannot remove
+  // itself from the population (CLAUDE.md's sweep-filtering lesson).
+  const MONEY_BEARING_SUMMARIES = new Set(['credit.approved.v1', 'credit.rejected.v1']);
+
+  it.each(Object.entries(ALL_FACT_ENVELOPE_BUILDERS))('%s: renders a non-empty summary carrying the identifying reference', (eventType, build) => {
     const envelope = build();
     const builder = BUILDERS[eventType]!;
     const result = builder(envelope.payload as never);
 
     expect(typeof result.summary).toBe('string');
     expect(result.summary.length).toBeGreaterThan(0);
-    // No floating-point artefact: minor units are never rendered with a
-    // decimal point (money-format.ts's own contract).
-    expect(result.summary).not.toMatch(/\d\.\d/);
+    if (!MONEY_BEARING_SUMMARIES.has(eventType)) {
+      // No floating-point artefact on the NON-money summaries: nothing
+      // else in the fourteen builders renders a decimal point.
+      expect(result.summary).not.toMatch(/\d\.\d/);
+    }
+  });
+
+  it.each([...MONEY_BEARING_SUMMARIES])('%s: DOES render a decimal point — its own amount, scaled by the currency exponent', (eventType) => {
+    const envelope = ALL_FACT_ENVELOPE_BUILDERS[eventType]!();
+    const builder = BUILDERS[eventType]!;
+    const result = builder(envelope.payload as never);
+
+    expect(result.summary).toMatch(/\d\.\d\d/);
   });
 
   const IDENTIFYING_REFERENCE: Readonly<Record<string, string>> = {
@@ -86,7 +104,7 @@ describe('summaries — PR16 › renders a human-readable summary for each of th
     expect(orderCancelledSummary(orderCancelledEnvelopePayload()).detail).toBeDefined();
   });
 
-  it('renders the .99 simulator example verbatim in the currency-suffixed integer form', () => {
+  it('renders the .99 simulator example verbatim in the exponent-scaled, grouped form', () => {
     const result = creditRejectedSummary({
       orderReference: 'ORD-000001',
       retailerCode: 'RETAILER01',
@@ -96,7 +114,29 @@ describe('summaries — PR16 › renders a human-readable summary for each of th
       availableCredit: 500,
       reason: 'simulated_cents_rule',
     });
-    expect(result.summary).toBe('Credit hold of 24 900 EUR rejected (simulated_cents_rule)');
+    expect(result.summary).toBe('Credit hold of 249.00 EUR rejected (simulated_cents_rule)');
+  });
+
+  it('renders a 0-exponent and a 3-exponent currency through creditApprovedSummary, as whole strings (backlog id 100)', () => {
+    expect(creditApprovedSummary({
+      orderReference: 'ORD-000001',
+      retailerCode: 'RETAILER01',
+      companyCode: 'COMPANY01',
+      creditCode: 'CR-000001',
+      currency: 'JPY',
+      heldAmount: 5000,
+      availableCreditAfter: 50000,
+    }).summary).toBe('Credit hold of 5 000 JPY approved');
+
+    expect(creditApprovedSummary({
+      orderReference: 'ORD-000001',
+      retailerCode: 'RETAILER01',
+      companyCode: 'COMPANY01',
+      creditCode: 'CR-000001',
+      currency: 'BHD',
+      heldAmount: 12345,
+      availableCreditAfter: 50000,
+    }).summary).toBe('Credit hold of 12.345 BHD approved');
   });
 });
 

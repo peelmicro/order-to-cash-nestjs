@@ -10,7 +10,7 @@ import { useCreditsQuery, useInvoicesQuery, useRegisterPaymentMutation, type Cre
 import { useRetailersQuery } from '@/composables/useCatalog';
 import { useOrderByReferenceQuery } from '@/composables/useOrders';
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { decimalStringToMinorUnits, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
+import { currencyInputStep, decimalStringToMinorUnits, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
 import { describeFetchError } from '@/lib/problem';
 import type { Invoice, InvoiceStatus, RegisterPaymentResponse } from '#shared/types/gateway';
 
@@ -100,7 +100,7 @@ const lastResult = ref<{ invoiceId: string; response: RegisterPaymentResponse } 
 function openPaymentForm(invoice: Invoice): void {
   activeInvoice.value = invoice;
   paymentForm.paymentReference = suggestPaymentReference(invoice);
-  paymentForm.amountInput = minorUnitsToDecimalString(invoice.totalAmount);
+  paymentForm.amountInput = minorUnitsToDecimalString(invoice.totalAmount, invoice.currency);
   lastResult.value = null;
   // Pass 6 review, non-blocking finding #1: a rejected remittance's error
   // used to survive across `closePaymentForm`/`openPaymentForm` and
@@ -125,7 +125,7 @@ const paymentErrorDetail = computed(() => (registerPayment.isError.value ? descr
 async function submitPayment(): Promise<void> {
   const invoice = activeInvoice.value;
   if (!invoice) return;
-  const amount = decimalStringToMinorUnits(paymentForm.amountInput);
+  const amount = decimalStringToMinorUnits(paymentForm.amountInput, invoice.currency);
   if (amount === undefined) return;
 
   try {
@@ -383,7 +383,7 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
                         :model-value="paymentForm.amountInput"
                         type="number"
                         min="0"
-                        step="0.01"
+                        :step="currencyInputStep(invoice.currency)"
                         data-testid="payment-amount-input"
                         @update:model-value="(v) => (paymentForm.amountInput = String(v))"
                       />

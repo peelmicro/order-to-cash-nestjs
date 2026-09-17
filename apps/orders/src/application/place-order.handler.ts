@@ -66,7 +66,7 @@ export class PlaceOrderHandler {
 
   async execute(command: PlaceOrderCommand): Promise<PlaceOrderResult> {
     if (command.orderDiscount !== undefined && command.orderDiscount !== 0) {
-      throw new OrderDiscountNotSupportedError(command.orderDiscount);
+      throw new OrderDiscountNotSupportedError(command.orderDiscount, command.currency);
     }
 
     // RI2 — the fast path: a `requestId` for which a committed order

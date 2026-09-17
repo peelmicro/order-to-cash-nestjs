@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Money, OrderNumber } from '@otc/shared-kernel';
+import { Money, OrderNumber, formatMoney } from '@otc/shared-kernel';
 import { deterministicId } from '../deterministic';
 import { SAGAS, COMPLETED_SAGAS, CANCELLED_SAGAS } from './sagas.data';
 
@@ -296,5 +296,28 @@ describe('every seeded event envelope validates structurally against the contrac
     }
     // 5 completed sagas x 9 facts + 1 cancelled saga x 5 facts.
     expect(checked).toBe(5 * 9 + 1 * 5);
+  });
+});
+
+describe('backlog id 100 (timeline_money_reads_as_minor_units): the timeline summaries render money scaled by the currency exponent, grouped — same rule as apps/projector/src/domain/money-format.ts', () => {
+  it('every completed saga\'s credit.approved.v1 entry renders formatMoney(totalAmount, currency)', () => {
+    for (const saga of COMPLETED_SAGAS) {
+      const entry = saga.timeline.find((e) => e.eventType === 'credit.approved.v1');
+      expect(entry, `${saga.orderReference}: no credit.approved.v1 timeline entry`).toBeDefined();
+      expect(entry!.summary).toBe(`Credit hold of ${formatMoney(saga.totalAmount, saga.currency)} approved`);
+    }
+  });
+
+  it('the cancelled saga\'s credit.rejected.v1 entry renders formatMoney(totalAmount, currency)', () => {
+    const [cancelled] = CANCELLED_SAGAS;
+    const entry = cancelled.timeline.find((e) => e.eventType === 'credit.rejected.v1');
+    expect(entry).toBeDefined();
+    expect(entry!.summary).toBe(`Credit hold of ${formatMoney(cancelled.totalAmount, cancelled.currency)} rejected (simulated_cents_rule)`);
+  });
+
+  it('the first completed saga\'s credit.approved.v1 summary is the expected literal string (pinned independently of formatMoney)', () => {
+    const [first] = COMPLETED_SAGAS;
+    const entry = first.timeline.find((e) => e.eventType === 'credit.approved.v1');
+    expect(entry!.summary).toBe('Credit hold of 161.30 EUR approved');
   });
 });

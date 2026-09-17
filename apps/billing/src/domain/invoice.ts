@@ -2,7 +2,7 @@
 // Mirrors `buyer-credit.ts`'s shape: a pure function of its inputs (no
 // clock, no port — everything comes in through `InvoiceContext` or method
 // arguments).
-import { AggregateRoot, Money, UniqueId, type DomainEventEnvelope, type InvoiceReference, type OrderNumber, type Quantity } from '@otc/shared-kernel';
+import { AggregateRoot, Money, UniqueId, formatMoney, type DomainEventEnvelope, type InvoiceReference, type OrderNumber, type Quantity } from '@otc/shared-kernel';
 import type { InvoiceLine as InvoiceLinePayload, PaymentReceivedPayload } from '@otc/contracts';
 import { InvoiceLine, type InvoiceLineSnapshot } from './invoice-line.js';
 import type { InvoiceSnapshot } from './invoice-snapshot.js';
@@ -115,7 +115,7 @@ export class Invoice extends AggregateRoot<Invoice> {
     // §3.1).
     const totalAmount = amount.subtract(input.discount);
     if (totalAmount.isNegative()) {
-      throw new NegativeInvoiceTotalError(amount.amount, input.discount.amount);
+      throw new NegativeInvoiceTotalError(amount.amount, input.discount.amount, input.currency);
     }
 
     const invoice = new Invoice(input.id, {
@@ -178,16 +178,19 @@ export class Invoice extends AggregateRoot<Invoice> {
       (sum, line) => sum.add(line.unitPrice.multiply(line.units)),
       Money.zero(snapshot.currency),
     );
+    // Backlog id 102: these messages reach a human via
+    // `rpc-error-mapper.ts` -> Gateway problem+json `detail`. Rendered
+    // with the shared money-text formatter (id 100).
     if (!recomputedAmount.equals(snapshot.amount)) {
       throw new InvalidInvoiceSnapshotError(
-        `stored amount (${snapshot.amount.amount}) does not reconcile with the lines' total (${recomputedAmount.amount}) — violates B6`,
+        `stored amount (${formatMoney(snapshot.amount.amount, snapshot.currency)}) does not reconcile with the lines' total (${formatMoney(recomputedAmount.amount, snapshot.currency)}) — violates B6`,
         snapshot.id,
       );
     }
     const recomputedTotal = recomputedAmount.subtract(snapshot.discount);
     if (!recomputedTotal.equals(snapshot.totalAmount)) {
       throw new InvalidInvoiceSnapshotError(
-        `stored totalAmount (${snapshot.totalAmount.amount}) does not reconcile with amount − discount (${recomputedTotal.amount}) — violates B6`,
+        `stored totalAmount (${formatMoney(snapshot.totalAmount.amount, snapshot.currency)}) does not reconcile with amount − discount (${formatMoney(recomputedTotal.amount, snapshot.currency)}) — violates B6`,
         snapshot.id,
       );
     }
@@ -286,7 +289,7 @@ export class Invoice extends AggregateRoot<Invoice> {
       throw new InvoicePaymentCurrencyMismatchError(this.props.currency, input.amount.currency);
     }
     if (!input.amount.equals(this.props.totalAmount)) {
-      throw new InvoicePaymentAmountMismatchError(this.props.totalAmount.amount, input.amount.amount);
+      throw new InvoicePaymentAmountMismatchError(this.props.totalAmount.amount, input.amount.amount, this.props.currency);
     }
 
     this.props = { ...this.props, state: { status: 'paid', paidAt: ctx.occurredAt } };

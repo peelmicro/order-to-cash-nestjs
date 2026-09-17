@@ -19,6 +19,7 @@
   "dependencies": {
     "@lucide/vue": "^1.34.0",
     "@otc/contracts": "workspace:*",
+    "@otc/shared-kernel": "workspace:*",
     "@tailwindcss/vite": "^4.3.3",
     "@tanstack/vue-query": "^5.102.5",
     "@vueuse/core": "^14.4.0",

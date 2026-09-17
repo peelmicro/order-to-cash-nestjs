@@ -5,6 +5,7 @@
 // established, so `rpc-error-mapper.ts` can translate every one of them
 // (domain and application alike) into the AsyncAPI `RpcError.code` vocabulary
 // by one small, exhaustive table instead of ad hoc `instanceof` sprawl.
+import { formatMoney } from '@otc/shared-kernel';
 import type { StockAvailabilityLineResult } from './ports/stock-availability.port';
 
 export abstract class PlaceOrderError extends Error {
@@ -42,13 +43,28 @@ export class StockUnavailableError extends PlaceOrderError {
   }
 }
 
-/** `OrdersCreateRequestPayload.orderDiscount` is part of the wire contract, but `orders_aggregate/design.md` §4.3 deliberately carries no order-level discount field on the aggregate (only per-line discounts). A non-zero value is refused rather than silently dropped. */
+/**
+ * `OrdersCreateRequestPayload.orderDiscount` is part of the wire contract,
+ * but `orders_aggregate/design.md` §4.3 deliberately carries no
+ * order-level discount field on the aggregate (only per-line discounts).
+ * A non-zero value is refused rather than silently dropped.
+ *
+ * Backlog id 102: reaches a human via `rpc-error-mapper.ts` -> Gateway
+ * problem+json `detail` -> the web app. Rendered with the shared
+ * money-text formatter (id 100). `currency` is the request's own wire
+ * `currency` field — the only currency this error's throw site has, since
+ * it fires before reference-data resolution confirms the code exists
+ * (`place-order.handler.ts`).
+ */
 export class OrderDiscountNotSupportedError extends PlaceOrderError {
   readonly code = 'ORDER_DISCOUNT_NOT_SUPPORTED';
 
-  constructor(readonly orderDiscount: number) {
+  constructor(
+    readonly orderDiscount: number,
+    currency: string,
+  ) {
     super(
-      `orderDiscount ${orderDiscount} was supplied, but the Order aggregate carries no order-level discount (orders_aggregate/design.md §4.3) — use per-line lineDiscount instead`,
+      `orderDiscount ${formatMoney(orderDiscount, currency)} was supplied, but the Order aggregate carries no order-level discount (orders_aggregate/design.md §4.3) — use per-line lineDiscount instead`,
     );
   }
 }

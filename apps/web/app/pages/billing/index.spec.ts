@@ -274,7 +274,13 @@ describe('billing/index.vue — register payment form', () => {
         throw createError({
           statusCode: 422,
           statusMessage: 'Unprocessable Entity',
-          data: { code: 'PAYMENT_MISMATCH', title: 'Payment amount or currency does not match the invoice', detail: 'Payment amount 100 does not match invoice total 24999' },
+          // Backlog id 103: this mock used to carry the raw-minor-units wording
+          // id 102 fixed (`"Payment amount 100 does not match invoice total
+          // 24999"`). The real Gateway forwards the domain error's own message
+          // verbatim (`problem-detail-money-text.spec.ts`), formatted through
+          // the shared money-text formatter: `100`/`24999` minor units in EUR
+          // (exponent 2) render as `"1.00 EUR"`/`"249.99 EUR"`.
+          data: { code: 'PAYMENT_MISMATCH', title: 'Payment amount or currency does not match the invoice', detail: "payment amount (1.00 EUR) does not match the invoice's totalAmount (249.99 EUR) (invariant B10)" },
         });
       },
     });
@@ -286,7 +292,9 @@ describe('billing/index.vue — register payment form', () => {
     await fireEvent.click(screen.getByTestId('submit-payment-button'));
 
     const errorEl = await screen.findByTestId('payment-error');
-    expect(errorEl.textContent).toMatch(/payment amount 100 does not match invoice total 24999/i);
+    expect(errorEl.textContent).toMatch(/payment amount \(1\.00 EUR\) does not match the invoice's totalAmount \(249\.99 EUR\)/i);
+    expect(errorEl.textContent).not.toContain('24999');
+    expect(errorEl.textContent).not.toMatch(/\b100\b/);
 
     await fireEvent.click(screen.getByRole('button', { name: /cancel/i }));
     const buttonsAfter = await screen.findAllByTestId('register-payment-button');

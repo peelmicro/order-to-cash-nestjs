@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { useCompaniesQuery, useProductsQuery, useRetailersQuery } from '@/composables/useCatalog';
 import { usePlaceOrderMutation } from '@/composables/useOrders';
-import { decimalStringToMinorUnits, draftOrderTotal, formatMoney } from '@/lib/money';
+import { currencyInputStep, decimalStringToMinorUnits, draftOrderTotal, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
 import { problemFromFetchError } from '@/lib/problem';
 import type { StockUnavailableProblem } from '#shared/types/gateway';
 
@@ -153,8 +153,8 @@ const runningTotal = computed(() =>
       .map((l) => ({
         productCode: l.productCode,
         quantity: l.quantity,
-        unitPrice: decimalStringToMinorUnits(l.unitPriceInput),
-        lineDiscount: decimalStringToMinorUnits(l.lineDiscountInput),
+        unitPrice: decimalStringToMinorUnits(l.unitPriceInput, form.currency),
+        lineDiscount: decimalStringToMinorUnits(l.lineDiscountInput, form.currency),
       })),
     priceByProductCode.value,
     0,
@@ -213,8 +213,8 @@ async function submit() {
     lines: lines.value
       .filter((l) => l.productCode && l.quantity > 0)
       .map((l) => {
-        const unitPrice = decimalStringToMinorUnits(l.unitPriceInput);
-        const lineDiscount = decimalStringToMinorUnits(l.lineDiscountInput);
+        const unitPrice = decimalStringToMinorUnits(l.unitPriceInput, form.currency);
+        const lineDiscount = decimalStringToMinorUnits(l.lineDiscountInput, form.currency);
         return {
           productCode: l.productCode,
           quantity: l.quantity,
@@ -380,7 +380,7 @@ async function submit() {
                   :model-value="line.unitPriceInput"
                   type="number"
                   min="0"
-                  step="0.01"
+                  :step="currencyInputStep(form.currency)"
                   placeholder="catalogue"
                   class="text-sm"
                   data-testid="unit-price-input"
@@ -394,8 +394,8 @@ async function submit() {
                   :model-value="line.lineDiscountInput"
                   type="number"
                   min="0"
-                  step="0.01"
-                  placeholder="0.00"
+                  :step="currencyInputStep(form.currency)"
+                  :placeholder="minorUnitsToDecimalString(0, form.currency)"
                   data-testid="line-discount-input"
                   @update:model-value="(v) => (line.lineDiscountInput = String(v))"
                 />

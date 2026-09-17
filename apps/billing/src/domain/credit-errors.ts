@@ -4,17 +4,28 @@
 // (and a test) needs, the same shape `apps/fulfillment/src/domain/stock-errors.ts`
 // established. Codes are the vocabulary `rpc-error-mapper.ts` (§4.4)
 // translates into the AsyncAPI `RpcError.code` vocabulary.
-import { DomainError, type UniqueId } from '@otc/shared-kernel';
+import { DomainError, type UniqueId, formatMoney } from '@otc/shared-kernel';
 
-/** B1 (`R37`) — `approveHold` called for an amount that does not actually fit; a caller cannot bypass B1 by skipping `evaluateHold`. */
+/**
+ * B1 (`R37`) — `approveHold` called for an amount that does not actually
+ * fit; a caller cannot bypass B1 by skipping `evaluateHold`.
+ *
+ * Backlog id 102 (`problem_detail_money_reads_as_minor_units`): this
+ * message reaches a human, via `rpc-error-mapper.ts` -> the Gateway's
+ * problem+json `detail`. Rendered with the shared money-text formatter
+ * (id 100), never as a raw minor-units integer. `currency` is the credit
+ * line's own currency — both amounts are checked against it before this
+ * error can be raised (`buyer-credit.ts`'s `approveHold`).
+ */
 export class CreditLimitExceededError extends DomainError {
   readonly code = 'CREDIT_LIMIT_EXCEEDED';
 
   constructor(
     readonly requested: number,
     readonly available: number,
+    currency: string,
   ) {
-    super(`requested ${requested} minor unit(s) but only ${available} available (invariant B1)`);
+    super(`requested ${formatMoney(requested, currency)} but only ${formatMoney(available, currency)} available (invariant B1)`);
   }
 }
 
@@ -27,15 +38,25 @@ export class CreditRefusalMismatchError extends DomainError {
   }
 }
 
-/** B5 — defensive: `releaseHold` always releases exactly the order's outstanding exposure, so this fires only if the loaded ledger already violates B5 (a corrupted snapshot `reconstitute` does not check per order — design.md §3.1). */
+/**
+ * B5 — defensive: `releaseHold` always releases exactly the order's
+ * outstanding exposure, so this fires only if the loaded ledger already
+ * violates B5 (a corrupted snapshot `reconstitute` does not check per
+ * order — design.md §3.1).
+ *
+ * Backlog id 102: reaches a human via `rpc-error-mapper.ts` -> Gateway
+ * problem+json `detail`. Rendered with the shared money-text formatter
+ * (id 100). `currency` is the credit line's own currency.
+ */
 export class CreditReleaseUnderflowError extends DomainError {
   readonly code = 'CREDIT_RELEASE_UNDERFLOW';
 
   constructor(
     readonly orderReference: string,
     readonly exposure: number,
+    currency: string,
   ) {
-    super(`order ${orderReference}: outstanding exposure is already negative (${exposure}) — invariant B5 violated`);
+    super(`order ${orderReference}: outstanding exposure is already negative (${formatMoney(exposure, currency)}) — invariant B5 violated`);
   }
 }
 

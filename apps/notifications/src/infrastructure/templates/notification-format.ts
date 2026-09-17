@@ -1,20 +1,21 @@
 // Small formatting helpers shared by every fact template
 // (infrastructure/templates/*.template.ts) — no framework, no I/O, pure
 // functions, so each template stays trivially unit-testable.
+import { formatMoney as sharedFormatMoney } from '@otc/shared-kernel';
 
 /**
  * Renders an integer-minor-units amount (CLAUDE.md § Money: "never a
- * float") as a human-readable major-unit string for an email body — e.g.
- * `formatMoney(124250, 'USD')` -> `"1242.50 USD"`. Display-only: no
- * arithmetic happens on the returned string, and the amount itself is
- * never converted to a JS float anywhere in this function.
+ * float") as a human-readable string for an email body, scaled by the
+ * currency's own ISO 4217 minor-unit exponent (SA-5) — e.g.
+ * `formatMoney(124250, 'USD')` -> `"1 242.50 USD"`,
+ * `formatMoney(5000, 'JPY')` -> `"5 000 JPY"`. Delegates to
+ * `@otc/shared-kernel`'s `formatMoney` — the same implementation the
+ * Projector's timeline summaries and the Seed's timeline fixtures use, so
+ * an email and a timeline entry read alike for the same amount (backlog id
+ * 100).
  */
 export function formatMoney(amountMinorUnits: number, currency: string): string {
-  const sign = amountMinorUnits < 0 ? '-' : '';
-  const absoluteMinorUnits = Math.abs(amountMinorUnits);
-  const majorUnits = Math.floor(absoluteMinorUnits / 100);
-  const minorUnits = String(absoluteMinorUnits % 100).padStart(2, '0');
-  return `${sign}${majorUnits}.${minorUnits} ${currency}`;
+  return sharedFormatMoney(amountMinorUnits, currency);
 }
 
 /**

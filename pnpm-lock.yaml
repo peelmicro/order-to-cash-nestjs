@@ -984,6 +984,9 @@ importers:
       '@otc/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@otc/shared-kernel':
+        specifier: workspace:*
+        version: link:../../packages/shared-kernel
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@8.2.1(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(stylus@0.57.0(supports-color@10.2.2))(terser@5.50.0)(tsx@4.23.12)(yaml@2.9.0))
