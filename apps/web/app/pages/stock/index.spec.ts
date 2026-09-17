@@ -9,7 +9,7 @@ import { registerEndpoint, renderSuspended } from '@nuxt/test-utils/runtime';
 import { screen, fireEvent, waitFor, within } from '@testing-library/vue';
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query';
 import StockPage from './index.vue';
-import type { ReplenishStockRequest, ReplenishStockResponse, StockItem, StockPage as StockPageResponse } from '#shared/types/gateway';
+import type { Product, ReplenishStockRequest, ReplenishStockResponse, StockItem, StockPage as StockPageResponse } from '#shared/types/gateway';
 
 function makeStockItem(overrides: Partial<StockItem> = {}): StockItem {
   return {
@@ -22,6 +22,15 @@ function makeStockItem(overrides: Partial<StockItem> = {}): StockItem {
     lowStockThreshold: 20,
     ...overrides,
   };
+}
+
+/**
+ * `description` always differs from `name` here — never left equal or
+ * absent — so a bug substituting the sibling field (CLAUDE.md defeat-list
+ * row 3) shows the WRONG text rather than coincidentally the right one.
+ */
+function makeProduct(overrides: Partial<Product> = {}): Product {
+  return { code: 'PRD-0001', name: 'Ration Pack Bundle (catalog)', description: 'not the display name — a decoy sibling field', price: 1999, currency: 'EUR', enabled: true, ...overrides };
 }
 
 /**
@@ -50,6 +59,7 @@ describe('stock/index.vue — stock table', () => {
       page: { page: 1, pageSize: 20, total: 1 },
     } satisfies StockPageResponse));
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     const row = await screen.findByTestId('stock-row');
@@ -64,6 +74,7 @@ describe('stock/index.vue — stock table', () => {
       return { items: [makeStockItem()], page: { page: 1, pageSize: 20, total: 1 } } satisfies StockPageResponse;
     });
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
     await screen.findByTestId('stock-row');
 
@@ -82,6 +93,7 @@ describe('stock/index.vue — stock table', () => {
 
     registerEndpoint('/api/stock', () => responsePromise);
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     const renderPromise = renderStock();
 
     // While loading, the loading state should be visible
@@ -123,6 +135,7 @@ describe('stock/index.vue — replenish (a delta, never a target level)', () => 
       },
     });
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     await fireEvent.click(await screen.findByTestId('replenish-button'));
@@ -147,6 +160,7 @@ describe('stock/index.vue — replenish (a delta, never a target level)', () => 
       page: { page: 1, pageSize: 20, total: 1 },
     } satisfies StockPageResponse));
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     await fireEvent.click(await screen.findByTestId('replenish-button'));
@@ -167,6 +181,7 @@ describe('stock/index.vue — error handling', () => {
       });
     });
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     const errorEl = await screen.findByTestId('stock-error');
@@ -194,6 +209,7 @@ describe('stock/index.vue — error handling', () => {
       },
     });
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     const buttons = await screen.findAllByTestId('replenish-button');
@@ -221,6 +237,7 @@ describe('stock/index.vue — accessible filter controls and table headers (D8 g
   it('the Company and Product filters resolve by their visible label', async () => {
     registerEndpoint('/api/stock', () => ({ items: [], page: { page: 1, pageSize: 20, total: 0 } } satisfies StockPageResponse));
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     expect(await screen.findByLabelText('Company')).toBeInTheDocument();
@@ -233,6 +250,7 @@ describe('stock/index.vue — accessible filter controls and table headers (D8 g
       page: { page: 1, pageSize: 20, total: 1 },
     } satisfies StockPageResponse));
 
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
     await renderStock();
 
     const headers = await screen.findAllByRole('columnheader');
@@ -240,5 +258,70 @@ describe('stock/index.vue — accessible filter controls and table headers (D8 g
     expect(headers).toHaveLength(7);
     expect(headers.slice(0, 6).map((h) => h.textContent?.trim())).toEqual(['Company', 'Product', 'On hand', 'Reserved', 'Available', 'Threshold']);
     headers.forEach((header) => expect(header).toHaveAttribute('scope', 'col'));
+  });
+});
+
+// ── id 101: the product name, from the catalog (GET /api/catalog/products) ──
+// "PRD-0001 (PRD-0001)" on every row — productName is optional in StockItem
+// and no backend fills it, so both web apps fell back to the code and then
+// repeated it. The catalog's own Product.name now fills the gap; a backend
+// productName still wins; the code shows once when neither is known; and a
+// failed catalog read never hides the stock table (rows fall back to the
+// code alone).
+describe('stock/index.vue — product name (id 101)', () => {
+  it('the name comes from the catalog when the stock line itself carries none', async () => {
+    registerEndpoint('/api/stock', () => ({ items: [makeStockItem({ productName: undefined })], page: { page: 1, pageSize: 20, total: 1 } } satisfies StockPageResponse));
+    registerEndpoint('/api/catalog/products', () => ({ items: [makeProduct({ code: 'PRD-0001', name: 'Ration Pack Bundle (catalog)' })] }));
+
+    await renderStock();
+
+    const row = await screen.findByTestId('stock-row');
+    expect(within(row).getByTestId('stock-product').textContent?.trim()).toBe('Ration Pack Bundle (catalog) (PRD-0001)');
+  });
+
+  it('the code appears only once, with no known name — a test that fails if the duplicate returns', async () => {
+    registerEndpoint('/api/stock', () => ({ items: [makeStockItem({ productName: undefined, productCode: 'PRD-0007' })], page: { page: 1, pageSize: 20, total: 1 } } satisfies StockPageResponse));
+    registerEndpoint('/api/catalog/products', () => ({ items: [] }));
+
+    await renderStock();
+
+    const row = await screen.findByTestId('stock-row');
+    const cell = within(row).getByTestId('stock-product');
+    expect(cell.textContent).toMatch(/PRD-0007/);
+    expect(cell.textContent?.match(/PRD-0007/g)?.length, `the product cell showed the code more than once: "${cell.textContent}"`).toBe(1);
+  });
+
+  it("productName (a backend fact) takes precedence over the catalog's own name", async () => {
+    registerEndpoint('/api/stock', () => ({ items: [makeStockItem({ productName: 'On the stock line' })], page: { page: 1, pageSize: 20, total: 1 } } satisfies StockPageResponse));
+    registerEndpoint('/api/catalog/products', () => ({ items: [makeProduct({ code: 'PRD-0001', name: 'From the catalog — should lose' })] }));
+
+    await renderStock();
+
+    const row = await screen.findByTestId('stock-row');
+    expect(within(row).getByTestId('stock-product').textContent?.trim()).toBe('On the stock line (PRD-0001)');
+    expect(within(row).queryByText(/From the catalog/)).not.toBeInTheDocument();
+  });
+
+  it('a catalog failure does not hide the stock table: rows still render, falling back to the code alone, and the catalog error is shown separately', async () => {
+    registerEndpoint('/api/stock', () => ({ items: [makeStockItem({ productName: undefined })], page: { page: 1, pageSize: 20, total: 1 } } satisfies StockPageResponse));
+    registerEndpoint('/api/catalog/products', () => {
+      throw createError({
+        statusCode: 503,
+        statusMessage: 'Gateway request failed',
+        data: { code: 'UPSTREAM_UNAVAILABLE', title: 'The owning context is unreachable', detail: 'RPC call to "catalog.reference.list" failed: no responder is subscribed to this subject' },
+      });
+    });
+
+    await renderStock();
+
+    const row = await screen.findByTestId('stock-row');
+    expect(within(row).getByTestId('stock-product').textContent?.trim()).toBe('PRD-0001');
+    expect(within(row).getByTestId('stock-units').textContent).toContain('40');
+
+    const catalogError = await screen.findByTestId('stock-products-error');
+    expect(catalogError.textContent).toMatch(/product names unavailable/i);
+    expect(catalogError.textContent).toMatch(/catalog\.reference\.list/);
+    expect(screen.queryByTestId('stock-error')).not.toBeInTheDocument();
+    expect(screen.queryByText('No stock lines match these filters.')).not.toBeInTheDocument();
   });
 });

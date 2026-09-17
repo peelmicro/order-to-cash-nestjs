@@ -5,11 +5,24 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useProductsQuery } from '@/composables/useCatalog';
 import { useReplenishStockMutation, useStockQuery, type StockListFilters } from '@/composables/useStock';
 import { describeFetchError } from '@/lib/problem';
 import type { ReplenishStockResponse, StockItem } from '#shared/types/gateway';
 
 definePageMeta({ layout: 'default' });
+
+const { data: products, isError: productsFailed, error: productsError } = useProductsQuery();
+const productNameByCode = computed(() => new Map((products.value ?? []).map((product) => [product.code, product.name])));
+
+/**
+ * `StockItem.productName` (a backend fact, when one is ever sent) wins over the
+ * catalog's own `name`; `undefined` when neither is known, so the caller shows
+ * the code once rather than repeating it (id 101).
+ */
+function productDisplayName(item: Pick<StockItem, 'productName' | 'productCode'>): string | undefined {
+  return item.productName ?? productNameByCode.value.get(item.productCode);
+}
 
 const filters = reactive<StockListFilters>({
   companyCode: undefined,
@@ -110,6 +123,11 @@ async function submitReplenish(): Promise<void> {
       A live read of Fulfillment's own on-hand/reserved units — not the order-timeline read model, so there is no projection lag here. `availableUnits = units − reservedUnits` (invariant F1 keeps it non-negative).
     </p>
 
+    <!-- A failed catalog read never hides the stock table below — rows fall back to the product code alone (id 101). -->
+    <p v-if="productsFailed" class="text-sm text-destructive" data-testid="stock-products-error">
+      Product names unavailable: {{ describeFetchError(productsError, 'the catalog could not be loaded') }}
+    </p>
+
     <div class="flex flex-wrap items-end gap-4">
       <div class="flex flex-col gap-1.5">
         <Label for="stock-company-filter">Company</Label>
@@ -182,8 +200,13 @@ async function submitReplenish(): Promise<void> {
         <template v-for="item in data?.items" :key="stockRowKey(item)">
           <TableRow data-testid="stock-row">
             <TableCell>{{ item.companyCode }}</TableCell>
-            <TableCell class="font-medium">
-              {{ item.productName ?? item.productCode }} <span class="text-xs text-muted-foreground">({{ item.productCode }})</span>
+            <TableCell class="font-medium" data-testid="stock-product">
+              <template v-if="productDisplayName(item)">
+                {{ productDisplayName(item) }} <span class="text-xs text-muted-foreground">({{ item.productCode }})</span>
+              </template>
+              <template v-else>
+                {{ item.productCode }}
+              </template>
             </TableCell>
             <TableCell class="text-right" data-testid="stock-units">
               {{ item.units }}
