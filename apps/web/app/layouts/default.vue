@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Button } from '@/components/ui/button';
 import { useLogoutMutation, useSessionQuery } from '@/composables/useSession';
+import { STACK_LABEL } from '@/lib/stack-label';
 
 const route = useRoute();
 const { data: session } = useSessionQuery();
@@ -20,6 +21,9 @@ async function handleLogout() {
           <NuxtLink to="/orders" class="text-sm font-semibold">
             Order-To-Cash
           </NuxtLink>
+          <span class="rounded border border-border px-1.5 py-0.5 text-xs text-muted-foreground" data-testid="stack-label">
+            {{ STACK_LABEL }}
+          </span>
           <NuxtLink
             to="/orders"
             class="text-sm text-muted-foreground hover:text-foreground"

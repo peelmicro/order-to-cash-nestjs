@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useLoginMutation } from '@/composables/useSession';
 import { describeFetchError } from '@/lib/problem';
+import { STACK_LABEL } from '@/lib/stack-label';
 
 definePageMeta({ layout: 'default' });
 
@@ -52,6 +53,9 @@ const errorDetail = computed(() => (login.isError.value ? describeFetchError(log
     <Card class="w-full max-w-sm">
       <CardHeader>
         <CardTitle>Order-To-Cash</CardTitle>
+        <p class="text-xs text-muted-foreground" data-testid="stack-label">
+          {{ STACK_LABEL }}
+        </p>
         <CardDescription>Sign in with the operator credentials from `.env` (GATEWAY_OPERATOR_USERNAME / GATEWAY_OPERATOR_PASSWORD).</CardDescription>
       </CardHeader>
       <CardContent>
