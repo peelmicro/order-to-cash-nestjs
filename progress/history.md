@@ -1495,6 +1495,22 @@ A redrive operator reading the header would get different instants from the two 
 - The contracts typecheck and the workspace `pnpm run typecheck` both pass.
 - `specs/shared/asyncapi.yaml` is `cmp`-identical to #8's copy.
 
+## Shared amendment SA-4 (raised in #8, applied here in the same session) — 2026-09-11
+
+**Effort:** n/a — an amendment, not a feature. The code alignment it left owing in this repository is the entry dated 2026-09-13 below (#8's backlog id 79). The full record of the ruling, with the alternatives put to the gate, is in #8's `progress/history.md` under the same heading; this entry carries what concerns this repository.
+
+**What was wrong.** The shared specification made one operator cancellation race its own forward command, and compensated in the order that loses. A `confirmed` order has already asked for its despatch — the step that confirms it issues `despatch.create` in the same handler — yet `confirmed` is cancellable, and `saga.md` §4.3 released the credit hold first and the stock second. Fulfillment decides `stock.release` against `despatch.create` under one lock, and the losing release is silent: if the despatch wins, the release finds the reservation consumed and answers `already_released` with no fact. So in the likely ordering the order shipped with its credit hold already returned, after the operator had been told `202`. **This repository had met the race first:** feature 41's review reproduced it live 2-for-2, recorded it as Finding 1 (HIGH), declined it in scope, and filed nothing — which is why it reached #8 unresolved.
+
+**The ruling, at #8's human gate.** From `credit_approved`/`confirmed` the **contested** stock reservation is released first, and Fulfillment shall decide `stock.release` against `despatch.create` for one order under one lock. If the release wins, the order is cancelled after the credit release, and the refused `despatch.create` is the expected end of a lost race rather than a saga failure. If the despatch wins, it stands: nothing is released, no `order.cancelled.v1` follows, and the cancellation is documented as overtaken. And a `credit.approved.v1` for an order whose operator cancellation was already accepted issues `credit.release` and nothing else.
+
+**What it touches.** `specs/shared/saga.md` §4.3 and §5 (three consumption-map rows); `openapi.yaml` `cancelOrder` and `CancelOrderResponse.compensationPlanned`; `asyncapi.yaml` `orders.cancel` and `OrdersCancelReplyPayload.compensationPlanned`. Prose and table text only — no fact, channel, schema shape, requirement id or state-machine edge changed. Committed here as `63f130e`: the three spec files plus the two regenerated contract files, whose only changes are prose comments.
+
+**This repository already met the new one-lock requirement**, read from code rather than from the comment that claims it: `stock.release` (`apps/fulfillment/src/application/stock-reservation.handler.ts`) and `despatch.create` (`despatch-creation.handler.ts`) both call `stockIdsOfOrder` and then `lockByIdsForOrder`. What it did **not** meet was the ordering: the code still released credit first. Nothing failed, because the amendment is prose.
+
+**Verification here:** the three files `cmp`-identical to #8's; `contracts:generate` changed prose comments only; `contracts:check` OK; contracts tests 5 files, 22 passed; workspace typecheck exit 0.
+
+**For #9.** A state that has already issued an irreversible command is not freely cancellable, whatever the state table says. When a compensation races a forward command for the same resource, release the contested resource first and let its owner arbitrate under one lock. A release that finds nothing must be read as information, not as success.
+
 ## SA-3 code alignment — `x-first-failed-at` becomes the first FAILURE instant (raised and tracked in #8 as backlog id 75) — 2026-09-13
 
 **Why this was owed.** `SA-3` (2026-09-11) gave the dead-letter header a meaning in the shared spec both assessments read: *"`x-first-failed-at` is the instant the FIRST processing attempt failed — never the instant processing began; it equals `x-failed-at` only when a single attempt was made"* (`specs/shared/asyncapi.yaml:2227-2229`). The amendment was prose only, so nothing here failed — and **this repository's code implemented the superseded meaning at three sites**, which meant a redrive operator reading the header got a different instant from #7 than from #8 for the same failure. #8 already conformed; this closes the parity break on the code side.
@@ -1517,6 +1533,45 @@ A redrive operator reading the header would get different instants from the two 
 
 **Counts:** orders **519/519**, projector **174/174**, notifications **119/119**, `pnpm lint` exit 0. No change under `specs/shared/`.
 
+## SA-4 code alignment — an operator cancellation releases the contested stock first (raised and tracked in #8 as backlog id 79) — 2026-09-13
+
+**Why this was owed.** `SA-4` (2026-09-11) re-ordered the operator cancellation at `credit_approved`/`confirmed` and added a rule for a `credit.approved.v1` that arrives after a cancellation was accepted. #8 already conformed. **This repository implemented the superseded order**, and nothing failed, because the amendment is prose. Committed as `65f1c5d`.
+
+**What changed.** 27 files under `apps/orders/src` and `apps/fulfillment/src`: 12 production, 12 test, 3 new.
+
+- `CancelOrderHandler`'s three compensating statuses now share one enqueue site (`stock.release`, always), and the reply plans `['stock_release', 'credit_release']`.
+- `stock.released.v1` at `credit_approved`/`confirmed` became an **advance** that owes `credit.release`; `credit.released.v1` at those statuses became the **terminal cancel**, with reason `operator_cancelled`.
+- The fast-path event and its `@Saga()` stream were swapped (`CreditReleasedForCancellationRecorded` → `StockReleasedForCancellationRecorded`), and `HandleCreditReleasedFactHandler` lost its `EventBus`.
+- A `credit.approved.v1` arriving after an accepted operator cancellation now issues `credit.release` and nothing else — no transition, no `order.confirmed.v1`, no `despatch.create`. The aggregate carries no marker for "cancellation accepted", so detection mirrors #8's mechanism: an EXISTS-shaped read over the order's release rows narrowed by envelope content, with the content test written once in `operator-cancel-envelope.ts` and imported by both the writer and the reader so the pair cannot drift.
+
+**Two behaviours needed no code and got guards instead.** The terminal `PRECONDITION_FAILED` routing of a lost despatch race was correct since feature 42 but had never been asserted for `despatch.create`, nor for the *absence* of dead-lettering. Fulfillment's one lock was correct, but every existing mention of `lockByIdsForOrder` in a spec was a fake-repository stub, never an assertion.
+
+**Counted before any edit.** 275 hits for the ordering pattern across `apps/orders/src` and `apps/fulfillment/src`, classified one line per hit: 174 changed, 86 correct, 9 new guards, 6 prose, 0 unclassified. A supplementary sweep on the retired *wording* then found two doc-comments still asserting the superseded design, which the pattern could not match.
+
+**Counts:** Orders **539/539** (519 + 20), Fulfillment **92/92** (89 + 3); four integration specs run against real containers, including the real-wire proof `issuedOrder === ['stock.release', 'credit.release']`.
+
+**Review:** approved on the first round, in #8's harness. The reviewer re-armed five of eleven arming rows from scratch, all five reproducing the recorded message verbatim.
+
+**The finding it left.** `hasAcceptedOperatorCancel`'s Drizzle query had **no test at all** — every hit of its name was the implementation, the call site, the port, a doc-comment or a fake-store member. Swapping one of its two command tokens or its `json` column for the type-identical sibling compiles, lints and leaves 539 tests green while the predicate answers `false` for every order. Routed as its own numbered entry (next).
+
+**Effort:** **1 implementer session, 0 rejections, 1 review session** — implementer ≈ 57 minutes, review ≈ 35 minutes, both bounded by file timestamps rather than self-report. Recorded in #8's `progress/history.md` (id 79), because the work was briefed and reviewed from there.
+
+## `hasAcceptedOperatorCancel` gains a real-database guard (raised and tracked in #8 as backlog id 91) — 2026-09-13
+
+**What landed.** One new file and no production change: `apps/orders/src/infrastructure/saga/saga-command-store-operator-cancel.integration.spec.ts`, 8 cases against a real MySQL via Testcontainers, using the MySQL-only `startOrdersTestFixture` rather than the three-container saga harness — the predicate is a pure database read, so Kafka and NATS would have bought nothing. Committed as `c20bdc0`.
+
+**Why the cases have the shape they have.** The reachable defect is **substitution**, not deletion, and a substitution's own false negative is that the swapped identifier matches no row: the query returns empty and the `true` cases fail for the *absence* reason, which says nothing about the name. So four of the eight cases **expect `false` with a decoy row present** — `stock.reserve` and `despatch.create` rows carrying the synthetic envelope, and a row whose `payload` holds the operator-cancel envelope while its `triggering_event_envelope` holds a real fact. Every arming therefore points at a `false` → `true` flip, which no empty result set can produce.
+
+**Armed.** Three mutations made to the **production file only**, each changing the spec's result and each passing `tsc --noEmit`: `triggeringEventEnvelope` → the sibling `payload` column (4 failed, 4 passed), `'stock.release'` → `'despatch.create'` (3 failed, 5 passed), and the `or(...)` narrowing removed (1 failed, 7 passed). A test that re-implemented the predicate would have stayed green under all three.
+
+**Worth carrying.** The predicate never calls `JSON.parse`: *"the envelope comes back as a parsed object"* is supplied entirely by mysql2's automatic parsing of `json` columns. If the driver returned a string, the predicate would be a silent constant `false` — and until this spec nothing asserted it.
+
+**Not closed, deliberately.** This repository still has no end-to-end coverage of the late-approval path (a `credit.approved.v1` after an accepted operator cancellation); the guard above covers the query, not the whole saga leg. #8 covers it in both orderings (`OperatorCancelRacesSagaForwardProgressTests.cs`). Closing it here needs a new spec on `startSagaIntegrationHarness`, the size of `orders-cancel.integration.spec.ts`.
+
+**Counts:** the Orders unit baseline is unmoved at **539/539**, correctly — `vitest.config.mts` excludes `*.integration.spec.ts`, so the 8 new tests land in the integration gate.
+
+**Effort:** **1 implementer session, 0 rejections, 1 review session** — implementer ≈ 44 minutes, review ≈ 17 minutes. Recorded in #8's `progress/history.md` (id 91).
+
 
 ## Shared amendment SA-5 (raised in #8, applied here in the same session) — 2026-09-17
 
@@ -1531,3 +1586,22 @@ A redrive operator reading the header would get different instants from the two 
 **Consumers re-checked:** #7 `pnpm contracts:check` OK (generated types unchanged); #8 `apps/web` `types:check` OK (generated types unchanged); #8 `Gateway.UnitTests` 245/245, including `OpenApiContractTests` against the rebuilt embedded spec served at `/docs`.
 
 **Code alignment:** #8 already conformed (`apps/web/src/lib/money.ts` reads the exponent through `Intl`). #7's three formatting functions assumed an exponent of 2 and are aligned under backlog id 97 of the order-to-cash-dotnet assessment.
+
+
+## Post-close housekeeping — stale status marks cleared, SA-4 recorded, licence decided — 2026-10-02
+
+**Effort:** n/a — record-keeping, no code and no test changed. One short session at the maintainer's request to confirm that nothing in the repository's documents still read as unfinished.
+
+**What the sweep found.** Every feature was `done`, every `tasks.md` box ticked and the matrix at 62 green / 1 ratified deferral — but four documents still described an earlier moment:
+- `progress/current.md` still held Phase 25's session (*"in review, rejected once, 40 of 41 done"*), against C2's own rule that it holds the active session or only the template. Reset to the template; its content was already in the `final_checkpoint` entry above.
+- `docs/PROCESS.md` §10 opened with *"Position: complete"* and ended the same paragraph with *"only Phase 25's final checkpoint remains"*. Corrected, and a short *After the close* paragraph added for the five shared amendments.
+- `README.md` listed assessment #8 as *pending*; it is public and complete, so the row now links to it. #9 stays *pending*, which is true.
+- `SA-4` had no entry here, although `SA-1`, `SA-2`, `SA-3` and `SA-5` did. Its three entries (the amendment, the code alignment, the real-database guard) were written from #8's record and checked against this repository's commits `63f130e`, `65f1c5d` and `c20bdc0`.
+
+**Decided at the human gate:** the licence is MIT (`LICENSE`), matching assessment #8.
+
+**Left as they are, deliberately:** the empty boxes in `CHECKPOINTS.md` (a checklist walked at each review, not a status) and in `progress/review_*.md` (the record of rejected rounds).
+
+**Still open, carried from the SA-4 guard entry:** no end-to-end test here of a `credit.approved.v1` arriving after an accepted operator cancellation.
+
+**Verification:** `./init.sh` exit 0.

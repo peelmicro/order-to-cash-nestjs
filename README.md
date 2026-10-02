@@ -46,7 +46,7 @@ This is **assessment #7 of a three-part series** that implements the *same speci
 | # | Backend | Frontend | Write DB | Repository |
 |---|---------|----------|----------|------------|
 | **7** | **NestJS 11** | **Nuxt 4 + shadcn-vue** | **MySQL 8** | **this one** |
-| 8 | .NET 10 | Next.js + shadcn/ui | MS-SQL Server | pending |
+| 8 | .NET 10 | Next.js + shadcn/ui | MS-SQL Server | [order-to-cash-dotnet](https://github.com/peelmicro/order-to-cash-dotnet) |
 | 9 | Python (FastAPI) | Angular + spartan/ui | PostgreSQL | pending |
 
 Two things built here are meant to be reused verbatim by #8 and #9: the stack-agnostic specification in `specs/shared/` and the agent harness (`AGENTS.md`, `feature_list.json`, `progress/`, `.claude/agents/`). The development **process is a deliverable**, not just the software.
@@ -625,4 +625,4 @@ Both API documents are machine-validated (`@asyncapi/parser`: 0 errors, 0 warnin
 
 ## Licence
 
-Not yet decided.
+[MIT](LICENSE).
