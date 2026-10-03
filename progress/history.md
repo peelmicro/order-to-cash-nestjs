@@ -1605,3 +1605,16 @@ A redrive operator reading the header would get different instants from the two 
 **Still open, carried from the SA-4 guard entry:** no end-to-end test here of a `credit.approved.v1` arriving after an accepted operator cancellation.
 
 **Verification:** `./init.sh` exit 0.
+
+
+## Post-close: README media recaptured, and the Quick Start fixed for a clean machine — 2026-10-03
+
+**Effort:** n/a — media and tooling, no application code and no test changed. One session, at the maintainer's request, to bring the README's images up to date for the LinkedIn publication.
+
+**What was asked.** The screenshots and the demo GIF dated from 30 August and predated the `#7 · NestJS / Nuxt` label added to the web header on 17 September. Regenerated with `pnpm media:demo` and `pnpm media:capture` against the rebuilt stack: the six web screenshots and `demo-compensation.gif` (960 × 600, 99 frames, ending on the cancelled `.99` order). The Jaeger, Grafana and Mailpit images were deliberately kept from August: they do not show the web header, and a freshly restarted stack makes Grafana and Mailpit nearly empty, which would have been a worse picture of the same thing.
+
+**Defect 1 — the README's Quick Start failed on a clean machine.** `pnpm dc:up:apps` stopped at once with *"network otc-net declared as external, but could not be found"*. `docker-compose.apps.yml` declared `otc-net` as `external: true` so that starting it alone would fail loudly; but when the two files are merged that declaration wins over the infra file's definition, so Compose refused to **create** the network even with both files passed. It had only ever worked on machines where an earlier infra-only start had left the network behind — and an external network survives `down`, so Phase 23's cold cycles (`down -v` then `up`) could never have noticed. Fixed by removing the apps file's top-level `networks:` block: the network is defined once, in the infra file. Verified both ways: from a machine with no `otc-net`, `up` exits 0 and creates it with Compose's own labels (`otc/otc-net`, which the SonarQube profile needs); and the apps file alone still fails loudly, now with *"refers to undefined network otc-net"*.
+
+**Defect 2 — the capture script silently skipped both order timelines.** It resolved `ORD-000005` and `ORD-000006` by walking `GET /orders` newest first with a 40-page cap, and a stack the n8n generator has fed holds well over a thousand orders, so both seeded orders sat past the cap and the shots were skipped with only a log line. It now uses the API's own `orderReference` filter, so the lookup is independent of how many orders exist.
+
+**The lesson worth carrying.** Both defects were invisible to every check this repository runs: the Quick Start is not executed by any test, and the capture script is deliberately not a test. Each was found only by doing the documented thing from a state nobody had tried — a machine without the network, a stack with a realistic number of orders. A cold-cycle check is only cold if it starts from what a stranger has, not from what the last run left behind.

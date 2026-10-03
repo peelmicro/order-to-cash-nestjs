@@ -7,10 +7,15 @@
 # (see its own header comment: "NO application containers here — those
 # arrive in phase 23").
 #
-# Always run together with the infra file — this file's `otc-net` is
-# declared `external: true` on purpose, so starting this file alone fails
-# loudly ("network otc-net not found") instead of silently creating a
-# second, disconnected network:
+# Always run together with the infra file. This file deliberately declares
+# no top-level `networks:` block: `otc-net` is defined once, in the infra
+# file, so starting this file alone fails loudly ("refers to undefined
+# network otc-net") instead of silently creating a second, disconnected
+# network. It used to be declared `external: true` here, which the merge
+# made win over the infra definition — Compose then refused to CREATE the
+# network, and a clean machine failed the Quick Start's first `up`. It only
+# worked where an earlier start had left the network behind, because an
+# external network survives `down`:
 #
 #   pnpm dc:up:apps     # docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml up -d
 #
@@ -393,7 +398,3 @@ services:
         condition: service_completed_successfully
       mongodb:
         condition: service_healthy
-
-networks:
-  otc-net:
-    external: true

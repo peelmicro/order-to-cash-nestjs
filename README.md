@@ -348,7 +348,7 @@ pnpm dc:up:apps    # docker compose -f docker-compose.infra.yml -f docker-compos
                     # migration jobs + 6 NestJS services + the web app
 ```
 
-Always pass **both** compose files together (`dc:up:apps` already does) — `docker-compose.apps.yml`'s own network is declared `external: true`, so starting it alone fails loudly ("network otc-net not found") instead of silently creating a second, disconnected network. `docker compose ... down` tears down both layers together the same way.
+Always pass **both** compose files together (`dc:up:apps` already does). `otc-net` is defined only in `docker-compose.infra.yml`, so starting the apps file alone fails loudly ("refers to undefined network otc-net") instead of silently creating a second, disconnected network; together, the first `up` on a clean machine creates it. `docker compose ... down` tears down both layers together the same way.
 
 | App | URL | Depends on (startup order) |
 |---|---|---|

@@ -86,25 +86,20 @@ try {
     body: JSON.stringify({ username: env.GATEWAY_OPERATOR_USERNAME ?? 'operator', password: env.GATEWAY_OPERATOR_PASSWORD }),
   });
   const token = (await tokenRes.json()).accessToken;
-  // Paginated: `GET /orders` returns a fixed pageSize (25) and ignores any
-  // larger `limit`, so a single request only ever sees the newest page.
-  // Walk to `page.total` — an unattended demo stack grows past one page
-  // within minutes of the n8n order generator being published.
+  // Looked up by reference with the API's own `orderReference` filter, not
+  // by walking `GET /orders` page by page. The walk had a page cap, and a
+  // stack the n8n order generator has fed for a while holds well over a
+  // thousand orders, newest first — so the seeded orders sat past the cap
+  // and both timeline shots were silently skipped.
   const auth = { authorization: `Bearer ${token}` };
-  const items = [];
-  for (let pageNo = 1; ; pageNo += 1) {
-    const body = await (await fetch(`${gw}/orders?page=${pageNo}`, { headers: auth })).json();
-    const batch = body.items ?? (Array.isArray(body) ? body : []);
-    items.push(...batch);
-    const total = body.page?.total ?? items.length;
-    if (!batch.length || items.length >= total || pageNo > 40) break;
-  }
-  console.log(`  ${items.length} orders known`);
-  const byRef = (r) => items.find((o) => o.orderReference === r);
+  const byRef = async (r) => {
+    const body = await (await fetch(`${gw}/orders?orderReference=${encodeURIComponent(r)}`, { headers: auth })).json();
+    return (body.items ?? []).find((o) => o.orderReference === r);
+  };
 
   for (const [ref, name] of [[env.SHOT_COMPLETED ?? 'ORD-000005', 'web-order-timeline-completed'],
                              [env.SHOT_CANCELLED ?? 'ORD-000006', 'web-order-timeline-compensated']]) {
-    const order = byRef(ref);
+    const order = await byRef(ref);
     const id = order?.orderId ?? order?.id;
     if (!id) { console.log(`  !! ${ref} not found via the API — skipped ${name}`); continue; }
     await page.goto(`${WEB}/orders/${id}`, { waitUntil: 'networkidle' });
