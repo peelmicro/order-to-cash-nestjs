@@ -949,7 +949,7 @@ export interface components {
          *     ascending — a deterministic but causally arbitrary order (amendment A1).
          */
         TimelineEntry: {
-            /** @description The `eventId` of the fact that caused this one; ties on `occurredAt` are ordered so that a fact follows its cause. Absent on an entry projected before this field existed. */
+            /** @description The `eventId` of the fact — or the identifier of the command — that caused this one (R12). Only a fact's `eventId` can name another entry of the timeline: a fact produced by an RPC responder names the command that requested it, which is never an entry. Ties on `occurredAt` are ordered so that a fact follows a cause it names. Absent on an entry projected before this field existed. */
             causationId?: components["schemas"]["UniqueId"];
             /** @description Optional structured extract of the fact payload for the UI — shortages, amounts, references. */
             detail?: Record<string, never>;
