@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useProductsQuery } from '@/composables/useCatalog';
 import { useReplenishStockMutation, useStockQuery, type StockListFilters } from '@/composables/useStock';
+import { wholeNumberProblem } from '@/lib/number-input';
 import { describeFetchError } from '@/lib/problem';
 import type { ReplenishStockResponse, StockItem } from '#shared/types/gateway';
 
@@ -69,6 +70,8 @@ function stockRowKey(item: StockItem): string {
 //    is exactly the kind of thing that reads as a bug later") ────────────
 const activeItem = ref<StockItem | null>(null);
 const unitsInput = ref('');
+// Set by `submitReplenish` when the units text is not a whole number of 1 or more; cleared as soon as the text changes.
+const unitsProblem = ref<string | undefined>(undefined);
 const lastResult = ref<{ item: StockItem; delta: number; response: ReplenishStockResponse } | null>(null);
 
 const replenish = useReplenishStockMutation();
@@ -76,6 +79,7 @@ const replenish = useReplenishStockMutation();
 function openReplenishForm(item: StockItem): void {
   activeItem.value = item;
   unitsInput.value = '';
+  unitsProblem.value = undefined;
   lastResult.value = null;
   // Pass 6's own disclosed follow-up: a stale mutation error must not
   // reappear when the form is reopened (this pass's error-handling sweep,
@@ -94,8 +98,13 @@ const replenishErrorDetail = computed(() => (replenish.isError.value ? describeF
 
 async function submitReplenish(): Promise<void> {
   const item = activeItem.value;
+  if (!item) return;
+  const problem = wholeNumberProblem(unitsInput.value, 'Units to add', 1);
+  if (problem) {
+    unitsProblem.value = problem;
+    return;
+  }
   const delta = Number(unitsInput.value);
-  if (!item || !Number.isFinite(delta) || delta <= 0) return;
 
   try {
     const response = await replenish.mutateAsync({
@@ -247,18 +256,20 @@ async function submitReplenish(): Promise<void> {
                       <Label for="replenish-units">Units to add</Label>
                       <Input
                         id="replenish-units"
-                        v-model="unitsInput"
-                        type="number"
-                        min="1"
-                        step="1"
+                        :model-value="unitsInput"
+                        type="text"
+                        inputmode="numeric"
+                        :aria-invalid="unitsProblem ? 'true' : undefined"
+                        :aria-describedby="unitsProblem ? 'replenish-units-problem' : undefined"
                         placeholder="e.g. 100"
                         data-testid="replenish-units-input"
+                        @update:model-value="(v) => { unitsInput = String(v); unitsProblem = undefined; }"
                       />
                     </div>
                     <Button
                       type="button"
                       data-testid="submit-replenish-button"
-                      :disabled="replenish.isPending.value || !unitsInput"
+                      :disabled="replenish.isPending.value"
                       @click="submitReplenish"
                     >
                       {{ replenish.isPending.value ? 'Adding…' : 'Add units' }}
@@ -267,6 +278,9 @@ async function submitReplenish(): Promise<void> {
                       Cancel
                     </Button>
                   </div>
+                  <p v-if="unitsProblem" id="replenish-units-problem" class="text-sm text-destructive" role="alert" data-testid="replenish-units-problem">
+                    {{ unitsProblem }}
+                  </p>
                   <p v-if="replenishErrorDetail" class="text-sm text-destructive" data-testid="replenish-error">
                     {{ replenishErrorDetail }}
                   </p>

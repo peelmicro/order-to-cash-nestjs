@@ -8,7 +8,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Separator } from '@/components/ui/separator';
 import { useCompaniesQuery, useProductsQuery, useRetailersQuery } from '@/composables/useCatalog';
 import { usePlaceOrderMutation } from '@/composables/useOrders';
-import { currencyInputStep, decimalStringToMinorUnits, draftOrderTotal, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
+import { decimalStringToMinorUnits, draftOrderTotal, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
+import { currencyInputMode, optionalAmountProblem, wholeNumberProblem } from '@/lib/number-input';
 import { problemFromFetchError } from '@/lib/problem';
 import type { StockUnavailableProblem } from '#shared/types/gateway';
 
@@ -52,13 +53,13 @@ const priceByProductCode = computed(() => new Map((products.value ?? []).map((p)
  */
 interface DraftLine {
   productCode: string;
-  quantity: number;
+  quantityInput: string;
   unitPriceInput: string;
   lineDiscountInput: string;
 }
 
 function emptyDraftLine(): DraftLine {
-  return { productCode: '', quantity: 1, unitPriceInput: '', lineDiscountInput: '' };
+  return { productCode: '', quantityInput: '1', unitPriceInput: '', lineDiscountInput: '' };
 }
 
 const form = reactive({
@@ -152,7 +153,8 @@ const runningTotal = computed(() =>
       .filter((l) => l.productCode)
       .map((l) => ({
         productCode: l.productCode,
-        quantity: l.quantity,
+        // Only reached when no box has a problem (`runningTotalKnown`); an unparseable box never becomes a number here.
+        quantity: wholeNumberProblem(l.quantityInput, '', 1) === undefined ? Number(l.quantityInput) : 0,
         unitPrice: decimalStringToMinorUnits(l.unitPriceInput, form.currency),
         lineDiscount: decimalStringToMinorUnits(l.lineDiscountInput, form.currency),
       })),
@@ -177,7 +179,7 @@ function fillCompensationDemo() {
   form.retailerCode = retailers.value?.[0]?.code ?? 'CarrefourEs';
   form.companyCode = companies.value?.[0]?.code ?? 'IBERFOODS';
   form.notes = 'demo — compensation path (.99)';
-  lines.value = [{ productCode: 'PRD-0001', quantity: 1, unitPriceInput: '249.99', lineDiscountInput: '' }];
+  lines.value = [{ productCode: 'PRD-0001', quantityInput: '1', unitPriceInput: '249.99', lineDiscountInput: '' }];
 }
 
 const placeOrder = usePlaceOrderMutation();
@@ -203,21 +205,68 @@ const stockShortages = computed(() => {
   return problem?.shortages?.length ? problem.shortages : undefined;
 });
 
+/**
+ * The quantity box holds the typed text (`type="text"`, not `"number"`: a
+ * number box reports `""` for text it cannot parse, so `"1-2"` was lost and
+ * the order went out with whatever was left). A line with a product whose
+ * quantity text is not a whole number of 1 or more is refused in words
+ * naming the line; nothing is sent and no quantity is substituted. Shown
+ * only after a submit attempt, so a half-typed value is not nagged at.
+ */
+const submitAttempted = ref(false);
+
+/**
+ * Unit price override and line discount hold typed text too (`type="text"`,
+ * `inputmode` from the currency's exponent): an empty box means "not typed"
+ * (catalogue price, no discount), but any other text must be an amount in
+ * the form's currency or it is refused in words naming the line and the
+ * field, with nothing sent and nothing substituted.
+ */
+interface LineProblems {
+  quantity?: string;
+  unitPrice?: string;
+  lineDiscount?: string;
+}
+const problemsByLine = computed<LineProblems[]>(() =>
+  lines.value.map((l, index) => {
+    if (!l.productCode) return {};
+    return {
+      quantity: wholeNumberProblem(l.quantityInput, `Line ${index + 1} quantity`, 1),
+      unitPrice: optionalAmountProblem(l.unitPriceInput, form.currency, `Line ${index + 1} unit price override`),
+      lineDiscount: optionalAmountProblem(l.lineDiscountInput, form.currency, `Line ${index + 1} line discount`),
+    };
+  }),
+);
+const quantityProblems = computed(() => problemsByLine.value.flatMap((p) => (p.quantity ? [p.quantity] : [])));
+const amountProblems = computed(() => problemsByLine.value.flatMap((p) => [p.unitPrice, p.lineDiscount].filter((problem): problem is string => problem !== undefined)));
+const visibleQuantityProblems = computed(() => (submitAttempted.value ? quantityProblems.value : []));
+const visibleAmountProblems = computed(() => (submitAttempted.value ? amountProblems.value : []));
+
+/** The problem a box shows, once a submit was attempted; drives that box's `aria-invalid` and `aria-describedby`. */
+function shownProblem(index: number, box: keyof LineProblems): string | undefined {
+  return submitAttempted.value ? problemsByLine.value[index]?.[box] : undefined;
+}
+
+/** A total built from a refused quantity, unit price or discount is not a number: it is unknown, and shown as such. */
+const runningTotalKnown = computed(() => quantityProblems.value.length === 0 && amountProblems.value.length === 0);
+
 async function submit() {
   successOrderReference.value = null;
+  submitAttempted.value = true;
+  if (quantityProblems.value.length > 0 || amountProblems.value.length > 0) return;
   const payload = {
     retailerCode: form.retailerCode,
     companyCode: form.companyCode,
     currency: form.currency,
     notes: form.notes || undefined,
     lines: lines.value
-      .filter((l) => l.productCode && l.quantity > 0)
+      .filter((l) => l.productCode)
       .map((l) => {
         const unitPrice = decimalStringToMinorUnits(l.unitPriceInput, form.currency);
         const lineDiscount = decimalStringToMinorUnits(l.lineDiscountInput, form.currency);
         return {
           productCode: l.productCode,
-          quantity: l.quantity,
+          quantity: Number(l.quantityInput),
           ...(unitPrice !== undefined ? { unitPrice } : {}),
           ...(lineDiscount ? { lineDiscount } : {}),
         };
@@ -230,6 +279,7 @@ async function submit() {
       idempotencyKey: crypto.randomUUID(),
     });
     successOrderReference.value = result.orderReference;
+    submitAttempted.value = false;
     lines.value = [emptyDraftLine()];
   } catch {
     // `placeOrder.isError`/`.error` (read by `errorDetail`/`stockShortages`)
@@ -366,11 +416,13 @@ async function submit() {
                 <Label :for="`quantity-field-${index}`">Quantity</Label>
                 <Input
                   :id="`quantity-field-${index}`"
-                  :model-value="line.quantity"
-                  type="number"
-                  min="1"
+                  :model-value="line.quantityInput"
+                  type="text"
+                  inputmode="numeric"
+                  :aria-invalid="shownProblem(index, 'quantity') ? 'true' : undefined"
+                  :aria-describedby="shownProblem(index, 'quantity') ? 'quantity-problems' : undefined"
                   data-testid="quantity-input"
-                  @update:model-value="(v) => (line.quantity = Number(v))"
+                  @update:model-value="(v) => (line.quantityInput = String(v))"
                 />
               </div>
               <div class="flex flex-col gap-1.5">
@@ -378,11 +430,12 @@ async function submit() {
                 <Input
                   :id="`unit-price-field-${index}`"
                   :model-value="line.unitPriceInput"
-                  type="number"
-                  min="0"
-                  :step="currencyInputStep(form.currency)"
+                  type="text"
+                  :inputmode="currencyInputMode(form.currency)"
                   placeholder="catalogue"
                   class="text-sm"
+                  :aria-invalid="shownProblem(index, 'unitPrice') ? 'true' : undefined"
+                  :aria-describedby="shownProblem(index, 'unitPrice') ? 'line-amount-problems' : undefined"
                   data-testid="unit-price-input"
                   @update:model-value="(v) => (line.unitPriceInput = String(v))"
                 />
@@ -392,10 +445,11 @@ async function submit() {
                 <Input
                   :id="`line-discount-field-${index}`"
                   :model-value="line.lineDiscountInput"
-                  type="number"
-                  min="0"
-                  :step="currencyInputStep(form.currency)"
+                  type="text"
+                  :inputmode="currencyInputMode(form.currency)"
                   :placeholder="minorUnitsToDecimalString(0, form.currency)"
+                  :aria-invalid="shownProblem(index, 'lineDiscount') ? 'true' : undefined"
+                  :aria-describedby="shownProblem(index, 'lineDiscount') ? 'line-amount-problems' : undefined"
                   data-testid="line-discount-input"
                   @update:model-value="(v) => (line.lineDiscountInput = String(v))"
                 />
@@ -417,7 +471,8 @@ async function submit() {
           <div class="flex items-center justify-between">
             <span class="text-sm text-muted-foreground">Running total (client-side estimate — the server always computes the authoritative total)</span>
             <span class="text-lg font-semibold" data-testid="running-total">
-              {{ formatMoney(runningTotal, form.currency) }}
+              <template v-if="runningTotalKnown">{{ formatMoney(runningTotal, form.currency) }}</template>
+              <template v-else><span title="A box above holds text that is not a valid number, so there is no total yet">—</span></template>
             </span>
           </div>
 
@@ -426,6 +481,16 @@ async function submit() {
             <Input id="notes" v-model="form.notes" />
           </div>
 
+          <div v-if="visibleQuantityProblems.length > 0" id="quantity-problems" class="flex flex-col gap-1 text-sm text-destructive" role="alert" data-testid="quantity-problem">
+            <p v-for="problem in visibleQuantityProblems" :key="problem">
+              {{ problem }}
+            </p>
+          </div>
+          <div v-if="visibleAmountProblems.length > 0" id="line-amount-problems" class="flex flex-col gap-1 text-sm text-destructive" role="alert" data-testid="line-amount-problem">
+            <p v-for="problem in visibleAmountProblems" :key="problem">
+              {{ problem }}
+            </p>
+          </div>
           <div v-if="errorDetail" class="flex flex-col gap-1 text-sm text-destructive" data-testid="place-order-error">
             <p>{{ errorDetail }}</p>
             <ul v-if="stockShortages" class="list-disc pl-5" data-testid="place-order-shortages">

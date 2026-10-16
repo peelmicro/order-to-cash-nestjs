@@ -64,7 +64,8 @@ describe('billing/index.vue — a 0-exponent invoice (JPY)', () => {
     await fireEvent.click(screen.getByTestId('register-payment-button'));
     const amountInput = screen.getByTestId('payment-amount-input') as HTMLInputElement;
     expect(amountInput.value).toBe('24999');
-    expect(amountInput.getAttribute('step')).toBe('1');
+    // A text box now (a number box lost malformed text): the 0-exponent currency asks for the digits-only keyboard, where a 2-exponent one gets `decimal`.
+    expect(amountInput.getAttribute('inputmode')).toBe('numeric');
 
     await fireEvent.click(screen.getByTestId('submit-payment-button'));
     await waitFor(() => expect(capturedBody).toBeDefined());
@@ -95,8 +96,9 @@ describe('orders/place.vue — a 3-exponent order currency (BHD)', () => {
     await fireEvent.update(screen.getByTestId('unit-price-input'), '1.005');
     await fireEvent.update(screen.getByTestId('line-discount-input'), '0.5');
 
-    expect(screen.getByTestId('unit-price-input').getAttribute('step')).toBe('0.001');
-    expect(screen.getByTestId('line-discount-input').getAttribute('step')).toBe('0.001');
+    // Text boxes now (no `step`): the form's own currency drives the keyboard (`decimal` for BHD) and, above all, the parsing (1.005 -> 1005 below).
+    expect(screen.getByTestId('unit-price-input').getAttribute('inputmode')).toBe('decimal');
+    expect(screen.getByTestId('line-discount-input').getAttribute('inputmode')).toBe('decimal');
     // 1 × 1005 − 500 = 505 fils, shown as 0.505 BHD.
     expect(screen.getByTestId('running-total').textContent?.trim()).toBe(new Intl.NumberFormat(undefined, { style: 'currency', currency: 'BHD' }).format(0.505));
 

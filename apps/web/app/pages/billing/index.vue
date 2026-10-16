@@ -10,7 +10,8 @@ import { useCreditsQuery, useInvoicesQuery, useRegisterPaymentMutation, type Cre
 import { useRetailersQuery } from '@/composables/useCatalog';
 import { useOrderByReferenceQuery } from '@/composables/useOrders';
 import { Table, TableBody, TableCell, TableEmpty, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { currencyInputStep, decimalStringToMinorUnits, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
+import { decimalStringToMinorUnits, formatMoney, minorUnitsToDecimalString } from '@/lib/money';
+import { amountProblem, currencyInputMode } from '@/lib/number-input';
 import { describeFetchError } from '@/lib/problem';
 import type { Invoice, InvoiceStatus, RegisterPaymentResponse } from '#shared/types/gateway';
 
@@ -96,12 +97,15 @@ function suggestPaymentReference(invoice: Invoice): string {
 const activeInvoice = ref<Invoice | null>(null);
 const paymentForm = reactive({ paymentReference: '', amountInput: '' });
 const lastResult = ref<{ invoiceId: string; response: RegisterPaymentResponse } | null>(null);
+// Set by `submitPayment` when the amount text cannot be an amount; cleared as soon as the text changes.
+const amountProblemText = ref<string | undefined>(undefined);
 
 function openPaymentForm(invoice: Invoice): void {
   activeInvoice.value = invoice;
   paymentForm.paymentReference = suggestPaymentReference(invoice);
   paymentForm.amountInput = minorUnitsToDecimalString(invoice.totalAmount, invoice.currency);
   lastResult.value = null;
+  amountProblemText.value = undefined;
   // Pass 6 review, non-blocking finding #1: a rejected remittance's error
   // used to survive across `closePaymentForm`/`openPaymentForm` and
   // reappear on a fresh attempt against a DIFFERENT invoice. `reset()`
@@ -125,6 +129,11 @@ const paymentErrorDetail = computed(() => (registerPayment.isError.value ? descr
 async function submitPayment(): Promise<void> {
   const invoice = activeInvoice.value;
   if (!invoice) return;
+  const problem = amountProblem(paymentForm.amountInput, invoice.currency, 'Amount');
+  if (problem) {
+    amountProblemText.value = problem;
+    return;
+  }
   const amount = decimalStringToMinorUnits(paymentForm.amountInput, invoice.currency);
   if (amount === undefined) return;
 
@@ -381,18 +390,19 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
                       <Input
                         id="payment-amount"
                         :model-value="paymentForm.amountInput"
-                        type="number"
-                        min="0"
-                        :step="currencyInputStep(invoice.currency)"
+                        type="text"
+                        :inputmode="currencyInputMode(invoice.currency)"
+                        :aria-invalid="amountProblemText ? 'true' : undefined"
+                        :aria-describedby="amountProblemText ? 'payment-amount-problem' : undefined"
                         data-testid="payment-amount-input"
-                        @update:model-value="(v) => (paymentForm.amountInput = String(v))"
+                        @update:model-value="(v) => { paymentForm.amountInput = String(v); amountProblemText = undefined; }"
                       />
                     </div>
                     <div class="flex gap-2">
                       <Button
                         type="button"
                         data-testid="submit-payment-button"
-                        :disabled="registerPayment.isPending.value || !paymentForm.paymentReference || !paymentForm.amountInput"
+                        :disabled="registerPayment.isPending.value || !paymentForm.paymentReference"
                         @click="submitPayment"
                       >
                         {{ registerPayment.isPending.value ? 'Registering…' : 'Submit payment' }}
@@ -402,6 +412,9 @@ const { data: linkedOrderId, isLoading: linkedOrderResolving } = useOrderByRefer
                       </Button>
                     </div>
                   </div>
+                  <p v-if="amountProblemText" id="payment-amount-problem" class="text-sm text-destructive" role="alert" data-testid="payment-amount-problem">
+                    {{ amountProblemText }}
+                  </p>
                   <p v-if="paymentErrorDetail" class="text-sm text-destructive" data-testid="payment-error">
                     {{ paymentErrorDetail }}
                   </p>
